@@ -6,19 +6,6 @@ This template should help get you started developing with Tauri, React and Types
 
 - [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
   
-### 运行指南：
-
-1.  **准备模型（关键）**：
-    确保你已经安装了 Ollama，并拉取了以下两个模型：
-    ```bash
-    # 拉取嵌入模型（用于文档向量化）
-    ollama pull nomic-embed-text
-
-    # 运行聊天模型（用于问答）
-    ollama run qwen3-4b-thinking-2507
-    ```
-    *如果 `qwen3-4b-thinking-2507` 不在官方库中，请参考 `scripts/README.md` 创建自定义模型。*
-
 2.  **启动应用**：
     ```bash
     npm run tauri dev

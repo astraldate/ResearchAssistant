@@ -22,3 +22,9 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+coding_plan.md
+masterplan.md
+
+# 忽略所有 Tauri 的边车(Sidecar)二进制文件
+src-tauri/binaries/*.exe
