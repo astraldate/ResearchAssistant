@@ -1,10 +1,6 @@
-import React, { useEffect, useRef, useState } from "react";
+﻿import React, { useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, File, Folder } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-
-const openFile = async (path: string) => {
-  await invoke("open_file", { path });
-};
 
 export interface FileNode {
   id: string;
@@ -16,6 +12,7 @@ export interface FileNode {
 
 interface FileTreeProps {
   data?: FileNode[];
+  activePath?: string | null;
   onSelect?: (file: FileNode) => void;
 }
 
@@ -25,59 +22,74 @@ interface ContextMenuState {
   node: FileNode;
 }
 
-const FileTreeNode: React.FC<{
+const openFile = async (path: string) => {
+  await invoke("open_file", { path });
+};
+
+const TreeNode: React.FC<{
   node: FileNode;
   level: number;
+  activePath?: string | null;
   onSelect?: (file: FileNode) => void;
   onContextMenu: (event: React.MouseEvent, node: FileNode) => void;
-}> = ({ node, level, onSelect, onContextMenu }) => {
-  const [isOpen, setIsOpen] = useState(false);
-  const [isActive, setIsActive] = useState(false);
+}> = ({ node, level, activePath, onSelect, onContextMenu }) => {
+  const [isOpen, setIsOpen] = useState(level === 0);
+  const isActive = activePath === node.path;
 
-  const handleToggle = (event: React.MouseEvent) => {
-    event.stopPropagation();
+  useEffect(() => {
+    if (node.type_name === "folder" && activePath?.startsWith(node.path)) {
+      setIsOpen(true);
+    }
+  }, [activePath, node.path, node.type_name]);
+
+  const handleClick = () => {
     if (node.type_name === "folder") {
-      setIsOpen(!isOpen);
+      setIsOpen((value) => !value);
       return;
     }
-    setIsActive(true);
     onSelect?.(node);
   };
 
-  const handleContextMenu = (event: React.MouseEvent) => {
-    event.preventDefault();
-    event.stopPropagation();
-    onContextMenu(event, node);
-  };
+  const hasChildren = !!node.children && node.children.length > 0;
 
   return (
     <div>
       <div
         className={`tree-item ${isActive ? "active" : ""}`}
-        style={{ paddingLeft: `${level * 12 + 12}px` }}
-        onClick={handleToggle}
-        onContextMenu={handleContextMenu}
+        style={{ paddingLeft: `${12 + level * 14}px` }}
+        onClick={handleClick}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onContextMenu(event, node);
+        }}
       >
-        <span style={{ display: "flex", alignItems: "center", width: "16px", marginRight: "4px" }}>
-          {node.type_name === "folder" && (isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />)}
+        <span className="tree-item-caret">
+          {node.type_name === "folder" ? (
+            isOpen ? (
+              <ChevronDown size={14} />
+            ) : (
+              <ChevronRight size={14} />
+            )
+          ) : null}
         </span>
-
         {node.type_name === "folder" ? (
-          <Folder size={14} className="icon" color="#6c757d" fill="#6c757d" fillOpacity={0.2} />
+          <Folder size={14} color="#68707f" />
         ) : (
-          <File size={14} className="icon" color="#6c757d" />
+          <File size={14} color="#68707f" />
         )}
-
-        <span style={{ marginLeft: "6px" }}>{node.name}</span>
+        <span className="tree-item-label">{node.name}</span>
+        {node.type_name === "folder" && !hasChildren && <span className="tree-item-empty">空</span>}
       </div>
 
-      {node.type_name === "folder" && isOpen && node.children && (
+      {node.type_name === "folder" && isOpen && hasChildren && (
         <div>
-          {node.children.map((child) => (
-            <FileTreeNode
+          {node.children?.map((child) => (
+            <TreeNode
               key={child.id}
               node={child}
               level={level + 1}
+              activePath={activePath}
               onSelect={onSelect}
               onContextMenu={onContextMenu}
             />
@@ -88,31 +100,26 @@ const FileTreeNode: React.FC<{
   );
 };
 
-export const FileTree: React.FC<FileTreeProps> = ({ data, onSelect }) => {
-  const displayData = data ?? [];
+export const FileTree: React.FC<FileTreeProps> = ({ data, activePath, onSelect }) => {
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const nodes = data ?? [];
 
   useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
+    const handleOutside = (event: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
         setContextMenu(null);
       }
     };
-    document.addEventListener("click", handleClickOutside);
-    return () => document.removeEventListener("click", handleClickOutside);
-  }, []);
 
-  const handleContextMenu = (event: React.MouseEvent, node: FileNode) => {
-    setContextMenu({ x: event.clientX, y: event.clientY, node });
-  };
+    document.addEventListener("mousedown", handleOutside);
+    return () => document.removeEventListener("mousedown", handleOutside);
+  }, []);
 
   const handleOpen = async () => {
     if (!contextMenu) return;
     try {
       await openFile(contextMenu.node.path);
-    } catch (error) {
-      console.error("打开文件失败:", error);
     } finally {
       setContextMenu(null);
     }
@@ -122,60 +129,34 @@ export const FileTree: React.FC<FileTreeProps> = ({ data, onSelect }) => {
     if (!contextMenu) return;
     try {
       await invoke("reveal_in_explorer", { path: contextMenu.node.path });
-    } catch (error) {
-      console.error("在资源管理器中定位失败:", error);
     } finally {
       setContextMenu(null);
     }
   };
 
   return (
-    <div className="file-tree" style={{ position: "relative" }}>
-      {displayData.length === 0 && (
-        <div style={{ padding: "12px 14px", fontSize: "0.85rem", color: "var(--text-secondary)" }}>
-          尚未选择文件夹。
-        </div>
-      )}
+    <div className="file-tree">
+      {nodes.length === 0 && <div className="empty-placeholder">工作空间为空，请先导入文件或文件夹。</div>}
 
-      {displayData.map((node) => (
-        <FileTreeNode key={node.id} node={node} level={0} onSelect={onSelect} onContextMenu={handleContextMenu} />
+      {nodes.map((node) => (
+        <TreeNode
+          key={node.id}
+          node={node}
+          level={0}
+          activePath={activePath}
+          onSelect={onSelect}
+          onContextMenu={(event, target) => setContextMenu({ x: event.clientX, y: event.clientY, node: target })}
+        />
       ))}
 
       {contextMenu && (
-        <div
-          ref={menuRef}
-          className="context-menu"
-          style={{
-            position: "fixed",
-            top: contextMenu.y,
-            left: contextMenu.x,
-            backgroundColor: "var(--bg-primary)",
-            border: "1px solid var(--border-color)",
-            boxShadow: "0 2px 5px rgba(0,0,0,0.2)",
-            borderRadius: "4px",
-            padding: "4px 0",
-            zIndex: 1000,
-            minWidth: "150px",
-          }}
-        >
-          <div
-            className="menu-item"
-            onClick={handleOpen}
-            style={{ padding: "8px 12px", cursor: "pointer", fontSize: "0.9rem", color: "var(--text-primary)" }}
-            onMouseEnter={(event) => (event.currentTarget.style.backgroundColor = "var(--bg-tertiary)")}
-            onMouseLeave={(event) => (event.currentTarget.style.backgroundColor = "transparent")}
-          >
+        <div ref={menuRef} className="context-menu" style={{ top: contextMenu.y, left: contextMenu.x }}>
+          <button className="context-menu-item" onClick={() => void handleOpen()}>
             打开
-          </div>
-          <div
-            className="menu-item"
-            onClick={handleReveal}
-            style={{ padding: "8px 12px", cursor: "pointer", fontSize: "0.9rem", color: "var(--text-primary)" }}
-            onMouseEnter={(event) => (event.currentTarget.style.backgroundColor = "var(--bg-tertiary)")}
-            onMouseLeave={(event) => (event.currentTarget.style.backgroundColor = "transparent")}
-          >
-            在文件夹中显示
-          </div>
+          </button>
+          <button className="context-menu-item" onClick={() => void handleReveal()}>
+            在资源管理器中显示
+          </button>
         </div>
       )}
     </div>

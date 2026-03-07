@@ -1,8 +1,12 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { ImagePlus, Send, X } from "lucide-react";
+import { ImagePlus, Maximize2, Minimize2, Send, X } from "lucide-react";
 import { MarkdownRenderer } from "./MarkdownRenderer";
+import { LookupMode } from "./TermExplainPopover";
+import { PdfReader } from "./PdfReader";
+
+type StatusTone = "info" | "error";
 
 interface Message {
   id: string;
@@ -11,7 +15,7 @@ interface Message {
   timestamp: number;
 }
 
-interface Document {
+interface DocumentResult {
   id: string;
   path: string;
   content: string;
@@ -47,101 +51,54 @@ interface SelectionMenuState {
   y: number;
 }
 
-const ZH = {
-  assistantTitle: "\u79d1\u7814\u52a9\u624b",
-  statusThinking: "\u601d\u8003\u4e2d...",
-  inputPlaceholder: "\u8f93\u5165\u6d88\u606f...",
-  pickImage: "\u6dfb\u52a0\u56fe\u7247",
-  removeImage: "\u79fb\u9664\u56fe\u7247",
-  imageTag: "\u56fe\u7247",
-  openImageFailed: "\u9009\u62e9\u56fe\u7247\u5931\u8d25",
-  askFailed: "\u9519\u8bef",
-  askFailedHint: "\u8bf7\u786e\u8ba4 Ollama \u6b63\u5728\u8fd0\u884c\uff0c\u4e14\u6a21\u578b\u53ef\u7528\u3002",
-  retrievalTitle: "\u6269\u5c55\u68c0\u7d22\u7ed3\u679c",
-  retrievalEmpty: "\u672a\u68c0\u7d22\u5230\u66f4\u591a\u5185\u5bb9\u3002",
-  retrievalFailed: "\u6269\u5c55\u68c0\u7d22\u5931\u8d25",
-  sessionSaved: "\u4f1a\u8bdd\u5df2\u4fdd\u5b58\u3002",
-  sessionRestored: "\u4f1a\u8bdd\u5df2\u6062\u590d\u3002",
-  sessionCleared: "\u5df2\u6e05\u7a7a\u5f53\u524d\u4f1a\u8bdd\u3002",
-  sessionMissing: "\u6ca1\u6709\u627e\u5230\u53ef\u6062\u590d\u7684\u4f1a\u8bdd\u3002",
-  sessionRestoreFailed: "\u6062\u590d\u4f1a\u8bdd\u5931\u8d25\u3002",
-  exportSuccess: "\u5df2\u5bfc\u51fa\u5230",
-  exportFailed: "\u5bfc\u51fa Markdown \u5931\u8d25\uff1a",
-  toolbarSave: "\u4fdd\u5b58\u4f1a\u8bdd",
-  toolbarRestore: "\u6062\u590d\u4f1a\u8bdd",
-  toolbarClear: "\u6e05\u7a7a\u4f1a\u8bdd",
-  toolbarExport: "\u5bfc\u51fa\u7efc\u8ff0 Markdown",
-  pdfTitle: "PDF \u9605\u8bfb\u5668",
-  pdfNoFile: "\u672a\u9009\u4e2d PDF \u6587\u4ef6\u3002",
-  pdfLoading: "\u6b63\u5728\u52a0\u8f7d PDF...",
-  pdfPage: "\u9875\u7801",
-  pdfPrev: "\u4e0a\u4e00\u9875",
-  pdfNext: "\u4e0b\u4e00\u9875",
-  pdfPageText: "\u5f53\u524d\u9875\u6587\u672c\uff08\u53ef\u5212\u8bcd\u89e6\u53d1\uff09",
-  pdfPageTextEmpty: "\u672c\u9875\u672a\u89e3\u6790\u5230\u53ef\u8bfb\u6587\u672c\u3002",
-  pdfPageTextLoading: "\u6b63\u5728\u89e3\u6790\u5f53\u524d\u9875\u6587\u672c...",
-  pdfParseFailed: "PDF \u9875\u9762\u6587\u672c\u89e3\u6790\u5931\u8d25",
-  pdfSnippetPlaceholder: "\u8f93\u5165\u6216\u7c98\u8d34\u5f53\u524d\u9875\u5173\u952e\u7247\u6bb5\uff0c\u7528\u4e8e\u5f15\u7528\u3002",
-  addCitation: "\u52a0\u5165\u5f15\u7528\u5230\u8f93\u5165\u6846",
-  citationTitle: "\u5f15\u7528\u7247\u6bb5",
-  noteTitle: "\u7b14\u8bb0",
-  insertToInput: "\u63d2\u5165\u8f93\u5165\u6846",
-  delete: "\u5220\u9664",
-  selectionExplain: "\u89e3\u91ca",
-  selectionSearch: "\u6269\u5c55\u68c0\u7d22",
-  selectionNote: "\u52a0\u5165\u7b14\u8bb0",
-  selectionToCitation: "\u8bbe\u4e3a\u5f15\u7528\u7247\u6bb5",
-  noCitation: "\u6682\u65e0\u5f15\u7528\u3002",
-  noNote: "\u6682\u65e0\u7b14\u8bb0\u3002",
-};
+interface ChatInterfaceProps {
+  currentModel?: string;
+  activeFilePath?: string | null;
+  onStatus: (message: string, tone?: StatusTone, persistent?: boolean) => void;
+  onCardSaved: () => void;
+}
+
+const SESSION_KEY = "ra_chat_session_v3";
+const LOOKUP_MODE_KEY = "ra_term_lookup_mode_v1";
 
 const DEFAULT_MESSAGES: Message[] = [
   {
-    id: "welcome-1",
+    id: "welcome-message",
     role: "ai",
     content:
-      "\u4f60\u597d\uff0c\u6211\u662f\u79d1\u7814\u52a9\u624b\u3002\n\n\u6211\u53ef\u4ee5\u5e2e\u4f60\u603b\u7ed3\u8bba\u6587\u3001\u6574\u7406\u7efc\u8ff0\u3001\u57fa\u4e8e\u77e5\u8bc6\u5e93\u95ee\u7b54\uff0c\u4e5f\u652f\u6301\u56fe\u6587\u95ee\u7b54\u3002",
+      "你好，我是科研助手。\n\n你可以直接导入资料、建立本地知识库、在 PDF 页面选词解释并沉淀知识卡片，也可以继续使用对话、笔记和 Markdown 导出能力。",
     timestamp: Date.now(),
   },
 ];
 
-const SESSION_KEY = "ra_chat_session_v2";
-
-const getFileName = (path: string) => {
-  const tokens = path.split(/[\\/]/);
-  return tokens[tokens.length - 1] || path;
+const TOOL_BUTTON_STYLE: React.CSSProperties = {
+  border: "1px solid var(--border-color)",
+  background: "var(--bg-primary)",
+  borderRadius: 8,
+  padding: "6px 10px",
+  fontSize: "0.78rem",
+  cursor: "pointer",
+  whiteSpace: "nowrap",
 };
 
+const getFileName = (path: string) => path.split(/[\\/]/).pop() || path;
 const isPdfFile = (path: string) => /\.pdf$/i.test(path);
-
-const base64ToBytes = (base64: string) => {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
+const buildDocSnippet = (content: string, limit = 220) => {
+  const normalized = content.replace(/\s+/g, " ").trim();
+  return normalized.length > limit ? `${normalized.slice(0, limit)}...` : normalized;
 };
 
-const readSessionFromStorage = (): SessionPayload | null => {
+const readSession = (): SessionPayload | null => {
   const raw = localStorage.getItem(SESSION_KEY);
   if (!raw) return null;
-
   try {
-    const parsed = JSON.parse(raw) as SessionPayload;
-    if (!Array.isArray(parsed.messages)) {
-      return null;
-    }
-    return parsed;
+    return JSON.parse(raw) as SessionPayload;
   } catch {
     return null;
   }
 };
 
-export const ChatInterface: React.FC<{ currentModel?: string; activeFilePath?: string | null }> = ({
-  currentModel,
-  activeFilePath,
-}) => {
+export const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentModel, activeFilePath, onStatus, onCardSaved }) => {
   const [messages, setMessages] = useState<Message[]>(DEFAULT_MESSAGES);
   const [inputValue, setInputValue] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -150,20 +107,28 @@ export const ChatInterface: React.FC<{ currentModel?: string; activeFilePath?: s
   const [citationDraft, setCitationDraft] = useState("");
   const [citations, setCitations] = useState<CitationItem[]>([]);
   const [notes, setNotes] = useState<NoteItem[]>([]);
+  const [knowledgeQuery, setKnowledgeQuery] = useState("");
+  const [knowledgeResults, setKnowledgeResults] = useState<DocumentResult[]>([]);
+  const [lastKnowledgeQuery, setLastKnowledgeQuery] = useState("");
+  const [isKnowledgeSearching, setIsKnowledgeSearching] = useState(false);
   const [selectionMenu, setSelectionMenu] = useState<SelectionMenuState | null>(null);
-  const [statusText, setStatusText] = useState<string | null>(null);
-  const [pdfBlobUrl, setPdfBlobUrl] = useState<string | null>(null);
-  const [isPdfLoading, setIsPdfLoading] = useState(false);
-  const [pdfPageText, setPdfPageText] = useState("");
-  const [isPdfPageTextLoading, setIsPdfPageTextLoading] = useState(false);
   const [isSessionHydrated, setIsSessionHydrated] = useState(false);
+  const [isReaderFocused, setIsReaderFocused] = useState(false);
+  const [lookupMode, setLookupMode] = useState<LookupMode>(() => {
+    const stored = localStorage.getItem(LOOKUP_MODE_KEY);
+    if (stored === "popular_cn" || stored === "cs_encyclopedia" || stored === "bioinformatics") {
+      return stored;
+    }
+    return "popular_cn";
+  });
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const selectionMenuRef = useRef<HTMLDivElement>(null);
   const activePdfPath = activeFilePath && isPdfFile(activeFilePath) ? activeFilePath : null;
 
   const persistSession = useCallback(
     (payload?: SessionPayload) => {
-      const data: SessionPayload =
+      const nextPayload: SessionPayload =
         payload ?? {
           messages,
           inputValue,
@@ -173,15 +138,15 @@ export const ChatInterface: React.FC<{ currentModel?: string; activeFilePath?: s
           citations,
           notes,
         };
-      localStorage.setItem(SESSION_KEY, JSON.stringify(data));
+      localStorage.setItem(SESSION_KEY, JSON.stringify(nextPayload));
     },
-    [messages, inputValue, imagePath, pdfPage, citationDraft, citations, notes],
+    [citationDraft, citations, imagePath, inputValue, messages, notes, pdfPage],
   );
 
   useEffect(() => {
-    const stored = readSessionFromStorage();
+    const stored = readSession();
     if (stored) {
-      setMessages(stored.messages.length > 0 ? stored.messages : DEFAULT_MESSAGES);
+      setMessages(stored.messages?.length ? stored.messages : DEFAULT_MESSAGES);
       setInputValue(stored.inputValue || "");
       setImagePath(stored.imagePath || null);
       setPdfPage(stored.pdfPage && stored.pdfPage > 0 ? stored.pdfPage : 1);
@@ -198,112 +163,45 @@ export const ChatInterface: React.FC<{ currentModel?: string; activeFilePath?: s
   }, [isSessionHydrated, persistSession]);
 
   useEffect(() => {
+    localStorage.setItem(LOOKUP_MODE_KEY, lookupMode);
+  }, [lookupMode]);
+
+  useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isLoading]);
 
   useEffect(() => {
-    let revokedUrl: string | null = null;
-    let cancelled = false;
-
     if (!activePdfPath) {
-      setPdfBlobUrl((previous) => {
-        if (previous) URL.revokeObjectURL(previous);
-        return null;
-      });
-      setIsPdfLoading(false);
-      return () => {
-        // noop
-      };
+      setIsReaderFocused(false);
     }
-
-    setIsPdfLoading(true);
-    setStatusText(null);
-
-    void invoke<string>("read_file_base64", { path: activePdfPath })
-      .then((base64) => {
-        if (cancelled) return;
-        const bytes = base64ToBytes(base64);
-        const blob = new Blob([bytes], { type: "application/pdf" });
-        const objectUrl = URL.createObjectURL(blob);
-        revokedUrl = objectUrl;
-        setPdfBlobUrl((previous) => {
-          if (previous) URL.revokeObjectURL(previous);
-          return objectUrl;
-        });
-        setIsPdfLoading(false);
-      })
-      .catch((error) => {
-        if (cancelled) return;
-        console.error("Failed to load PDF:", error);
-        setPdfBlobUrl((previous) => {
-          if (previous) URL.revokeObjectURL(previous);
-          return null;
-        });
-        setIsPdfLoading(false);
-        setStatusText(`${ZH.askFailed}：${String(error)}`);
-      });
-
-    return () => {
-      cancelled = true;
-      if (revokedUrl) {
-        URL.revokeObjectURL(revokedUrl);
-      }
-    };
   }, [activePdfPath]);
 
   useEffect(() => {
-    let cancelled = false;
-
-    if (!activePdfPath) {
-      setPdfPageText("");
-      setIsPdfPageTextLoading(false);
-      return () => {
-        // noop
-      };
-    }
-
-    setIsPdfPageTextLoading(true);
-    void invoke<string>("extract_pdf_page_text", { path: activePdfPath, page: Math.max(1, pdfPage) })
-      .then((text) => {
-        if (cancelled) return;
-        setPdfPageText(text);
-        setIsPdfPageTextLoading(false);
-      })
-      .catch((error) => {
-        if (cancelled) return;
-        console.error("Failed to extract PDF page text:", error);
-        setPdfPageText("");
-        setIsPdfPageTextLoading(false);
-        setStatusText(`${ZH.pdfParseFailed}: ${String(error)}`);
-      });
-
-    return () => {
-      cancelled = true;
+    const handleClickOutside = (event: MouseEvent) => {
+      if (selectionMenuRef.current?.contains(event.target as Node)) {
+        return;
+      }
+      setSelectionMenu(null);
     };
-  }, [activePdfPath, pdfPage]);
-
-  const pdfViewerSrc = useMemo(() => {
-    if (!pdfBlobUrl) return null;
-    return `${pdfBlobUrl}#page=${pdfPage}`;
-  }, [pdfBlobUrl, pdfPage]);
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   const handlePickImage = async () => {
     try {
       const selected = await open({
         multiple: false,
-        filters: [{ name: ZH.imageTag, extensions: ["png", "jpg", "jpeg", "webp", "bmp"] }],
+        filters: [{ name: "图片", extensions: ["png", "jpg", "jpeg", "webp", "bmp"] }],
       });
-
       if (selected && typeof selected === "string") {
         setImagePath(selected);
       }
     } catch (error) {
-      console.error(`${ZH.openImageFailed}:`, error);
-      setStatusText(`${ZH.openImageFailed}: ${String(error)}`);
+      onStatus(`选择图片失败：${String(error)}`, "error", true);
     }
   };
 
-  const handleTextSelection = () => {
+  const handleScopedTextSelection = () => {
     const selection = window.getSelection();
     if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
       setSelectionMenu(null);
@@ -331,13 +229,12 @@ export const ChatInterface: React.FC<{ currentModel?: string; activeFilePath?: s
 
   const closeSelectionMenu = () => {
     setSelectionMenu(null);
-    const selection = window.getSelection();
-    selection?.removeAllRanges();
+    window.getSelection()?.removeAllRanges();
   };
 
   const handleExplainSelection = () => {
     if (!selectionMenu) return;
-    const prompt = `\u8bf7\u89e3\u91ca\u4e0b\u5217\u5185\u5bb9\uff1a\n${selectionMenu.text}`;
+    const prompt = `请用中文解释下面这个概念，并结合我的研究语境说明它可能表示什么：\n${selectionMenu.text}`;
     setInputValue((previous) => (previous.trim() ? `${previous}\n\n${prompt}` : prompt));
     closeSelectionMenu();
   };
@@ -348,38 +245,41 @@ export const ChatInterface: React.FC<{ currentModel?: string; activeFilePath?: s
     closeSelectionMenu();
 
     try {
-      const docs = await invoke<Document[]>("query_knowledge_base", { query });
+      const docs = await invoke<DocumentResult[]>("query_knowledge_base", { query });
       const summary =
         docs.length === 0
-          ? ZH.retrievalEmpty
+          ? "未检索到更多相关内容。"
           : docs
               .map((doc, index) => {
-                const snippet = doc.content.replace(/\s+/g, " ").slice(0, 180);
-                return `${index + 1}. ${getFileName(doc.path)}\n${snippet}${doc.content.length > 180 ? "..." : ""}`;
+                const snippet = buildDocSnippet(doc.content, 180);
+                return `${index + 1}. ${getFileName(doc.path)}\n${snippet}`;
               })
               .join("\n\n");
 
-      const retrievalMessage: Message = {
-        id: `${Date.now()}-retrieval`,
-        role: "ai",
-        content: `### ${ZH.retrievalTitle}\n\n${summary}`,
-        timestamp: Date.now(),
-      };
-      setMessages((previous) => [...previous, retrievalMessage]);
+      setMessages((previous) => [
+        ...previous,
+        {
+          id: `${Date.now()}-retrieval`,
+          role: "ai",
+          content: `### 扩展检索结果\n\n${summary}`,
+          timestamp: Date.now(),
+        },
+      ]);
     } catch (error) {
-      console.error("Retrieval failed:", error);
-      setStatusText(`${ZH.retrievalFailed}: ${String(error)}`);
+      onStatus(`扩展检索失败：${String(error)}`, "error", true);
     }
   };
 
   const handleAddNoteFromSelection = () => {
     if (!selectionMenu) return;
-    const note: NoteItem = {
-      id: `${Date.now()}-note`,
-      text: selectionMenu.text,
-      createdAt: Date.now(),
-    };
-    setNotes((previous) => [note, ...previous]);
+    setNotes((previous) => [
+      {
+        id: `${Date.now()}-note`,
+        text: selectionMenu.text,
+        createdAt: Date.now(),
+      },
+      ...previous,
+    ]);
     closeSelectionMenu();
   };
 
@@ -389,49 +289,83 @@ export const ChatInterface: React.FC<{ currentModel?: string; activeFilePath?: s
     closeSelectionMenu();
   };
 
-  const handleAddCitationFromPdf = () => {
-    if (!activePdfPath) return;
+  const handleAddCitation = () => {
+    if (!activePdfPath || !citationDraft.trim()) return;
     const snippet = citationDraft.trim();
-    if (!snippet) return;
-
-    const citation: CitationItem = {
+    const nextCitation: CitationItem = {
       id: `${Date.now()}-citation`,
       path: activePdfPath,
       page: Math.max(1, pdfPage),
       snippet,
       createdAt: Date.now(),
     };
-
-    setCitations((previous) => [citation, ...previous]);
-
-    const citationLine = `[\u5f15\u7528:${getFileName(activePdfPath)} p.${citation.page}] ${citation.snippet}`;
-    setInputValue((previous) => (previous.trim() ? `${previous}\n${citationLine}` : citationLine));
+    setCitations((previous) => [nextCitation, ...previous]);
+    setInputValue((previous) => {
+      const citationLine = `[引用:${getFileName(activePdfPath)} p.${nextCitation.page}] ${snippet}`;
+      return previous.trim() ? `${previous}\n${citationLine}` : citationLine;
+    });
     setCitationDraft("");
+  };
+
+  const handleKnowledgeSearch = useCallback(
+    async (overrideQuery?: string) => {
+      const query = (overrideQuery ?? knowledgeQuery).trim();
+      if (!query) {
+        setKnowledgeResults([]);
+        setLastKnowledgeQuery("");
+        return;
+      }
+
+      setIsKnowledgeSearching(true);
+      setLastKnowledgeQuery(query);
+      try {
+        const docs = await invoke<DocumentResult[]>("query_knowledge_base", { query });
+        setKnowledgeResults(docs);
+      } catch (error) {
+        onStatus(`知识库搜索失败：${String(error)}`, "error", true);
+      } finally {
+        setIsKnowledgeSearching(false);
+      }
+    },
+    [knowledgeQuery, onStatus],
+  );
+
+  const handleKnowledgeSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.nativeEvent.isComposing) return;
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void handleKnowledgeSearch();
+    }
+  };
+
+  const handleInsertKnowledgeResult = (doc: DocumentResult) => {
+    const line = `[知识库:${getFileName(doc.path)}] ${buildDocSnippet(doc.content, 180)}`;
+    setInputValue((previous) => (previous.trim() ? `${previous}\n${line}` : line));
   };
 
   const handleSendMessage = async () => {
     const question = inputValue.trim();
     if (!question) return;
 
-    const userMessage: Message = {
-      id: `${Date.now()}-user`,
-      role: "user",
-      content: imagePath ? `${question}\n\n[${ZH.imageTag}: ${getFileName(imagePath)}]` : question,
-      timestamp: Date.now(),
-    };
-
-    setMessages((previous) => [...previous, userMessage]);
+    setMessages((previous) => [
+      ...previous,
+      {
+        id: `${Date.now()}-user`,
+        role: "user",
+        content: imagePath ? `${question}\n\n[图片: ${getFileName(imagePath)}]` : question,
+        timestamp: Date.now(),
+      },
+    ]);
     setInputValue("");
     setIsLoading(true);
-    setStatusText(null);
 
     try {
       let context = "";
       try {
-        const docs = await invoke<Document[]>("query_knowledge_base", { query: question });
+        const docs = await invoke<DocumentResult[]>("query_knowledge_base", { query: question });
         context = docs.map((doc) => doc.content).join("\n\n");
-      } catch (error) {
-        console.error("Search failed:", error);
+      } catch {
+        context = "";
       }
 
       const response = await invoke<string>("chat_with_llm", {
@@ -441,24 +375,26 @@ export const ChatInterface: React.FC<{ currentModel?: string; activeFilePath?: s
         image_path: imagePath,
       });
 
-      const aiResponse: Message = {
-        id: `${Date.now()}-ai`,
-        role: "ai",
-        content: response,
-        timestamp: Date.now(),
-      };
-
-      setMessages((previous) => [...previous, aiResponse]);
+      setMessages((previous) => [
+        ...previous,
+        {
+          id: `${Date.now()}-ai`,
+          role: "ai",
+          content: response,
+          timestamp: Date.now(),
+        },
+      ]);
       setImagePath(null);
     } catch (error) {
-      console.error("Chat failed:", error);
-      const aiError: Message = {
-        id: `${Date.now()}-error`,
-        role: "ai",
-        content: `${ZH.askFailed}：${error instanceof Error ? error.message : String(error)}\n\n${ZH.askFailedHint}`,
-        timestamp: Date.now(),
-      };
-      setMessages((previous) => [...previous, aiError]);
+      setMessages((previous) => [
+        ...previous,
+        {
+          id: `${Date.now()}-error`,
+          role: "ai",
+          content: `回答失败：${String(error)}\n\n请确认 Ollama 已启动，并且模型可用。`,
+          timestamp: Date.now(),
+        },
+      ]);
     } finally {
       setIsLoading(false);
     }
@@ -466,28 +402,23 @@ export const ChatInterface: React.FC<{ currentModel?: string; activeFilePath?: s
 
   const handleSaveSession = () => {
     persistSession();
-    setStatusText(ZH.sessionSaved);
+    onStatus("已保存当前会话。", "info", false);
   };
 
   const handleRestoreSession = () => {
-    const stored = readSessionFromStorage();
+    const stored = readSession();
     if (!stored) {
-      setStatusText(ZH.sessionMissing);
+      onStatus("没有可恢复的会话。", "error", true);
       return;
     }
-
-    try {
-      setMessages(stored.messages.length > 0 ? stored.messages : DEFAULT_MESSAGES);
-      setInputValue(stored.inputValue || "");
-      setImagePath(stored.imagePath || null);
-      setPdfPage(stored.pdfPage && stored.pdfPage > 0 ? stored.pdfPage : 1);
-      setCitationDraft(stored.citationDraft || "");
-      setCitations(Array.isArray(stored.citations) ? stored.citations : []);
-      setNotes(Array.isArray(stored.notes) ? stored.notes : []);
-      setStatusText(ZH.sessionRestored);
-    } catch {
-      setStatusText(ZH.sessionRestoreFailed);
-    }
+    setMessages(stored.messages?.length ? stored.messages : DEFAULT_MESSAGES);
+    setInputValue(stored.inputValue || "");
+    setImagePath(stored.imagePath || null);
+    setPdfPage(stored.pdfPage && stored.pdfPage > 0 ? stored.pdfPage : 1);
+    setCitationDraft(stored.citationDraft || "");
+    setCitations(Array.isArray(stored.citations) ? stored.citations : []);
+    setNotes(Array.isArray(stored.notes) ? stored.notes : []);
+    onStatus("已恢复会话。", "info", false);
   };
 
   const handleClearSession = () => {
@@ -498,47 +429,43 @@ export const ChatInterface: React.FC<{ currentModel?: string; activeFilePath?: s
     setCitationDraft("");
     setCitations([]);
     setNotes([]);
-    setStatusText(ZH.sessionCleared);
+    localStorage.removeItem(SESSION_KEY);
+    onStatus("已清空当前会话。", "info", false);
   };
 
   const buildMarkdownDraft = useCallback(() => {
-    const now = new Date();
-    const header = [
-      "# \u7efc\u8ff0\u8349\u7a3f",
-      "",
-      `\u751f\u6210\u65f6\u95f4\uff1a${now.toLocaleString()}`,
-      currentModel ? `\u6a21\u578b\uff1a${currentModel}` : "\u6a21\u578b\uff1a\u672a\u8bbe\u7f6e",
-      "",
-      "## \u5bf9\u8bdd\u7eaa\u8981",
-      "",
-    ];
-
+    const generatedAt = new Date().toLocaleString();
     const dialogue = messages.map((message, index) => {
-      const role = message.role === "user" ? "\u7528\u6237" : "AI";
+      const role = message.role === "user" ? "用户" : "AI";
       return `### ${index + 1}. ${role}\n\n${message.content}`;
     });
 
-    const citationSection = [
-      "",
-      "## \u5f15\u7528\u6e05\u5355",
-      "",
-      ...(citations.length === 0
-        ? ["- \u65e0"]
-        : citations.map(
-            (citation, index) =>
-              `- [${index + 1}] ${getFileName(citation.path)} p.${citation.page}\\n  ${citation.snippet}`,
-          )),
-    ];
+    const citationSection = citations.length
+      ? citations.map((citation, index) => `- [${index + 1}] ${getFileName(citation.path)} p.${citation.page}\n  ${citation.snippet}`)
+      : ["- 无"];
 
-    const noteSection = [
-      "",
-      "## \u7814\u7a76\u7b14\u8bb0",
-      "",
-      ...(notes.length === 0 ? ["- \u65e0"] : notes.map((note, index) => `- [${index + 1}] ${note.text}`)),
-    ];
+    const noteSection = notes.length ? notes.map((note, index) => `- [${index + 1}] ${note.text}`) : ["- 无"];
 
-    return [...header, ...dialogue, ...citationSection, ...noteSection].join("\n");
-  }, [messages, citations, notes, currentModel]);
+    return [
+      "# 综述草稿",
+      "",
+      `生成时间：${generatedAt}`,
+      `模型：${currentModel || "未设置"}`,
+      "",
+      "## 对话纪要",
+      "",
+      ...dialogue,
+      "",
+      "## 引用清单",
+      "",
+      ...citationSection,
+      "",
+      "## 研究笔记",
+      "",
+      ...noteSection,
+      "",
+    ].join("\n");
+  }, [citations, currentModel, messages, notes]);
 
   const handleExportMarkdown = async () => {
     try {
@@ -547,29 +474,15 @@ export const ChatInterface: React.FC<{ currentModel?: string; activeFilePath?: s
         defaultPath: `review-draft-${dateTag}.md`,
         filters: [{ name: "Markdown", extensions: ["md"] }],
       });
-
-      if (!destination || typeof destination !== "string") {
-        return;
-      }
-
-      const content = buildMarkdownDraft();
-      await invoke("write_text_file", { path: destination, content });
-      setStatusText(`${ZH.exportSuccess} ${destination}`);
+      if (!destination || typeof destination !== "string") return;
+      await invoke("write_text_file", { path: destination, content: buildMarkdownDraft() });
+      onStatus(`Markdown 已导出到：${destination}`, "info", false);
     } catch (error) {
-      console.error("Export failed:", error);
-      setStatusText(`${ZH.exportFailed}${String(error)}`);
+      onStatus(`导出 Markdown 失败：${String(error)}`, "error", true);
     }
   };
 
-  const handleInsertNoteToInput = (note: NoteItem) => {
-    setInputValue((previous) => (previous.trim() ? `${previous}\n${note.text}` : note.text));
-  };
-
-  const handleRemoveNote = (noteId: string) => {
-    setNotes((previous) => previous.filter((note) => note.id !== noteId));
-  };
-
-  const handleKeyDown = (event: React.KeyboardEvent) => {
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.nativeEvent.isComposing) return;
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
@@ -577,283 +490,223 @@ export const ChatInterface: React.FC<{ currentModel?: string; activeFilePath?: s
     }
   };
 
-  const toolButtonStyle: React.CSSProperties = {
-    border: "1px solid var(--border-color)",
-    background: "var(--bg-primary)",
-    borderRadius: 6,
-    padding: "4px 8px",
-    fontSize: "0.75rem",
-    cursor: "pointer",
-    whiteSpace: "nowrap",
+  const handleInsertNote = (note: NoteItem) => {
+    setInputValue((previous) => (previous.trim() ? `${previous}\n${note.text}` : note.text));
   };
 
+  const handleDeleteNote = (noteId: string) => {
+    setNotes((previous) => previous.filter((note) => note.id !== noteId));
+  };
+
+  const activeFileLabel = useMemo(() => (activeFilePath ? getFileName(activeFilePath) : "未选中文件"), [activeFilePath]);
+
   return (
-    <div className="chat-container" onMouseUp={handleTextSelection}>
-      <div className="chat-header" style={{ justifyContent: "space-between", alignItems: "center" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span>{ZH.assistantTitle}</span>
-          <span style={{ fontSize: "0.8em", color: "#6c757d", fontWeight: "normal" }}>v0.1.0</span>
+    <div className={`chat-container ${isReaderFocused ? "pdf-focus-mode" : ""}`}>
+      <div className="chat-header">
+        <div>
+          <div className="main-view-title">科研助手</div>
+          <div className="main-view-subtitle">当前文件：{activeFileLabel}</div>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
-          <button onClick={handleSaveSession} style={toolButtonStyle}>
-            {ZH.toolbarSave}
+        <div className="chat-toolbar">
+          {activePdfPath && (
+            <button style={TOOL_BUTTON_STYLE} onClick={() => setIsReaderFocused((previous) => !previous)}>
+              {isReaderFocused ? (
+                <>
+                  <Minimize2 size={14} />
+                  退出专注阅读
+                </>
+              ) : (
+                <>
+                  <Maximize2 size={14} />
+                  放大阅读区
+                </>
+              )}
+            </button>
+          )}
+          <button style={TOOL_BUTTON_STYLE} onClick={handleSaveSession}>
+            保存会话
           </button>
-          <button onClick={handleRestoreSession} style={toolButtonStyle}>
-            {ZH.toolbarRestore}
+          <button style={TOOL_BUTTON_STYLE} onClick={handleRestoreSession}>
+            恢复会话
           </button>
-          <button onClick={handleClearSession} style={toolButtonStyle}>
-            {ZH.toolbarClear}
+          <button style={TOOL_BUTTON_STYLE} onClick={handleClearSession}>
+            清空会话
           </button>
-          <button onClick={handleExportMarkdown} style={toolButtonStyle}>
-            {ZH.toolbarExport}
+          <button style={TOOL_BUTTON_STYLE} onClick={() => void handleExportMarkdown()}>
+            导出 Markdown
           </button>
         </div>
       </div>
 
       {activePdfPath && (
-        <div
-          style={{
-            borderBottom: "1px solid var(--border-color)",
-            padding: "10px 12px",
-            background: "var(--bg-secondary)",
-            display: "flex",
-            flexDirection: "column",
-            gap: 8,
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-            <div style={{ fontSize: "0.85rem", color: "var(--text-secondary)", fontWeight: 600 }}>
-              {ZH.pdfTitle}: {getFileName(activePdfPath)}
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <button style={toolButtonStyle} onClick={() => setPdfPage((value) => Math.max(1, value - 1))}>
-                {ZH.pdfPrev}
-              </button>
-              <span style={{ fontSize: "0.8rem", color: "var(--text-secondary)" }}>{ZH.pdfPage}</span>
-              <input
-                type="number"
-                min={1}
-                value={pdfPage}
-                onChange={(event) => setPdfPage(Math.max(1, Number(event.target.value) || 1))}
-                style={{ width: 70, padding: "4px 6px", borderRadius: 4, border: "1px solid var(--border-color)" }}
-              />
-              <button style={toolButtonStyle} onClick={() => setPdfPage((value) => value + 1)}>
-                {ZH.pdfNext}
-              </button>
-            </div>
-          </div>
-
-          <div style={{ height: 260, border: "1px solid var(--border-color)", borderRadius: 6, overflow: "hidden", background: "#fff" }}>
-            {isPdfLoading && (
-              <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-secondary)" }}>
-                {ZH.pdfLoading}
-              </div>
-            )}
-            {!isPdfLoading && pdfViewerSrc && (
-              <iframe title={ZH.pdfTitle} src={pdfViewerSrc} style={{ width: "100%", height: "100%", border: "none" }} />
-            )}
-            {!isPdfLoading && !pdfViewerSrc && (
-              <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-secondary)" }}>
-                {ZH.pdfNoFile}
-              </div>
-            )}
-          </div>
-
-          <div
-            style={{
-              border: "1px solid var(--border-color)",
-              borderRadius: 6,
-              padding: "8px 10px",
-              background: "var(--bg-primary)",
-              maxHeight: 150,
-              overflowY: "auto",
-              fontSize: "0.82rem",
-              lineHeight: 1.5,
-              whiteSpace: "pre-wrap",
-              userSelect: "text",
-            }}
-          >
-            <div style={{ fontWeight: 600, marginBottom: 4, color: "var(--text-secondary)" }}>{ZH.pdfPageText}</div>
-            {isPdfPageTextLoading ? ZH.pdfPageTextLoading : pdfPageText || ZH.pdfPageTextEmpty}
-          </div>
-
-          <div style={{ display: "flex", gap: 8 }}>
+        <div className={`pdf-workspace ${isReaderFocused ? "focus-mode" : ""}`}>
+          <PdfReader
+            activePdfPath={activePdfPath}
+            currentModel={currentModel || "qwen2.5:0.5b"}
+            lookupMode={lookupMode}
+            onLookupModeChange={setLookupMode}
+            onStatus={onStatus}
+            onSaveCardSuccess={onCardSaved}
+            onPageChange={setPdfPage}
+          />
+          <div className="citation-bar">
             <textarea
               value={citationDraft}
               onChange={(event) => setCitationDraft(event.target.value)}
-              placeholder={ZH.pdfSnippetPlaceholder}
+              placeholder="如果要保留原文引用，可把当前选中的 PDF 片段粘贴到这里，再加入会话输入框。"
               rows={2}
-              style={{
-                flex: 1,
-                padding: "6px 8px",
-                borderRadius: 6,
-                border: "1px solid var(--border-color)",
-                fontSize: "0.85rem",
-              }}
             />
-            <button
-              style={{ ...toolButtonStyle, minWidth: 160 }}
-              onClick={handleAddCitationFromPdf}
-              disabled={!citationDraft.trim()}
-            >
-              {ZH.addCitation}
+            <button className="action-button primary" onClick={handleAddCitation} disabled={!citationDraft.trim()}>
+              加入引用
             </button>
           </div>
         </div>
       )}
 
-      <div className="messages-list">
+      <div className="messages-list" onMouseUp={handleScopedTextSelection}>
         {messages.map((message) => (
           <div key={message.id} className={`message ${message.role}`}>
-            {message.role === "ai" ? (
-              <MarkdownRenderer content={message.content} />
-            ) : (
-              <div style={{ whiteSpace: "pre-wrap" }}>{message.content}</div>
-            )}
+            {message.role === "ai" ? <MarkdownRenderer content={message.content} /> : <div style={{ whiteSpace: "pre-wrap" }}>{message.content}</div>}
           </div>
         ))}
-
         {isLoading && (
           <div className="message ai">
-            <span style={{ color: "#6c757d", fontStyle: "italic" }}>{ZH.statusThinking}</span>
+            <span className="thinking-text">正在思考...</span>
           </div>
         )}
-
         <div ref={messagesEndRef} />
       </div>
 
       <div className="input-area">
-        {statusText && (
-          <div style={{ marginBottom: 8, fontSize: "0.8rem", color: "var(--text-secondary)", wordBreak: "break-all" }}>
-            {statusText}
-          </div>
-        )}
-
         {imagePath && (
-          <div
-            style={{
-              marginBottom: 8,
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-              background: "var(--bg-tertiary)",
-              borderRadius: 999,
-              padding: "4px 10px",
-              fontSize: "0.8rem",
-              color: "var(--text-secondary)",
-            }}
-          >
-            <span>
-              {ZH.imageTag}：{getFileName(imagePath)}
-            </span>
-            <button
-              onClick={() => setImagePath(null)}
-              style={{ border: "none", background: "transparent", cursor: "pointer", display: "flex", alignItems: "center", padding: 0 }}
-              title={ZH.removeImage}
-            >
+          <div className="image-chip">
+            <span>图片：{getFileName(imagePath)}</span>
+            <button className="ghost-icon-button" onClick={() => setImagePath(null)} title="移除图片">
               <X size={14} />
             </button>
           </div>
         )}
 
         <div className="chat-input-wrapper">
-          <button className="send-button" onClick={handlePickImage} disabled={isLoading} title={ZH.pickImage} style={{ marginRight: 4 }}>
+          <button className="send-button" onClick={() => void handlePickImage()} disabled={isLoading} title="添加图片">
             <ImagePlus size={18} />
           </button>
           <textarea
             className="chat-input"
-            placeholder={ZH.inputPlaceholder}
+            placeholder="输入消息，或先在 PDF 页面选词再点击解释。"
             value={inputValue}
             onChange={(event) => setInputValue(event.target.value)}
             onKeyDown={handleKeyDown}
             rows={1}
-            style={{ height: "auto", minHeight: "24px" }}
           />
           <button className="send-button" onClick={() => void handleSendMessage()} disabled={!inputValue.trim() || isLoading}>
             <Send size={18} />
           </button>
         </div>
 
-        <div
-          style={{
-            marginTop: 10,
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-            gap: 10,
-          }}
-        >
-          <div style={{ border: "1px solid var(--border-color)", borderRadius: 6, padding: 8 }}>
-            <div style={{ fontSize: "0.8rem", fontWeight: 600, marginBottom: 6 }}>{ZH.citationTitle}</div>
-            <div style={{ maxHeight: 110, overflowY: "auto", fontSize: "0.78rem", color: "var(--text-secondary)" }}>
-              {citations.length === 0 && <div>{ZH.noCitation}</div>}
-              {citations.slice(0, 6).map((citation) => (
-                <div key={citation.id} style={{ marginBottom: 8 }}>
-                  <div>
+        <div className="support-grid">
+          <section className="support-panel" onMouseUp={handleScopedTextSelection}>
+            <div className="support-panel-title">引用片段</div>
+            <div className="support-panel-body">
+              {citations.length === 0 && <div className="support-empty">暂无引用。</div>}
+              {citations.slice(0, 8).map((citation) => (
+                <div key={citation.id} className="support-item">
+                  <div className="support-item-title">
                     {getFileName(citation.path)} p.{citation.page}
                   </div>
-                  <div style={{ whiteSpace: "pre-wrap" }}>{citation.snippet}</div>
+                  <div className="support-item-text">{citation.snippet}</div>
                 </div>
               ))}
             </div>
-          </div>
+          </section>
 
-          <div style={{ border: "1px solid var(--border-color)", borderRadius: 6, padding: 8 }}>
-            <div style={{ fontSize: "0.8rem", fontWeight: 600, marginBottom: 6 }}>{ZH.noteTitle}</div>
-            <div style={{ maxHeight: 110, overflowY: "auto", fontSize: "0.78rem", color: "var(--text-secondary)" }}>
-              {notes.length === 0 && <div>{ZH.noNote}</div>}
+          <section className="support-panel" onMouseUp={handleScopedTextSelection}>
+            <div className="support-panel-title">笔记</div>
+            <div className="support-panel-body">
+              {notes.length === 0 && <div className="support-empty">暂无笔记。</div>}
               {notes.slice(0, 8).map((note) => (
-                <div key={note.id} style={{ marginBottom: 8 }}>
-                  <div style={{ whiteSpace: "pre-wrap", marginBottom: 4 }}>{note.text}</div>
-                  <div style={{ display: "flex", gap: 6 }}>
-                    <button style={toolButtonStyle} onClick={() => handleInsertNoteToInput(note)}>
-                      {ZH.insertToInput}
+                <div key={note.id} className="support-item">
+                  <div className="support-item-text">{note.text}</div>
+                  <div className="support-item-actions">
+                    <button style={TOOL_BUTTON_STYLE} onClick={() => handleInsertNote(note)}>
+                      插入输入框
                     </button>
-                    <button style={toolButtonStyle} onClick={() => handleRemoveNote(note.id)}>
-                      {ZH.delete}
+                    <button style={TOOL_BUTTON_STYLE} onClick={() => handleDeleteNote(note.id)}>
+                      删除
                     </button>
                   </div>
                 </div>
               ))}
             </div>
-          </div>
+          </section>
+
+          <section className="support-panel" onMouseUp={handleScopedTextSelection}>
+            <div className="support-panel-title">知识库搜索</div>
+            <div className="knowledge-search-row">
+              <input
+                className="knowledge-search-input"
+                value={knowledgeQuery}
+                onChange={(event) => setKnowledgeQuery(event.target.value)}
+                onKeyDown={handleKnowledgeSearchKeyDown}
+                placeholder="输入关键词检索已导入知识库，例如 LoRA、adapter、thyroid cancer"
+              />
+              <button
+                style={TOOL_BUTTON_STYLE}
+                onClick={() => void handleKnowledgeSearch()}
+                disabled={isKnowledgeSearching || !knowledgeQuery.trim()}
+              >
+                {isKnowledgeSearching ? "搜索中" : "搜索"}
+              </button>
+            </div>
+            <div className="support-panel-body">
+              {!lastKnowledgeQuery && !isKnowledgeSearching && <div className="support-empty">输入关键词后检索本地知识库摘要片段。</div>}
+              {lastKnowledgeQuery && !isKnowledgeSearching && knowledgeResults.length === 0 && (
+                <div className="support-empty">没有找到与“{lastKnowledgeQuery}”相关的知识库片段。</div>
+              )}
+              {knowledgeResults.map((doc, index) => (
+                <div key={doc.id} className="support-item">
+                  <div className="support-item-title">
+                    {index + 1}. {getFileName(doc.path)}
+                  </div>
+                  <div className="support-item-text">{buildDocSnippet(doc.content)}</div>
+                  <div className="support-item-actions">
+                    <button style={TOOL_BUTTON_STYLE} onClick={() => handleInsertKnowledgeResult(doc)}>
+                      插入输入框
+                    </button>
+                    <button style={TOOL_BUTTON_STYLE} onClick={() => void invoke("open_file", { path: doc.path })}>
+                      打开文件
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
         </div>
       </div>
 
       {selectionMenu && (
         <div
-          style={{
-            position: "fixed",
-            top: selectionMenu.y,
-            left: selectionMenu.x,
-            transform: "translate(-50%, -100%)",
-            zIndex: 12000,
-            background: "var(--bg-primary)",
-            border: "1px solid var(--border-color)",
-            borderRadius: 8,
-            boxShadow: "0 8px 20px rgba(0, 0, 0, 0.16)",
-            padding: 6,
-            display: "flex",
-            gap: 6,
-            maxWidth: "min(90vw, 420px)",
-          }}
+          ref={selectionMenuRef}
+          className="selection-menu"
+          style={{ left: selectionMenu.x, top: selectionMenu.y }}
           onMouseDown={(event) => event.preventDefault()}
         >
-          <button style={toolButtonStyle} onClick={handleExplainSelection}>
-            {ZH.selectionExplain}
+          <button style={TOOL_BUTTON_STYLE} onClick={handleExplainSelection}>
+            解释
           </button>
-          <button style={toolButtonStyle} onClick={() => void handleExpandRetrievalSelection()}>
-            {ZH.selectionSearch}
+          <button style={TOOL_BUTTON_STYLE} onClick={() => void handleExpandRetrievalSelection()}>
+            扩展检索
           </button>
-          <button style={toolButtonStyle} onClick={handleAddNoteFromSelection}>
-            {ZH.selectionNote}
+          <button style={TOOL_BUTTON_STYLE} onClick={handleAddNoteFromSelection}>
+            加入笔记
           </button>
           {activePdfPath && (
-            <button style={toolButtonStyle} onClick={handleUseSelectionAsCitation}>
-              {ZH.selectionToCitation}
+            <button style={TOOL_BUTTON_STYLE} onClick={handleUseSelectionAsCitation}>
+              设为引用
             </button>
           )}
-          <button style={toolButtonStyle} onClick={closeSelectionMenu}>
-            X
+          <button style={TOOL_BUTTON_STYLE} onClick={closeSelectionMenu}>
+            关闭
           </button>
         </div>
       )}

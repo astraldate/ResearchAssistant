@@ -8,7 +8,15 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use std::path::{Path, PathBuf};
 
 mod rag;
+mod cards;
+mod encyclopedia;
+mod text_decode;
+use cards::{
+    CardSettings, KnowledgeCardDetail, KnowledgeCardSummary, SaveKnowledgeCardRequest,
+};
+use encyclopedia::TermLookupMode;
 use rag::{Document, IngestMode, IngestProgress, RagState};
+use text_decode::{decode_command_output, decode_text_bytes, read_text_file_auto};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct FileNode {
@@ -50,6 +58,13 @@ pub struct HfResolveResult {
 pub struct WorkspaceImportResult {
     pub source_path: String,
     pub workspace_path: String,
+    pub ingest_path: String,
+    pub tree: FileNode,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct WorkspaceSnapshot {
+    pub workspace_path: String,
     pub tree: FileNode,
 }
 
@@ -65,6 +80,7 @@ pub struct ZoteroStorageCandidate {
 pub struct ZoteroImportResult {
     pub source_storage_path: String,
     pub workspace_path: String,
+    pub ingest_path: String,
     pub tree: FileNode,
     pub copied_pdfs: usize,
     pub skipped_existing: usize,
@@ -96,6 +112,31 @@ impl Default for InferenceMode {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct InferenceSettings {
     pub mode: InferenceMode,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ExplainPdfSelectionRequest {
+    pub term: String,
+    pub pdf_path: String,
+    pub page: u32,
+    pub model: String,
+    #[serde(default)]
+    pub mode: TermLookupMode,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ExplainPdfSelectionResult {
+    pub term: String,
+    pub plain_summary: String,
+    pub source_title: Option<String>,
+    pub source_url: Option<String>,
+    pub source_provider: Option<String>,
+    pub source_lang: Option<String>,
+    pub source_extract: Option<String>,
+    pub page_context_snippet: Option<String>,
+    pub source_status: String,
+    pub generated_at: String,
+    pub lookup_mode: TermLookupMode,
 }
 
 impl Default for InferenceSettings {
@@ -155,6 +196,15 @@ async fn scan_directory(path: String) -> Result<FileNode, String> {
         return Err("Path does not exist.".to_string());
     }
     Ok(build_tree(root_path))
+}
+
+#[tauri::command]
+async fn get_workspace_snapshot(app: AppHandle) -> Result<WorkspaceSnapshot, String> {
+    let workspace_root = workspace_root_dir(&app)?;
+    Ok(WorkspaceSnapshot {
+        workspace_path: workspace_root.to_string_lossy().to_string(),
+        tree: build_tree(&workspace_root),
+    })
 }
 
 use tauri::{AppHandle, Manager, RunEvent};
@@ -226,6 +276,74 @@ fn copy_directory_recursive(source_root: &Path, target_root: &Path) -> Result<()
         }
     }
     Ok(())
+}
+
+fn unique_destination_path(target_root: &Path, source_path: &Path) -> PathBuf {
+    let fallback_name = if source_path.is_dir() {
+        "imported_folder"
+    } else {
+        "imported_file"
+    };
+    let file_name = source_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(fallback_name);
+    let initial = target_root.join(file_name);
+    if !initial.exists() {
+        return initial;
+    }
+
+    let name_path = Path::new(file_name);
+    let stem = name_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(fallback_name);
+    let extension = name_path.extension().and_then(|s| s.to_str());
+
+    let mut index = 2usize;
+    loop {
+        let candidate_name = match extension {
+            Some(ext) if !ext.is_empty() => format!("{} ({})", stem, index) + "." + ext,
+            _ => format!("{} ({})", stem, index),
+        };
+        let candidate = target_root.join(candidate_name);
+        if !candidate.exists() {
+            return candidate;
+        }
+        index += 1;
+    }
+}
+
+fn copy_path_into_root(source_path: &Path, target_root: &Path) -> Result<(), String> {
+    let destination = unique_destination_path(target_root, source_path);
+    if source_path.is_dir() {
+        std::fs::create_dir_all(&destination).map_err(|e| e.to_string())?;
+        copy_directory_recursive(source_path, &destination)?;
+        return Ok(());
+    }
+
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::copy(source_path, &destination)
+        .map_err(|e| format!("Failed to copy '{}' -> '{}': {}", source_path.display(), destination.display(), e))?;
+    Ok(())
+}
+
+fn workspace_root_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    if !app_data_dir.exists() {
+        std::fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
+    }
+
+    let workspace_root = app_data_dir.join("workspace");
+    if !workspace_root.exists() {
+        std::fs::create_dir_all(&workspace_root).map_err(|e| e.to_string())?;
+    }
+
+    Ok(workspace_root)
 }
 
 fn decode_js_string(value: &str) -> String {
@@ -394,7 +512,7 @@ fn collect_zotero_data_dirs_from_profiles(profile_roots: &[PathBuf]) -> Vec<Path
                 continue;
             }
 
-            if let Ok(content) = std::fs::read_to_string(entry.path()) {
+            if let Ok(content) = read_text_file_auto(entry.path()) {
                 if let Some(data_dir) = extract_pref_string(&content, "extensions.zotero.dataDir") {
                     dirs.push(PathBuf::from(data_dir));
                 }
@@ -523,11 +641,15 @@ async fn detect_zotero_storage() -> Result<Vec<ZoteroStorageCandidate>, String> 
 
 #[tauri::command]
 async fn import_zotero_storage_to_workspace(
-    source_storage_path: String,
+    source_storage: Option<String>,
+    source_storage_path: Option<String>,
     mode: Option<IngestMode>,
     app: AppHandle,
 ) -> Result<ZoteroImportResult, String> {
-    let source_input = PathBuf::from(source_storage_path.trim());
+    let source_raw = source_storage_path
+        .or(source_storage)
+        .ok_or_else(|| "Missing Zotero source path argument.".to_string())?;
+    let source_input = PathBuf::from(source_raw.trim());
     if !source_input.exists() {
         return Err("Zotero path does not exist.".to_string());
     }
@@ -602,10 +724,11 @@ async fn import_zotero_storage_to_workspace(
         return Err("No PDF files found in Zotero storage.".to_string());
     }
 
-    let tree = build_tree(&target_root);
+    let tree = build_tree(&workspace_root);
     Ok(ZoteroImportResult {
         source_storage_path: storage_root.to_string_lossy().to_string(),
-        workspace_path: target_root.to_string_lossy().to_string(),
+        workspace_path: workspace_root.to_string_lossy().to_string(),
+        ingest_path: target_root.to_string_lossy().to_string(),
         tree,
         copied_pdfs,
         skipped_existing,
@@ -626,15 +749,7 @@ async fn import_directory_to_workspace(
         return Err("Selected path is not a folder.".to_string());
     }
 
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    if !app_data_dir.exists() {
-        std::fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
-    }
-
-    let workspace_root = app_data_dir.join("workspace");
-    if !workspace_root.exists() {
-        std::fs::create_dir_all(&workspace_root).map_err(|e| e.to_string())?;
-    }
+    let workspace_root = workspace_root_dir(&app)?;
 
     let folder_name = source_root
         .file_name()
@@ -664,10 +779,53 @@ async fn import_directory_to_workspace(
         }
     }
 
-    let tree = build_tree(&target_root);
+    let tree = build_tree(&workspace_root);
     Ok(WorkspaceImportResult {
         source_path: source_root.to_string_lossy().to_string(),
-        workspace_path: target_root.to_string_lossy().to_string(),
+        workspace_path: workspace_root.to_string_lossy().to_string(),
+        ingest_path: target_root.to_string_lossy().to_string(),
+        tree,
+    })
+}
+
+#[tauri::command]
+async fn import_paths_to_workspace(
+    source_paths: Vec<String>,
+    mode: Option<IngestMode>,
+    app: AppHandle,
+) -> Result<WorkspaceImportResult, String> {
+    if source_paths.is_empty() {
+        return Err("No files or folders selected.".to_string());
+    }
+
+    let workspace_root = workspace_root_dir(&app)?;
+
+    let target_root = workspace_root.join("selected_imports");
+    let selected_mode = mode.unwrap_or_default();
+    if selected_mode == IngestMode::Overwrite && target_root.exists() {
+        if target_root.is_dir() {
+            std::fs::remove_dir_all(&target_root).map_err(|e| e.to_string())?;
+        } else {
+            std::fs::remove_file(&target_root).map_err(|e| e.to_string())?;
+        }
+    }
+    if !target_root.exists() {
+        std::fs::create_dir_all(&target_root).map_err(|e| e.to_string())?;
+    }
+
+    for source_raw in &source_paths {
+        let source = PathBuf::from(source_raw.trim());
+        if !source.exists() {
+            return Err(format!("Selected path does not exist: {}", source.display()));
+        }
+        copy_path_into_root(&source, &target_root)?;
+    }
+
+    let tree = build_tree(&workspace_root);
+    Ok(WorkspaceImportResult {
+        source_path: source_paths.join("; "),
+        workspace_path: workspace_root.to_string_lossy().to_string(),
+        ingest_path: target_root.to_string_lossy().to_string(),
         tree,
     })
 }
@@ -712,13 +870,12 @@ async fn set_inference_mode(
     Ok(updated)
 }
 
-#[tauri::command]
-async fn reveal_in_explorer(path: String) -> Result<(), String> {
+fn reveal_path_in_explorer(path: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         use std::process::Command;
         Command::new("explorer")
-            .args(["/select,", &path])
+            .args(["/select,", path])
             .spawn()
             .map_err(|e| e.to_string())?;
     }
@@ -726,7 +883,7 @@ async fn reveal_in_explorer(path: String) -> Result<(), String> {
     {
         use std::process::Command;
         Command::new("open")
-            .args(["-R", &path])
+            .args(["-R", path])
             .spawn()
             .map_err(|e| e.to_string())?;
     }
@@ -735,7 +892,7 @@ async fn reveal_in_explorer(path: String) -> Result<(), String> {
          // Try dbus or xdg-open (xdg-open usually opens the file, not folder)
          // For now, just open the parent folder
          use std::process::Command;
-         if let Some(parent) = std::path::Path::new(&path).parent() {
+         if let Some(parent) = std::path::Path::new(path).parent() {
              Command::new("xdg-open")
                 .arg(parent)
                 .spawn()
@@ -746,12 +903,16 @@ async fn reveal_in_explorer(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn open_file(path: String) -> Result<(), String> {
+async fn reveal_in_explorer(path: String) -> Result<(), String> {
+    reveal_path_in_explorer(&path)
+}
+
+fn open_path_in_os(path: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         use std::process::Command;
         Command::new("cmd")
-            .args(["/C", "start", "", &path])
+            .args(["/C", "start", "", path])
             .spawn()
             .map_err(|e| e.to_string())?;
     }
@@ -759,7 +920,7 @@ async fn open_file(path: String) -> Result<(), String> {
     {
         use std::process::Command;
         Command::new("open")
-            .arg(&path)
+            .arg(path)
             .spawn()
             .map_err(|e| e.to_string())?;
     }
@@ -767,11 +928,16 @@ async fn open_file(path: String) -> Result<(), String> {
     {
         use std::process::Command;
         Command::new("xdg-open")
-            .arg(&path)
+            .arg(path)
             .spawn()
             .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+#[tauri::command]
+async fn open_file(path: String) -> Result<(), String> {
+    open_path_in_os(&path)
 }
 
 #[tauri::command]
@@ -785,57 +951,62 @@ async fn write_text_file(path: String, content: String) -> Result<(), String> {
     std::fs::write(&path, content).map_err(|e| e.to_string())
 }
 
-fn extract_text_from_pdf_operation(op: &lopdf::content::Operation) -> Option<String> {
-    if op.operator != "Tj" && op.operator != "TJ" {
-        return None;
+fn normalize_extracted_pdf_text(text: &str) -> String {
+    text.lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn extract_pdf_page_text_internal(path: &str, page: u32) -> Result<String, String> {
+    let doc = lopdf::Document::load(path).map_err(|e| e.to_string())?;
+    let pages = doc.get_pages();
+    if !pages.contains_key(&page) {
+        return Err(format!("Page {} not found.", page));
     }
 
-    let mut text = String::new();
-    for arg in &op.operands {
-        match arg {
-            lopdf::Object::String(bytes, _) => {
-                text.push_str(&String::from_utf8_lossy(bytes));
-            }
-            lopdf::Object::Array(arr) => {
-                for item in arr {
-                    if let lopdf::Object::String(bytes, _) = item {
-                        text.push_str(&String::from_utf8_lossy(bytes));
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    if text.trim().is_empty() {
-        None
-    } else {
-        Some(text)
-    }
+    let text = doc.extract_text(&[page]).map_err(|e| e.to_string())?;
+    Ok(normalize_extracted_pdf_text(&text))
 }
 
 #[tauri::command]
 async fn extract_pdf_page_text(path: String, page: u32) -> Result<String, String> {
-    let page_index = page.saturating_sub(1) as usize;
-    let doc = lopdf::Document::load(&path).map_err(|e| e.to_string())?;
-    let pages = doc.get_pages();
-    let page_id = pages
-        .iter()
-        .nth(page_index)
-        .map(|(_, id)| *id)
-        .ok_or_else(|| format!("Page {} not found.", page))?;
+    extract_pdf_page_text_internal(&path, page)
+}
 
-    let raw_content = doc.get_page_content(page_id).map_err(|e| e.to_string())?;
-    let content = lopdf::content::Content::decode(&raw_content).map_err(|e| e.to_string())?;
-    let mut text = String::new();
-    for operation in &content.operations {
-        if let Some(fragment) = extract_text_from_pdf_operation(operation) {
-            text.push_str(&fragment);
-            text.push(' ');
-        }
-    }
+#[tauri::command]
+async fn get_card_settings(app: AppHandle) -> Result<CardSettings, String> {
+    cards::get_card_settings(&app)
+}
 
-    Ok(text.trim().to_string())
+#[tauri::command]
+async fn set_card_root_path(path: Option<String>, app: AppHandle) -> Result<CardSettings, String> {
+    cards::set_card_root_path(&app, path)
+}
+
+#[tauri::command]
+async fn open_card_root_in_explorer(app: AppHandle) -> Result<(), String> {
+    let settings = cards::get_card_settings(&app)?;
+    open_path_in_os(&settings.active_root)
+}
+
+#[tauri::command]
+async fn list_knowledge_cards(app: AppHandle) -> Result<Vec<KnowledgeCardSummary>, String> {
+    cards::list_knowledge_cards(&app)
+}
+
+#[tauri::command]
+async fn read_knowledge_card(card_path: String) -> Result<KnowledgeCardDetail, String> {
+    cards::read_knowledge_card(card_path)
+}
+
+#[tauri::command]
+async fn save_knowledge_card_from_explanation(
+    request: SaveKnowledgeCardRequest,
+    app: AppHandle,
+) -> Result<KnowledgeCardSummary, String> {
+    cards::save_knowledge_card_from_explanation(&app, request)
 }
 
 #[tauri::command]
@@ -988,9 +1159,8 @@ async fn pull_model_from_modelscope(name: String, url: String, filename: String,
     let mut stream = res.bytes_stream();
     while let Some(item) = stream.next().await {
         if let Ok(bytes) = item {
-            if let Ok(_text) = String::from_utf8(bytes.to_vec()) {
-                // Parse JSON progress if needed, or just keep "Importing..."
-            }
+            let _text = decode_text_bytes(&bytes);
+            let _ = _text;
         }
     }
 
@@ -1126,13 +1296,11 @@ async fn pull_ollama_model(name: String, window: Window) -> Result<(), String> {
     while let Some(item) = stream.next().await {
         match item {
             Ok(bytes) => {
-                // Ollama can send multiple JSON objects in one chunk
-                if let Ok(text) = String::from_utf8(bytes.to_vec()) {
-                    for line in text.lines() {
-                        if !line.trim().is_empty() {
-                            if let Ok(progress) = serde_json::from_str::<PullProgress>(line) {
-                                let _ = window.emit("pull-progress", &progress);
-                            }
+                let text = decode_command_output(&bytes);
+                for line in text.lines() {
+                    if !line.trim().is_empty() {
+                        if let Ok(progress) = serde_json::from_str::<PullProgress>(line) {
+                            let _ = window.emit("pull-progress", &progress);
                         }
                     }
                 }
@@ -1155,40 +1323,30 @@ fn normalize_optional_path(value: Option<String>) -> Option<String> {
     })
 }
 
-async fn chat_via_ollama(
-    query: &str,
-    context: &str,
-    model: &str,
-    image_path: Option<&str>,
-) -> Result<String, String> {
+fn build_page_context_snippet(text: &str, term: &str) -> Option<String> {
+    let normalized = text.trim();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    let chars: Vec<char> = normalized.chars().collect();
+    if let Some(byte_index) = normalized.find(term) {
+        let start_chars = normalized[..byte_index].chars().count();
+        let term_chars = term.chars().count();
+        let begin = start_chars.saturating_sub(300);
+        let end = (start_chars + term_chars + 300).min(chars.len());
+        return Some(chars[begin..end].iter().collect::<String>());
+    }
+
+    let take = chars.len().min(800);
+    Some(chars[..take].iter().collect::<String>())
+}
+
+async fn run_ollama_chat(model: &str, messages: Vec<serde_json::Value>) -> Result<String, String> {
     let client = reqwest::Client::new();
-    let prompt = format!(
-        "Answer the question using the context below. If the answer is not in the context, say so.\n\nContext:\n{}\n\nQuestion:\n{}",
-        context, query
-    );
-
-    let user_message = if let Some(path) = image_path {
-        let image_bytes =
-            std::fs::read(path).map_err(|e| format!("Failed to read image '{}': {}", path, e))?;
-        let image_b64 = STANDARD.encode(image_bytes);
-        serde_json::json!({
-            "role": "user",
-            "content": prompt,
-            "images": [image_b64]
-        })
-    } else {
-        serde_json::json!({
-            "role": "user",
-            "content": prompt
-        })
-    };
-
     let body = serde_json::json!({
         "model": model,
-        "messages": [
-            { "role": "system", "content": "You are a helpful research assistant." },
-            user_message
-        ],
+        "messages": messages,
         "stream": false
     });
 
@@ -1210,6 +1368,265 @@ async fn chat_via_ollama(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .ok_or_else(|| "LLM response did not include content".to_string())
+}
+
+async fn chat_via_ollama(
+    query: &str,
+    context: &str,
+    model: &str,
+    image_path: Option<&str>,
+) -> Result<String, String> {
+    let prompt = format!(
+        "Answer the question using the context below. If the answer is not in the context, say so.\n\nContext:\n{}\n\nQuestion:\n{}",
+        context, query
+    );
+
+    let user_message = if let Some(path) = image_path {
+        let image_bytes =
+            std::fs::read(path).map_err(|e| format!("Failed to read image '{}': {}", path, e))?;
+        let image_b64 = STANDARD.encode(image_bytes);
+        serde_json::json!({
+            "role": "user",
+            "content": prompt,
+            "images": [image_b64]
+        })
+    } else {
+        serde_json::json!({
+            "role": "user",
+            "content": prompt
+        })
+    };
+
+    run_ollama_chat(
+        model,
+        vec![
+            serde_json::json!({
+                "role": "system",
+                "content": "You are a helpful research assistant."
+            }),
+            user_message,
+        ],
+    )
+    .await
+}
+
+async fn summarize_term_for_beginner(
+    term: &str,
+    page_context: Option<&str>,
+    reference_extract: Option<&str>,
+    model: &str,
+    treat_as_plain_english_word: bool,
+) -> Result<String, String> {
+    let context_block = page_context.unwrap_or("No page context was extracted from the PDF page.");
+    let reference_block = reference_extract.unwrap_or("No external reference extract was found.");
+    let generic_word_hint = if treat_as_plain_english_word {
+        "This term looks like a common English word rather than a named academic concept. Prioritize giving the direct Chinese meaning first, then briefly explain what it means in the current sentence. Do not force it into a research concept."
+    } else {
+        "If the term is clearly a technical concept in the paper, explain the concept first, then connect it to the current page context."
+    };
+    let user_prompt = format!(
+        "You are given a selected term from an academic PDF. The external encyclopedia extract may be unrelated because of homonyms, for example songs, movies, entertainers, or other pop-culture entries. If you judge that the encyclopedia extract is unrelated to academic, scientific, computer-science, or bioinformatics context, ignore it completely.\n\n{generic_word_hint}\n\nWrite the answer in Chinese only. Keep it short, plain, and useful for a beginner researcher. If the selected term is just a common English word such as different, make, or the, give the Chinese translation directly and briefly explain its role in the current sentence. Do not force a research interpretation. Do not use bullet points. Do not invent results that are not in the page context.\n\nSelected term:\n{term}\n\nExternal encyclopedia extract:\n{reference_block}\n\nPDF page context:\n{context_block}"
+    );
+
+    run_ollama_chat(
+        model,
+        vec![
+            serde_json::json!({
+                "role": "system",
+                "content": "You are a research reading assistant. Always answer in concise Chinese that a beginner can understand."
+            }),
+            serde_json::json!({
+                "role": "user",
+                "content": user_prompt
+            }),
+        ],
+    )
+    .await
+    .map(|text| text.trim().to_string())
+}
+
+fn is_plain_ascii_lowercase_word(term: &str) -> bool {
+    let normalized = term.trim();
+    !normalized.is_empty()
+        && normalized.len() <= 18
+        && normalized.bytes().all(|byte| byte.is_ascii_lowercase())
+}
+
+fn is_common_everyday_english_word(term: &str) -> bool {
+    let normalized = term.trim().to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "a"
+            | "an"
+            | "the"
+            | "and"
+            | "or"
+            | "but"
+            | "to"
+            | "of"
+            | "in"
+            | "on"
+            | "at"
+            | "for"
+            | "from"
+            | "with"
+            | "without"
+            | "by"
+            | "as"
+            | "into"
+            | "over"
+            | "under"
+            | "between"
+            | "among"
+            | "before"
+            | "after"
+            | "different"
+            | "same"
+            | "other"
+            | "another"
+            | "each"
+            | "every"
+            | "some"
+            | "many"
+            | "few"
+            | "more"
+            | "most"
+            | "less"
+            | "large"
+            | "small"
+            | "make"
+            | "made"
+            | "use"
+            | "used"
+            | "using"
+            | "show"
+            | "shown"
+            | "find"
+            | "found"
+            | "give"
+            | "given"
+            | "take"
+            | "taken"
+            | "good"
+            | "bad"
+            | "new"
+            | "old"
+            | "high"
+            | "low"
+    )
+}
+
+fn is_likely_entertainment_reference(reference: &encyclopedia::ReferenceEntry) -> bool {
+    let haystack = format!("{} {} {}", reference.title, reference.provider, reference.extract).to_lowercase();
+    [
+        "song",
+        "single",
+        "album",
+        "singer",
+        "band",
+        "music",
+        "movie",
+        "film",
+        "tv series",
+        "actor",
+        "actress",
+        "celebrity",
+        "歌曲",
+        "单曲",
+        "专辑",
+        "歌手",
+        "乐队",
+        "音乐",
+        "电影",
+        "电视剧",
+        "演员",
+        "娱乐人物",
+    ]
+    .iter()
+    .any(|keyword| haystack.contains(keyword))
+}
+
+fn should_ignore_reference_for_term(
+    term: &str,
+    reference: &encyclopedia::ReferenceEntry,
+) -> bool {
+    is_plain_ascii_lowercase_word(term) && is_likely_entertainment_reference(reference)
+}
+
+#[tauri::command]
+async fn explain_pdf_selection(request: ExplainPdfSelectionRequest) -> Result<ExplainPdfSelectionResult, String> {
+    let term = request.term.trim().to_string();
+    if term.is_empty() {
+        return Err("Term must not be empty.".to_string());
+    }
+
+    let page_text = extract_pdf_page_text_internal(&request.pdf_path, request.page)?;
+    let context_snippet = build_page_context_snippet(&page_text, &term);
+    let treat_as_plain_english_word = is_common_everyday_english_word(&term);
+    let mut reference = if treat_as_plain_english_word {
+        None
+    } else {
+        encyclopedia::lookup_term(&term, request.mode).await?
+    };
+    if let Some(entry) = reference.as_ref() {
+        if should_ignore_reference_for_term(&term, entry) {
+            println!(
+                "Ignored unrelated encyclopedia entry for term '{}': [{}] {}",
+                term, entry.provider, entry.title
+            );
+            reference = None;
+        }
+    }
+    let reference_extract = reference.as_ref().map(|entry| entry.extract.as_str());
+    let model_result = summarize_term_for_beginner(
+        &term,
+        context_snippet.as_deref(),
+        reference_extract,
+        &request.model,
+        treat_as_plain_english_word,
+    )
+    .await;
+
+    let (plain_summary, source_status) = match (model_result, reference.as_ref()) {
+        (Ok(summary), Some(_)) => {
+            if summary.trim().is_empty() {
+                (
+                    reference
+                        .as_ref()
+                        .map(|entry| entry.extract.clone())
+                        .unwrap_or_default(),
+                    "source_only".to_string(),
+                )
+            } else {
+                (summary, "source+model".to_string())
+            }
+        }
+        (Ok(summary), None) => {
+            if summary.trim().is_empty() {
+                return Err("Model returned an empty explanation.".to_string());
+            }
+            (summary, "model_only".to_string())
+        }
+        (Err(error), Some(entry)) => {
+            println!("Explanation model fallback used: {}", error);
+            (entry.extract.clone(), "source_only".to_string())
+        }
+        (Err(error), None) => return Err(error),
+    };
+
+    Ok(ExplainPdfSelectionResult {
+        term,
+        plain_summary,
+        source_title: reference.as_ref().map(|entry| entry.title.clone()),
+        source_url: reference.as_ref().map(|entry| entry.url.clone()),
+        source_provider: reference.as_ref().map(|entry| entry.provider.clone()),
+        source_lang: reference.as_ref().and_then(|entry| entry.language.clone()),
+        source_extract: reference.as_ref().map(|entry| entry.extract.clone()),
+        page_context_snippet: context_snippet,
+        source_status,
+        generated_at: cards::current_timestamp_iso_utc(),
+        lookup_mode: request.mode,
+    })
 }
 
 async fn route_chat_completion(
@@ -1299,7 +1716,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet, 
             scan_directory, 
+            get_workspace_snapshot,
             import_directory_to_workspace,
+            import_paths_to_workspace,
             import_zotero_storage_to_workspace,
             detect_zotero_storage,
             ingest_knowledge_base, 
@@ -1311,11 +1730,18 @@ pub fn run() {
             get_inference_settings,
             set_inference_mode,
             chat_with_llm,
+            explain_pdf_selection,
             reveal_in_explorer,
             open_file,
             read_file_base64,
             write_text_file,
             extract_pdf_page_text,
+            get_card_settings,
+            set_card_root_path,
+            open_card_root_in_explorer,
+            list_knowledge_cards,
+            read_knowledge_card,
+            save_knowledge_card_from_explanation,
             check_ollama_status,
             start_ollama
         ])

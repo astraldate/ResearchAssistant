@@ -1,11 +1,13 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
 use std::sync::Arc;
 use text_splitter::TextSplitter;
-use tokio::sync::{Mutex, mpsc::UnboundedSender};
+use tokio::sync::{mpsc::UnboundedSender, Mutex};
 use walkdir::WalkDir;
+
+use crate::text_decode::read_text_file_auto;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Document {
@@ -60,22 +62,15 @@ fn emit_progress(tx: &Option<UnboundedSender<IngestProgress>>, progress: IngestP
 
 fn read_pdf_text(path: &std::path::Path) -> std::io::Result<String> {
     let doc = lopdf::Document::load(path).map_err(|e| std::io::Error::other(e.to_string()))?;
-    let mut text = String::new();
+    let pages = doc.get_pages().keys().cloned().collect::<Vec<_>>();
+    let text = doc.extract_text(&pages).map_err(|e| std::io::Error::other(e.to_string()))?;
 
-    for (_, page_id) in doc.get_pages() {
-        if let Ok(content) = doc.get_page_content(page_id) {
-            if let Ok(content_obj) = lopdf::content::Content::decode(&content) {
-                for operation in &content_obj.operations {
-                    if let Some(s) = RagState::extract_text_from_operation(operation) {
-                        text.push_str(&s);
-                        text.push(' ');
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(text)
+    Ok(text
+        .lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n"))
 }
 
 impl RagState {
@@ -124,7 +119,7 @@ impl RagState {
             .as_array()
             .ok_or(anyhow!("No embedding found in response"))?
             .iter()
-            .map(|v| v.as_f64().unwrap_or(0.0) as f32)
+            .map(|value| value.as_f64().unwrap_or(0.0) as f32)
             .collect();
 
         Ok(embedding)
@@ -170,7 +165,7 @@ impl RagState {
         let path_owned = path.to_string();
         emit_progress(
             &progress_tx,
-            IngestProgress::new("scan", 0, 0, "正在扫描文件..."),
+            IngestProgress::new("scan", 0, 0, "正在扫描资料文件..."),
         );
 
         let raw_files: Vec<(String, String)> = tokio::task::spawn_blocking(move || {
@@ -178,27 +173,27 @@ impl RagState {
             let walker = WalkDir::new(path_owned).into_iter();
 
             for entry in walker.filter_map(|e| e.ok()) {
-                let p = entry.path();
-                if !p.is_file() {
+                let path = entry.path();
+                if !path.is_file() {
                     continue;
                 }
 
-                let ext = match p.extension().map(|s| s.to_string_lossy().to_lowercase()) {
-                    Some(e) => e,
+                let ext = match path.extension().map(|value| value.to_string_lossy().to_lowercase()) {
+                    Some(ext) => ext,
                     None => continue,
                 };
 
-                let content_res = match ext.as_str() {
-                    "md" | "txt" => fs::read_to_string(p),
-                    "pdf" => read_pdf_text(p),
+                let content_result = match ext.as_str() {
+                    "md" | "txt" => read_text_file_auto(path),
+                    "pdf" => read_pdf_text(path),
                     _ => continue,
                 };
 
-                if let Ok(content) = content_res {
+                if let Ok(content) = content_result {
                     if content.trim().is_empty() {
                         continue;
                     }
-                    files.push((p.to_string_lossy().to_string(), content));
+                    files.push((path.to_string_lossy().to_string(), content));
                 }
             }
 
@@ -212,18 +207,19 @@ impl RagState {
                 "scan",
                 raw_files.len(),
                 raw_files.len(),
-                format!("已扫描 {} 个可读文件", raw_files.len()),
+                format!("已扫描 {} 个可处理文件", raw_files.len()),
             ),
         );
 
         emit_progress(
             &progress_tx,
-            IngestProgress::new("chunk", 0, raw_files.len(), "正在切分文件内容..."),
+            IngestProgress::new("chunk", 0, raw_files.len(), "正在切分文档片段..."),
         );
+
         let splitter = TextSplitter::new(6000);
         let mut file_chunks: Vec<(String, Vec<String>)> = Vec::new();
         for (index, (file_path, content)) in raw_files.iter().enumerate() {
-            let chunks: Vec<String> = splitter.chunks(content).map(|s| s.to_string()).collect();
+            let chunks: Vec<String> = splitter.chunks(content).map(|chunk| chunk.to_string()).collect();
             if !chunks.is_empty() {
                 file_chunks.push((file_path.clone(), chunks));
             }
@@ -251,13 +247,13 @@ impl RagState {
         for (file_path, chunks) in file_chunks {
             let mut local_summaries = Vec::new();
 
-            for (i, chunk) in chunks.iter().enumerate() {
+            for (index, chunk) in chunks.iter().enumerate() {
                 if let Ok(summary) = Self::summarize(chunk, model_name).await {
                     local_summaries.push(summary.clone());
                     final_docs.push(Document {
-                        id: format!("{}-local-{}", file_path, i),
+                        id: format!("{}-local-{}", file_path, index),
                         path: file_path.clone(),
-                        content: format!("Local summary (chunk {}):\n{}", i + 1, summary),
+                        content: format!("Local summary (chunk {}):\n{}", index + 1, summary),
                         vector: Vec::new(),
                     });
                 }
@@ -269,14 +265,14 @@ impl RagState {
                         "summarize",
                         summarized,
                         total_chunks,
-                        format!("已摘要分块 {}/{}", summarized, total_chunks),
+                        format!("已生成摘要 {}/{}", summarized, total_chunks),
                     ),
                 );
             }
 
             if local_summaries.len() > 1 {
-                let combined_text = local_summaries.join("\n\n");
-                if let Ok(global_summary) = Self::summarize(&combined_text, model_name).await {
+                let combined = local_summaries.join("\n\n");
+                if let Ok(global_summary) = Self::summarize(&combined, model_name).await {
                     final_docs.push(Document {
                         id: format!("{}-global", file_path),
                         path: file_path.clone(),
@@ -290,12 +286,12 @@ impl RagState {
         let embed_total = final_docs.len();
         emit_progress(
             &progress_tx,
-            IngestProgress::new("embed", 0, embed_total, "正在生成向量..."),
+            IngestProgress::new("embed", 0, embed_total, "正在计算向量..."),
         );
 
         for (index, doc) in final_docs.iter_mut().enumerate() {
-            if let Ok(vec) = Self::get_embedding(&doc.content).await {
-                doc.vector = vec;
+            if let Ok(vector) = Self::get_embedding(&doc.content).await {
+                doc.vector = vector;
             }
 
             emit_progress(
@@ -304,12 +300,12 @@ impl RagState {
                     "embed",
                     index + 1,
                     embed_total,
-                    format!("已向量化文档 {}/{}", index + 1, embed_total),
+                    format!("已完成向量计算 {}/{}", index + 1, embed_total),
                 ),
             );
         }
 
-        final_docs.retain(|d| !d.vector.is_empty());
+        final_docs.retain(|doc| !doc.vector.is_empty());
 
         let mut store = self.documents.lock().await;
         let mut added = 0usize;
@@ -320,7 +316,7 @@ impl RagState {
                 store.extend(final_docs);
             }
             IngestMode::Incremental => {
-                let mut existing: HashSet<String> = store.iter().map(|d| d.id.clone()).collect();
+                let mut existing: HashSet<String> = store.iter().map(|doc| doc.id.clone()).collect();
                 for doc in final_docs {
                     if existing.insert(doc.id.clone()) {
                         store.push(doc);
@@ -336,7 +332,7 @@ impl RagState {
                 "finalize",
                 store.len(),
                 store.len(),
-                format!("导入完成。本次新增 {} 条，总计 {} 条", added, store.len()),
+                format!("索引完成，本次新增 {} 条，总计 {} 条", added, store.len()),
             ),
         );
 
@@ -361,33 +357,6 @@ impl RagState {
             .take(limit)
             .map(|(_, doc)| doc.clone())
             .collect())
-    }
-
-    fn extract_text_from_operation(op: &lopdf::content::Operation) -> Option<String> {
-        if op.operator == "Tj" || op.operator == "TJ" {
-            let mut text = String::new();
-            for operand in &op.operands {
-                match operand {
-                    lopdf::Object::String(bytes, _) => {
-                        text.push_str(&String::from_utf8_lossy(bytes));
-                    }
-                    lopdf::Object::Array(arr) => {
-                        for item in arr {
-                            if let lopdf::Object::String(bytes, _) = item {
-                                text.push_str(&String::from_utf8_lossy(bytes));
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            return Some(text);
-        }
-
-        if op.operator == "ET" || op.operator == "TX" {
-            return Some("\n".to_string());
-        }
-        None
     }
 }
 

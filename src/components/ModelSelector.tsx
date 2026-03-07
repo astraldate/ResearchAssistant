@@ -67,7 +67,7 @@ const RECOMMENDED_MODELS: RecommendedModel[] = [
   {
     name: "qwen3:8b",
     category: "general",
-    summary: "Qwen 3 series, balanced Chinese/English and reasoning performance.",
+    summary: "Qwen 3 系列，中文能力、通用问答和推理能力比较均衡。",
     approxSize: "~5GB",
     sourceUrl: "https://ollama.com/library/qwen3",
     checkedAt: "2026-03-05",
@@ -75,7 +75,7 @@ const RECOMMENDED_MODELS: RecommendedModel[] = [
   {
     name: "gemma3:4b",
     category: "general",
-    summary: "Gemma 3 multimodal small model for lightweight local usage.",
+    summary: "Gemma 3 小体量多模态模型，适合轻量本地部署。",
     approxSize: "~3.3GB",
     sourceUrl: "https://www.ollama.com/library/gemma3",
     checkedAt: "2026-03-05",
@@ -83,7 +83,7 @@ const RECOMMENDED_MODELS: RecommendedModel[] = [
   {
     name: "deepseek-r1",
     category: "reasoning",
-    summary: "Reasoning-focused model for math, logic and code tasks.",
+    summary: "偏推理强化，适合数学、逻辑和复杂分析任务。",
     approxSize: "~5GB (default distilled variant)",
     sourceUrl: "https://ollama.com/library/deepseek-r1",
     checkedAt: "2026-03-05",
@@ -91,7 +91,7 @@ const RECOMMENDED_MODELS: RecommendedModel[] = [
   {
     name: "llama3.3",
     category: "general",
-    summary: "Large instruction model for multilingual dialogue and writing.",
+    summary: "大参数通用模型，适合多语言写作和长对话。",
     approxSize: "~43GB",
     sourceUrl: "https://ollama.com/library/llama3.3",
     checkedAt: "2026-03-05",
@@ -99,7 +99,7 @@ const RECOMMENDED_MODELS: RecommendedModel[] = [
   {
     name: "qwen3-coder:30b",
     category: "coding",
-    summary: "Long-context coding model for repository-level code tasks.",
+    summary: "长上下文代码模型，适合仓库级代码理解和生成。",
     approxSize: "~19GB",
     sourceUrl: "https://ollama.com/library/qwen3-coder",
     checkedAt: "2026-03-05",
@@ -107,7 +107,7 @@ const RECOMMENDED_MODELS: RecommendedModel[] = [
   {
     name: "qwen2.5-coder:7b",
     category: "coding",
-    summary: "Balanced coding model with better local speed/quality tradeoff.",
+    summary: "速度和效果更平衡的代码模型，适合本地开发辅助。",
     approxSize: "~4.7GB",
     sourceUrl: "https://ollama.com/library/qwen2.5-coder",
     checkedAt: "2026-03-05",
@@ -115,7 +115,7 @@ const RECOMMENDED_MODELS: RecommendedModel[] = [
   {
     name: "qwen2.5vl:7b",
     category: "vision",
-    summary: "Vision-language model for image understanding and extraction.",
+    summary: "视觉语言模型，适合图片理解、表格和图文问答。",
     approxSize: "~6GB",
     sourceUrl: "https://ollama.com/library/qwen2.5vl",
     checkedAt: "2026-03-05",
@@ -123,7 +123,7 @@ const RECOMMENDED_MODELS: RecommendedModel[] = [
   {
     name: "mistral-small3.1",
     category: "vision",
-    summary: "Vision-capable model with 128K context support.",
+    summary: "支持视觉能力和长上下文，适合复杂文档理解。",
     approxSize: "~15GB",
     sourceUrl: "https://ollama.com/library/mistral-small3.1",
     checkedAt: "2026-03-05",
@@ -131,7 +131,7 @@ const RECOMMENDED_MODELS: RecommendedModel[] = [
   {
     name: "minicpm-v",
     category: "vision",
-    summary: "Lightweight vision model, often used for OCR-related workflows.",
+    summary: "轻量视觉模型，常用于 OCR 和图像理解流程。",
     approxSize: "~8GB",
     sourceUrl: "https://ollama.com/library/minicpm-v",
     checkedAt: "2026-03-05",
@@ -139,7 +139,7 @@ const RECOMMENDED_MODELS: RecommendedModel[] = [
   {
     name: "nomic-embed-text",
     category: "embedding",
-    summary: "Embedding model suitable for local RAG indexing.",
+    summary: "适合本地 RAG 建库和检索的向量模型。",
     approxSize: "~274MB",
     sourceUrl: "https://ollama.com/library/nomic-embed-text",
     checkedAt: "2026-03-05",
@@ -147,7 +147,7 @@ const RECOMMENDED_MODELS: RecommendedModel[] = [
   {
     name: "mxbai-embed-large",
     category: "embedding",
-    summary: "Stronger retrieval embedding model.",
+    summary: "效果更强的检索向量模型，适合追求召回质量。",
     approxSize: "~670MB",
     sourceUrl: "https://ollama.com/library/mxbai-embed-large",
     checkedAt: "2026-03-05",
