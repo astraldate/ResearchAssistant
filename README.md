@@ -8,7 +8,7 @@ This template should help get you started developing with Tauri, React and Types
   
 2.  **启动应用**：
     ```bash
-    npm run tauri dev
+    pnpm run tauri dev
     ```
 
 3.  **使用流程**：
