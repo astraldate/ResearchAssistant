@@ -65,6 +65,14 @@ const CATEGORY_LABELS: Record<ModelCategory, string> = {
 
 const RECOMMENDED_MODELS: RecommendedModel[] = [
   {
+    name: "qwen3.5:9b",
+    category: "general",
+    summary: "通用/多模态/中文友好/平衡型，适合中文对话、文档理解与混合任务。",
+    approxSize: "~6.6GB",
+    sourceUrl: "https://ollama.com/library/qwen3.5",
+    checkedAt: "2026-03-12",
+  },
+  {
     name: "qwen3:8b",
     category: "general",
     summary: "Qwen 3 系列，中文能力、通用问答和推理能力比较均衡。",

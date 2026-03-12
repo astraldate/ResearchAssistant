@@ -475,6 +475,79 @@ textarea:focus {
   background: rgba(255, 255, 255, 0.96);
 }
 
+.pdf-reader-body {
+  display: flex;
+  min-height: 420px;
+  height: 100%;
+}
+
+.pdf-reader-main-pane {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
+.pdf-reader-main-pane .pdfjs-stage,
+.pdf-reader-main-pane .pdf-compat-frame {
+  width: 100%;
+}
+
+.pdf-reader-main-pane .pdf-compat-frame {
+  min-height: 420px;
+}
+
+.pdf-page-translation-panel {
+  flex: 0 0 clamp(320px, 38%, 520px);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-left: 1px solid var(--border-color);
+  background: rgba(250, 248, 243, 0.94);
+}
+
+.pdf-page-translation-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(103, 117, 141, 0.18);
+}
+
+.pdf-page-translation-title {
+  font-size: 0.96rem;
+  font-weight: 700;
+}
+
+.pdf-page-translation-meta {
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+}
+
+.pdf-page-translation-state {
+  min-height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--text-secondary);
+}
+
+.pdf-page-translation-content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.pdf-page-translation-content .markdown-content {
+  font-size: 0.92rem;
+  line-height: 1.75;
+}
+
 .pdfjs-stage {
   min-height: 520px;
   height: clamp(520px, 76vh, 1280px);
@@ -485,6 +558,12 @@ textarea:focus {
 
 .pdf-workspace.focus-mode .pdfjs-stage {
   height: 100%;
+  min-height: 0;
+}
+
+.pdf-workspace.focus-mode .pdf-reader-body,
+.pdf-workspace.focus-mode .pdf-reader-main-pane,
+.pdf-workspace.focus-mode .pdf-page-translation-panel {
   min-height: 0;
 }
 
@@ -1062,6 +1141,17 @@ textarea:focus {
 
   .pdf-viewer-frame {
     min-height: 320px;
+  }
+
+  .pdf-reader-body {
+    flex-direction: column;
+  }
+
+  .pdf-page-translation-panel {
+    flex-basis: auto;
+    border-left: none;
+    border-top: 1px solid var(--border-color);
+    min-height: 220px;
   }
 
   .app-copyright-badge {

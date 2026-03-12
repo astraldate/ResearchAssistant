@@ -139,6 +139,37 @@ pub struct ExplainPdfSelectionResult {
     pub lookup_mode: TermLookupMode,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct TranslatePdfSelectionRequest {
+    pub text: String,
+    pub pdf_path: String,
+    pub page: u32,
+    pub model: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct TranslatePdfSelectionResult {
+    pub original_text: String,
+    pub translated_text: String,
+    pub page: u32,
+    pub generated_at: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct TranslatePdfPageRequest {
+    pub pdf_path: String,
+    pub page: u32,
+    pub model: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct TranslatePdfPageResult {
+    pub page: u32,
+    pub translated_markdown: String,
+    pub source_text_length: usize,
+    pub generated_at: String,
+}
+
 impl Default for InferenceSettings {
     fn default() -> Self {
         Self {
@@ -951,6 +982,8 @@ async fn write_text_file(path: String, content: String) -> Result<(), String> {
     std::fs::write(&path, content).map_err(|e| e.to_string())
 }
 
+const MAX_PDF_SELECTION_TRANSLATE_CHARS: usize = 800;
+
 fn normalize_extracted_pdf_text(text: &str) -> String {
     text.lines()
         .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
@@ -973,6 +1006,12 @@ fn extract_pdf_page_text_internal(path: &str, page: u32) -> Result<String, Strin
 #[tauri::command]
 async fn extract_pdf_page_text(path: String, page: u32) -> Result<String, String> {
     extract_pdf_page_text_internal(&path, page)
+}
+
+#[tauri::command]
+async fn get_pdf_page_count(path: String) -> Result<u32, String> {
+    let doc = lopdf::Document::load(path).map_err(|e| e.to_string())?;
+    u32::try_from(doc.get_pages().len()).map_err(|_| "PDF page count exceeds supported range.".to_string())
 }
 
 #[tauri::command]
@@ -1342,6 +1381,19 @@ fn build_page_context_snippet(text: &str, term: &str) -> Option<String> {
     Some(chars[..take].iter().collect::<String>())
 }
 
+fn truncate_chars(text: &str, limit: usize) -> String {
+    text.chars().take(limit).collect::<String>()
+}
+
+fn trim_non_empty_model_output(text: String, empty_message: &str) -> Result<String, String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        Err(empty_message.to_string())
+    } else {
+        Ok(trimmed.to_string())
+    }
+}
+
 async fn run_ollama_chat(model: &str, messages: Vec<serde_json::Value>) -> Result<String, String> {
     let client = reqwest::Client::new();
     let body = serde_json::json!({
@@ -1408,6 +1460,58 @@ async fn chat_via_ollama(
         ],
     )
     .await
+}
+
+async fn translate_pdf_selection_text(
+    selected_text: &str,
+    page_context: Option<&str>,
+    model: &str,
+) -> Result<String, String> {
+    let context_block = page_context
+        .map(|text| truncate_chars(text, 1200))
+        .filter(|text| !text.trim().is_empty())
+        .unwrap_or_else(|| "当前页上下文不可用。".to_string());
+    let user_prompt = format!(
+        "请把下面来自学术 PDF 的选中文本翻译成中文。\n\n要求：\n1. 只输出中文译文，不要前言，不要解释。\n2. 优先直译，并结合当前页语境做必要消歧。\n3. 专有名词保留英文原文在括号中。\n4. 不扩写，不做百科说明。\n5. 公式、变量名、URL、DOI、代码片段尽量保持原样。\n\n当前页上下文（仅用于消歧）：\n{context_block}\n\n待翻译原文：\n{selected_text}"
+    );
+
+    run_ollama_chat(
+        model,
+        vec![
+            serde_json::json!({
+                "role": "system",
+                "content": "你是学术 PDF 阅读助手中的精确翻译器。你的任务是将用户选中的原文准确翻译成中文，只输出译文正文。"
+            }),
+            serde_json::json!({
+                "role": "user",
+                "content": user_prompt
+            }),
+        ],
+    )
+    .await
+    .and_then(|text| trim_non_empty_model_output(text, "模型返回空译文。"))
+}
+
+async fn translate_pdf_page_markdown(page_text: &str, model: &str) -> Result<String, String> {
+    let user_prompt = format!(
+        "请把下面这整页学术 PDF 文本翻译成中文 Markdown。\n\n要求：\n1. 只输出 Markdown 正文，不要写前言或总结。\n2. 尽量保留原有段落和小标题结构。\n3. 不总结，不省略主干文本。\n4. 公式、变量名、URL、DOI、代码片段尽量保留原样。\n5. 如果某些行明显是碎片化 OCR / 提取噪声，可在不改变主干信息的前提下做最少整理。\n\n待翻译页面文本：\n{page_text}"
+    );
+
+    run_ollama_chat(
+        model,
+        vec![
+            serde_json::json!({
+                "role": "system",
+                "content": "你是学术论文整页翻译助手。请忠实翻译为中文 Markdown，保留段落层次，不要总结。"
+            }),
+            serde_json::json!({
+                "role": "user",
+                "content": user_prompt
+            }),
+        ],
+    )
+    .await
+    .and_then(|text| trim_non_empty_model_output(text, "模型返回空译文。"))
 }
 
 async fn summarize_term_for_beginner(
@@ -1629,6 +1733,58 @@ async fn explain_pdf_selection(request: ExplainPdfSelectionRequest) -> Result<Ex
     })
 }
 
+#[tauri::command]
+async fn translate_pdf_selection(
+    request: TranslatePdfSelectionRequest,
+) -> Result<TranslatePdfSelectionResult, String> {
+    let original_text = request.text.trim().to_string();
+    if original_text.is_empty() {
+        return Err("没有可翻译的文本。".to_string());
+    }
+
+    if original_text.chars().count() > MAX_PDF_SELECTION_TRANSLATE_CHARS {
+        return Err("选中文本过长，请使用“翻译本页”".to_string());
+    }
+
+    let page_context = extract_pdf_page_text_internal(&request.pdf_path, request.page).ok();
+    let translated_text = translate_pdf_selection_text(
+        &original_text,
+        page_context.as_deref(),
+        &request.model,
+    )
+    .await?;
+
+    Ok(TranslatePdfSelectionResult {
+        original_text,
+        translated_text,
+        page: request.page,
+        generated_at: cards::current_timestamp_iso_utc(),
+    })
+}
+
+#[tauri::command]
+async fn translate_pdf_page(request: TranslatePdfPageRequest) -> Result<TranslatePdfPageResult, String> {
+    let page_text = extract_pdf_page_text_internal(&request.pdf_path, request.page)?;
+    let source_text_length = page_text.chars().count();
+
+    if page_text.trim().is_empty() {
+        return Ok(TranslatePdfPageResult {
+            page: request.page,
+            translated_markdown: "当前页无可翻译文本，OCR 后可支持".to_string(),
+            source_text_length: 0,
+            generated_at: cards::current_timestamp_iso_utc(),
+        });
+    }
+
+    let translated_markdown = translate_pdf_page_markdown(&page_text, &request.model).await?;
+    Ok(TranslatePdfPageResult {
+        page: request.page,
+        translated_markdown,
+        source_text_length,
+        generated_at: cards::current_timestamp_iso_utc(),
+    })
+}
+
 async fn route_chat_completion(
     query: &str,
     context: &str,
@@ -1736,12 +1892,15 @@ pub fn run() {
             read_file_base64,
             write_text_file,
             extract_pdf_page_text,
+            get_pdf_page_count,
             get_card_settings,
             set_card_root_path,
             open_card_root_in_explorer,
             list_knowledge_cards,
             read_knowledge_card,
             save_knowledge_card_from_explanation,
+            translate_pdf_selection,
+            translate_pdf_page,
             check_ollama_status,
             start_ollama
         ])
