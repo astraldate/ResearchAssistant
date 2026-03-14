@@ -38,8 +38,10 @@ interface PdfPageCanvasProps {
   pdfDocument: PDFDocumentProxy;
   stageWidth: number;
   zoomPercent: number;
+  enableTextLayer: boolean;
   onSelectionCapture: () => void;
   onPageRefChange: (pageNumber: number, node: HTMLDivElement | null) => void;
+  onPageAspectReady: (pageNumber: number, aspectRatio: number) => void;
   onRenderError: (message: string) => void;
 }
 
@@ -55,11 +57,15 @@ const MIN_STAGE_WIDTH = 320;
 const ZOOM_STEP = 20;
 const MIN_ZOOM = 60;
 const MAX_ZOOM = 220;
+const MAX_RENDER_DPR = 1.5;
+const LOW_QUALITY_SCALE = 0.45;
 const VIEWPORT_MARGIN_X = 16;
 const VIEWPORT_MARGIN_TOP = 84;
 const POPOVER_ESTIMATED_WIDTH = 420;
 const POPOVER_ESTIMATED_HEIGHT = 560;
 const FLOATING_BUTTON_WIDTH = 84;
+const PAGE_ASPECT_FALLBACK = Math.sqrt(2);
+const RENDER_WINDOW_RADIUS = 3;
 
 GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -110,6 +116,19 @@ const cancelTextLayerTask = (task: TextLayerRenderTask | null) => {
   }
 };
 
+const scheduleWhenIdle = (task: () => void) => {
+  if (typeof window !== "undefined" && "requestIdleCallback" in window) {
+    const idleApi = window as Window & {
+      requestIdleCallback: (cb: IdleRequestCallback) => number;
+      cancelIdleCallback?: (id: number) => void;
+    };
+    const idleId = idleApi.requestIdleCallback(() => task());
+    return () => idleApi.cancelIdleCallback?.(idleId);
+  }
+  const timer = globalThis.setTimeout(task, 40);
+  return () => globalThis.clearTimeout(timer);
+};
+
 const isCancelledRenderError = (error: unknown) => {
   const message = String(error).toLowerCase();
   return message.includes("rendering cancelled") || message.includes("textlayer task cancelled") || message.includes("abortexception");
@@ -132,8 +151,10 @@ const PdfPageCanvas: React.FC<PdfPageCanvasProps> = ({
   pdfDocument,
   stageWidth,
   zoomPercent,
+  enableTextLayer,
   onSelectionCapture,
   onPageRefChange,
+  onPageAspectReady,
   onRenderError,
 }) => {
   const shellRef = useRef<HTMLDivElement | null>(null);
@@ -156,7 +177,8 @@ const PdfPageCanvas: React.FC<PdfPageCanvasProps> = ({
     }
 
     let cancelled = false;
-    const deviceScale = window.devicePixelRatio || 1;
+    const deviceScale = Math.min(window.devicePixelRatio || 1, MAX_RENDER_DPR);
+    let cancelIdleUpgrade: (() => void) | null = null;
 
     const renderPage = async () => {
       cancelRenderTask(renderTaskRef.current);
@@ -164,6 +186,10 @@ const PdfPageCanvas: React.FC<PdfPageCanvasProps> = ({
       cancelTextLayerTask(textLayerTaskRef.current);
       textLayerTaskRef.current = null;
       textLayerElement.replaceChildren();
+      if (cancelIdleUpgrade) {
+        cancelIdleUpgrade();
+        cancelIdleUpgrade = null;
+      }
 
       try {
         const page: PDFPageProxy = await pdfDocument.getPage(pageNumber);
@@ -173,46 +199,82 @@ const PdfPageCanvas: React.FC<PdfPageCanvasProps> = ({
         const fitScale = Math.max(MIN_STAGE_WIDTH, stageWidth - 28) / baseViewport.width;
         const effectiveScale = fitScale * (zoomPercent / 100);
         const viewport = page.getViewport({ scale: effectiveScale });
+        const aspectRatio = baseViewport.height / Math.max(baseViewport.width, 1);
 
         setRenderedPage({ width: viewport.width, height: viewport.height });
+        onPageAspectReady(pageNumber, aspectRatio);
 
-        canvasElement.width = Math.floor(viewport.width * deviceScale);
-        canvasElement.height = Math.floor(viewport.height * deviceScale);
         canvasElement.style.width = `${viewport.width}px`;
         canvasElement.style.height = `${viewport.height}px`;
 
+        const lowScale = Math.max(LOW_QUALITY_SCALE, 0.2);
+        canvasElement.width = Math.floor(viewport.width * deviceScale * lowScale);
+        canvasElement.height = Math.floor(viewport.height * deviceScale * lowScale);
         const context = canvasElement.getContext("2d", { alpha: false });
         if (!context) {
           throw new Error(`第 ${pageNumber} 页无法创建 PDF 画布上下文。`);
         }
         context.setTransform(1, 0, 0, 1, 0, 0);
         context.clearRect(0, 0, canvasElement.width, canvasElement.height);
+        context.fillStyle = "#ffffff";
+        context.fillRect(0, 0, canvasElement.width, canvasElement.height);
 
-        const renderTask = page.render({
+        const fastTask = page.render({
           canvasContext: context,
           viewport,
-          transform: deviceScale !== 1 ? [deviceScale, 0, 0, deviceScale, 0, 0] : undefined,
+          transform: deviceScale * lowScale !== 1 ? [deviceScale * lowScale, 0, 0, deviceScale * lowScale, 0, 0] : undefined,
         });
-        renderTaskRef.current = renderTask;
-        await renderTask.promise;
+        renderTaskRef.current = fastTask;
+        await fastTask.promise;
         if (cancelled) return;
 
-        textLayerElement.className = "textLayer pdfjs-text-layer";
-        textLayerElement.style.width = `${viewport.width}px`;
-        textLayerElement.style.height = `${viewport.height}px`;
-        textLayerElement.style.setProperty("--scale-factor", `${effectiveScale}`);
+        cancelIdleUpgrade = scheduleWhenIdle(async () => {
+          if (cancelled) return;
+          try {
+            canvasElement.width = Math.floor(viewport.width * deviceScale);
+            canvasElement.height = Math.floor(viewport.height * deviceScale);
+            context.setTransform(1, 0, 0, 1, 0, 0);
+            context.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            context.fillStyle = "#ffffff";
+            context.fillRect(0, 0, canvasElement.width, canvasElement.height);
 
-        const textContent = await page.getTextContent();
-        if (cancelled) return;
-        const textLayerTask = renderTextLayer({
-          textContentSource: textContent,
-          container: textLayerElement,
-          viewport,
-          textDivs: [],
-          textContentItemsStr: [],
+            const sharpTask = page.render({
+              canvasContext: context,
+              viewport,
+              transform: deviceScale !== 1 ? [deviceScale, 0, 0, deviceScale, 0, 0] : undefined,
+            });
+            renderTaskRef.current = sharpTask;
+            await sharpTask.promise;
+            if (cancelled) return;
+
+            if (!enableTextLayer) {
+              textLayerElement.replaceChildren();
+              textLayerElement.style.width = `${viewport.width}px`;
+              textLayerElement.style.height = `${viewport.height}px`;
+              return;
+            }
+
+            textLayerElement.className = "textLayer pdfjs-text-layer";
+            textLayerElement.style.width = `${viewport.width}px`;
+            textLayerElement.style.height = `${viewport.height}px`;
+            textLayerElement.style.setProperty("--scale-factor", `${effectiveScale}`);
+
+            const textContent = await page.getTextContent();
+            if (cancelled) return;
+            const textLayerTask = renderTextLayer({
+              textContentSource: textContent,
+              container: textLayerElement,
+              viewport,
+              textDivs: [],
+              textContentItemsStr: [],
+            });
+            textLayerTaskRef.current = textLayerTask;
+            await textLayerTask.promise;
+          } catch (error) {
+            if (cancelled || isCancelledRenderError(error)) return;
+            onRenderError(`第 ${pageNumber} 页渲染失败：${String(error)}`);
+          }
         });
-        textLayerTaskRef.current = textLayerTask;
-        await textLayerTask.promise;
       } catch (error) {
         if (cancelled || isCancelledRenderError(error)) {
           return;
@@ -229,8 +291,12 @@ const PdfPageCanvas: React.FC<PdfPageCanvasProps> = ({
       renderTaskRef.current = null;
       cancelTextLayerTask(textLayerTaskRef.current);
       textLayerTaskRef.current = null;
+      if (cancelIdleUpgrade) {
+        cancelIdleUpgrade();
+        cancelIdleUpgrade = null;
+      }
     };
-  }, [onRenderError, pageNumber, pdfDocument, stageWidth, zoomPercent]);
+  }, [enableTextLayer, onPageAspectReady, onRenderError, pageNumber, pdfDocument, stageWidth, zoomPercent]);
 
   return (
     <div
@@ -283,6 +349,9 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
   const [viewerMode, setViewerMode] = useState<ViewerMode>("pdfjs");
   const [viewerError, setViewerError] = useState<string | null>(null);
   const [selection, setSelection] = useState<PdfSelectionState | null>(null);
+  const [pageAspectMap, setPageAspectMap] = useState<Record<number, number>>({});
+  const [defaultAspectRatio, setDefaultAspectRatio] = useState(PAGE_ASPECT_FALLBACK);
+  const [renderCenterPage, setRenderCenterPage] = useState(1);
 
   useEffect(() => {
     onStatusRef.current = onStatus;
@@ -300,11 +369,14 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
     initialPageRef.current = restoredPage;
     currentPageRef.current = restoredPage;
     setCurrentPage(restoredPage);
+    setRenderCenterPage(restoredPage);
     setPageCount(0);
     setZoomPercent(100);
     setViewerMode("pdfjs");
     setViewerError(null);
     setSelection(null);
+    setPageAspectMap({});
+    setDefaultAspectRatio(PAGE_ASPECT_FALLBACK);
     pageRefs.current.clear();
   }, [activePdfPath]);
 
@@ -410,6 +482,7 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
         const safePage = Math.min(Math.max(initialPageRef.current, 1), document.numPages);
         currentPageRef.current = safePage;
         setCurrentPage(safePage);
+        setRenderCenterPage(safePage);
         onPageChangeRef.current?.(safePage);
         setViewerError(null);
         setIsLoading(false);
@@ -459,22 +532,33 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
     }
   }, []);
 
+  const handlePageAspectReady = useCallback((pageNumber: number, aspectRatio: number) => {
+    if (!Number.isFinite(aspectRatio) || aspectRatio <= 0) return;
+    setPageAspectMap((previous) => {
+      if (previous[pageNumber] === aspectRatio) return previous;
+      return { ...previous, [pageNumber]: aspectRatio };
+    });
+    setDefaultAspectRatio((previous) => (previous === PAGE_ASPECT_FALLBACK ? aspectRatio : previous));
+  }, []);
+
   const updateCurrentPageFromScroll = useCallback(() => {
     const stageElement = stageRef.current;
     if (!stageElement || pageRefs.current.size === 0) return;
 
-    const stageRect = stageElement.getBoundingClientRect();
+    const anchorLine = stageElement.scrollTop + stageElement.clientHeight * 0.35;
     let bestPage = currentPageRef.current;
-    let bestRatio = -1;
     let bestDistance = Number.POSITIVE_INFINITY;
 
     for (const [pageNumber, node] of pageRefs.current.entries()) {
-      const rect = node.getBoundingClientRect();
-      const overlap = Math.max(0, Math.min(rect.bottom, stageRect.bottom) - Math.max(rect.top, stageRect.top));
-      const visibleRatio = overlap / Math.max(rect.height, 1);
-      const distance = Math.abs(rect.top - stageRect.top);
-      if (visibleRatio > bestRatio || (Math.abs(visibleRatio - bestRatio) < 0.001 && distance < bestDistance)) {
-        bestRatio = visibleRatio;
+      const top = node.offsetTop;
+      const bottom = top + Math.max(node.offsetHeight, 1);
+      if (anchorLine >= top && anchorLine <= bottom) {
+        bestPage = pageNumber;
+        bestDistance = 0;
+        break;
+      }
+      const distance = Math.min(Math.abs(anchorLine - top), Math.abs(anchorLine - bottom));
+      if (distance < bestDistance) {
         bestDistance = distance;
         bestPage = pageNumber;
       }
@@ -483,6 +567,7 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
     if (bestPage !== currentPageRef.current) {
       currentPageRef.current = bestPage;
       setCurrentPage(bestPage);
+      setRenderCenterPage(bestPage);
       localStorage.setItem(storageKey(activePdfPath), String(bestPage));
       onPageChangeRef.current?.(bestPage);
     }
@@ -500,6 +585,7 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
       });
       currentPageRef.current = pageNumber;
       setCurrentPage(pageNumber);
+      setRenderCenterPage(pageNumber);
       localStorage.setItem(storageKey(activePdfPath), String(pageNumber));
       onPageChangeRef.current?.(pageNumber);
     },
@@ -519,6 +605,13 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
 
     const handleScroll = () => {
       clearSelectionForNavigation();
+      const estimatedHeight = Math.max(480, Math.round((Math.max(MIN_STAGE_WIDTH, stageWidth - 28) * zoomPercent / 100) * defaultAspectRatio)) + 20;
+      const roughPage = clamp(
+        Math.floor(stageElement.scrollTop / Math.max(estimatedHeight, 1)) + 1,
+        1,
+        Math.max(pageCount, 1),
+      );
+      setRenderCenterPage((previous) => (previous === roughPage ? previous : roughPage));
       if (ticking) return;
       ticking = true;
       window.requestAnimationFrame(() => {
@@ -541,7 +634,7 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
       stageElement.removeEventListener("scroll", handleScroll);
       window.removeEventListener("resize", handleWindowResize);
     };
-  }, [activePdfPath, updateCurrentPageFromScroll, viewerMode]);
+  }, [activePdfPath, defaultAspectRatio, pageCount, stageWidth, updateCurrentPageFromScroll, viewerMode, zoomPercent]);
 
   useEffect(() => {
     if (!pdfDocument || viewerMode !== "pdfjs") return;
@@ -549,6 +642,11 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
     const timer = window.setTimeout(() => scrollToPage(targetPage, "auto"), 80);
     return () => window.clearTimeout(timer);
   }, [pageCount, pdfDocument, scrollToPage, viewerMode]);
+
+  useEffect(() => {
+    if (pageCount <= 0) return;
+    setRenderCenterPage((previous) => clamp(previous, 1, pageCount));
+  }, [pageCount]);
 
   const handlePdfRenderError = useCallback((message: string) => {
     const fullMessage = `PDF 页面渲染失败，已切换为兼容模式：${message}`;
@@ -652,6 +750,17 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
   }, [selection]);
 
   const pageNumbers = useMemo(() => Array.from({ length: pageCount }, (_, index) => index + 1), [pageCount]);
+  const visibleStart = Math.max(1, renderCenterPage - RENDER_WINDOW_RADIUS);
+  const visibleEnd = Math.min(pageCount, renderCenterPage + RENDER_WINDOW_RADIUS);
+  const renderedPageWidth = Math.max(MIN_STAGE_WIDTH, stageWidth - 28) * (zoomPercent / 100);
+
+  const estimatedHeightForPage = useCallback(
+    (pageNumber: number) => {
+      const aspectRatio = pageAspectMap[pageNumber] ?? defaultAspectRatio;
+      return Math.max(480, Math.round(renderedPageWidth * aspectRatio));
+    },
+    [defaultAspectRatio, pageAspectMap, renderedPageWidth],
+  );
 
   return (
     <div className="pdf-reader-shell">
@@ -702,16 +811,31 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
           <div className="pdfjs-stage" ref={stageRef}>
             <div className="pdfjs-pages">
               {pageNumbers.map((pageNumber) => (
-                <PdfPageCanvas
-                  key={`${activePdfPath}:${pageNumber}:${zoomPercent}:${stageWidth}`}
-                  pageNumber={pageNumber}
+                pageNumber >= visibleStart && pageNumber <= visibleEnd ? (
+                  <PdfPageCanvas
+                    key={`${activePdfPath}:${pageNumber}:${zoomPercent}:${stageWidth}`}
+                    pageNumber={pageNumber}
                   pdfDocument={pdfDocument as PDFDocumentProxy}
                   stageWidth={stageWidth}
                   zoomPercent={zoomPercent}
+                  enableTextLayer={pageNumber === currentPage}
                   onSelectionCapture={handleSelectionCapture}
                   onPageRefChange={handlePageRefChange}
-                  onRenderError={handlePdfRenderError}
-                />
+                  onPageAspectReady={handlePageAspectReady}
+                    onRenderError={handlePdfRenderError}
+                  />
+                ) : (
+                  <div
+                    key={`${activePdfPath}:${pageNumber}:placeholder:${zoomPercent}:${stageWidth}`}
+                    ref={(node) => handlePageRefChange(pageNumber, node)}
+                    className="pdfjs-page-shell pdfjs-page-placeholder"
+                    data-page-number={pageNumber}
+                    style={{
+                      width: `${renderedPageWidth}px`,
+                      minHeight: `${estimatedHeightForPage(pageNumber)}px`,
+                    }}
+                  />
+                )
               ))}
             </div>
           </div>

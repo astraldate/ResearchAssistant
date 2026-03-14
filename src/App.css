@@ -551,6 +551,12 @@ textarea:focus {
   overflow: hidden;
 }
 
+.pdfjs-page-placeholder {
+  background: linear-gradient(180deg, #f6f7f9, #eceff3);
+  border: 1px dashed rgba(16, 24, 40, 0.12);
+  box-shadow: none;
+}
+
 .pdfjs-canvas {
   display: block;
   width: 100%;
