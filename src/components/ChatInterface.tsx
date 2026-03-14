@@ -1,4 +1,4 @@
-﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+﻿import React, { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { ImagePlus, Maximize2, Minimize2, Send, X } from "lucide-react";
@@ -498,45 +498,40 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentModel, acti
     setNotes((previous) => previous.filter((note) => note.id !== noteId));
   };
 
-  const activeFileLabel = useMemo(() => (activeFilePath ? getFileName(activeFilePath) : "未选中文件"), [activeFilePath]);
-
   return (
     <div className={`chat-container ${isReaderFocused ? "pdf-focus-mode" : ""}`}>
       <div className="chat-header">
-        <div>
+        <div className="chat-header-main">
           <div className="main-view-title">科研助手</div>
-          <div className="main-view-subtitle" title={activeFileLabel}>
-            当前文件：{activeFileLabel}
-          </div>
-        </div>
-        <div className="chat-toolbar">
-          {activePdfPath && (
-            <button style={TOOL_BUTTON_STYLE} onClick={() => setIsReaderFocused((previous) => !previous)}>
-              {isReaderFocused ? (
-                <>
-                  <Minimize2 size={14} />
-                  退出专注阅读
-                </>
-              ) : (
-                <>
-                  <Maximize2 size={14} />
-                  放大阅读区
-                </>
-              )}
+          <div className="chat-toolbar">
+            {activePdfPath && (
+              <button style={TOOL_BUTTON_STYLE} onClick={() => setIsReaderFocused((previous) => !previous)}>
+                {isReaderFocused ? (
+                  <>
+                    <Minimize2 size={14} />
+                    退出专注阅读
+                  </>
+                ) : (
+                  <>
+                    <Maximize2 size={14} />
+                    放大阅读区
+                  </>
+                )}
+              </button>
+            )}
+            <button style={TOOL_BUTTON_STYLE} onClick={handleSaveSession}>
+              保存会话
             </button>
-          )}
-          <button style={TOOL_BUTTON_STYLE} onClick={handleSaveSession}>
-            保存会话
-          </button>
-          <button style={TOOL_BUTTON_STYLE} onClick={handleRestoreSession}>
-            恢复会话
-          </button>
-          <button style={TOOL_BUTTON_STYLE} onClick={handleClearSession}>
-            清空会话
-          </button>
-          <button style={TOOL_BUTTON_STYLE} onClick={() => void handleExportMarkdown()}>
-            导出 Markdown
-          </button>
+            <button style={TOOL_BUTTON_STYLE} onClick={handleRestoreSession}>
+              恢复会话
+            </button>
+            <button style={TOOL_BUTTON_STYLE} onClick={handleClearSession}>
+              清空会话
+            </button>
+            <button style={TOOL_BUTTON_STYLE} onClick={() => void handleExportMarkdown()}>
+              导出 Markdown
+            </button>
+          </div>
         </div>
       </div>
 
@@ -715,3 +710,6 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentModel, acti
     </div>
   );
 };
+
+
+

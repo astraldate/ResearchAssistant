@@ -384,6 +384,26 @@ textarea:focus {
   border-bottom: 1px solid var(--border-color);
 }
 
+.chat-header {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.chat-header-main {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chat-toolbar {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
 .main-view-title,
 .pdf-reader-title,
 .card-item-title,
