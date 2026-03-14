@@ -38,6 +38,32 @@ const SOURCE_STATUS_LABELS: Record<string, string> = {
   source_only: "仅外部资料",
 };
 
+const getSourceStatusTone = (sourceStatus: string) => {
+  switch (sourceStatus) {
+    case "source+model":
+      return "status-hybrid";
+    case "source_only":
+      return "status-source";
+    case "model_only":
+    default:
+      return "status-model";
+  }
+};
+
+const getLookupModeTone = (mode: LookupMode) => `mode-${mode}`;
+
+const getSourceProviderTone = (provider?: string | null) => {
+  const normalized = provider?.toLowerCase() ?? "";
+  if (!normalized || normalized.includes("模型") || normalized.includes("model") || normalized.includes("ollama")) {
+    return "provider-model";
+  }
+  if (normalized.includes("wiki")) return "provider-wiki";
+  if (normalized.includes("baidu")) return "provider-baidu";
+  if (normalized.includes("pubmed") || normalized.includes("ncbi")) return "provider-pubmed";
+  if (normalized.includes("cs") || normalized.includes("encyclopedia")) return "provider-cs";
+  return "provider-generic";
+};
+
 export const CardLibrary: React.FC<CardLibraryProps> = ({ refreshToken, activeRoot, onStatus }) => {
   const [cards, setCards] = useState<KnowledgeCardSummary[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -143,25 +169,33 @@ export const CardLibrary: React.FC<CardLibraryProps> = ({ refreshToken, activeRo
       <div className="card-grid">
         {filteredCards.map((card) => (
           <article key={card.id} className="card-item">
+            <div className="card-item-topline">
+              <div className={`status-chip ${getLookupModeTone(card.lookup_mode)}`}>{LOOKUP_MODE_LABELS[card.lookup_mode]}</div>
+              <div className={`status-chip ${getSourceStatusTone(card.source_status)}`}>
+                {SOURCE_STATUS_LABELS[card.source_status] ?? card.source_status}
+              </div>
+            </div>
+
             <div className="card-item-header">
-              <div>
+              <div className="card-item-title-block">
                 <div className="card-item-title">{card.term}</div>
                 <div className="card-item-meta">
-                  <span>{LOOKUP_MODE_LABELS[card.lookup_mode]}</span>
-                  <span>{card.source_provider || "模型"}</span>
+                  <span className={`status-chip muted ${getSourceProviderTone(card.source_provider)}`}>{card.source_provider || "模型"}</span>
                 </div>
               </div>
-              <div className="status-chip muted">{SOURCE_STATUS_LABELS[card.source_status] ?? card.source_status}</div>
             </div>
 
             <div className="card-item-preview">{card.preview || "暂无摘要预览。"}</div>
 
             <div className="card-item-footnote">
-              <span>{card.created_at}</span>
-              {card.pdf_path && (
-                <span>
-                  {card.pdf_path.split(/[\\/]/).pop()}
-                  {typeof card.pdf_page === "number" ? ` · p.${card.pdf_page}` : ""}
+              <div className="card-item-footnote-main">
+                <span>{card.created_at}</span>
+                {card.pdf_path && <span className="card-item-fileline">{card.pdf_path.split(/[\\/]/).pop()}</span>}
+              </div>
+              {card.pdf_path && typeof card.pdf_page === "number" && (
+                <span className="card-page-chip">
+                  PDF 页码
+                  <strong>p.{card.pdf_page}</strong>
                 </span>
               )}
             </div>

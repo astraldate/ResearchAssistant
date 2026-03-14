@@ -1,6 +1,6 @@
 ﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { BookmarkPlus, Download, ExternalLink, LoaderCircle, X } from "lucide-react";
+import { BookmarkPlus, Download, ExternalLink, X } from "lucide-react";
 import { exportKnowledgeCardMarkdown } from "../utils/exportCard";
 
 export type LookupMode = "popular_cn" | "cs_encyclopedia" | "bioinformatics";
@@ -52,6 +52,7 @@ const POPOVER_MARGIN = 16;
 const POPOVER_TOP_SAFE = 84;
 const FALLBACK_POPOVER_WIDTH = 420;
 const FALLBACK_POPOVER_HEIGHT = 560;
+const PHASE_FADE_MS = 130;
 
 const LOOKUP_MODE_LABELS: Record<LookupMode, string> = {
   popular_cn: "通俗百科",
@@ -70,6 +71,40 @@ const buildCacheKey = (lookupMode: LookupMode, pdfPath: string, page: number, se
 
 const normalizeSelection = (value: string) => value.replace(/\s+/g, " ").trim();
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+
+const getSourceStatusTone = (sourceStatus: string) => {
+  switch (sourceStatus) {
+    case "source+model":
+      return "status-hybrid";
+    case "source_only":
+      return "status-source";
+    case "model_only":
+    default:
+      return "status-model";
+  }
+};
+
+const getLookupModeTone = (mode: LookupMode) => `mode-${mode}`;
+
+const getSourceProviderTone = (provider?: string | null) => {
+  const normalized = provider?.toLowerCase() ?? "";
+  if (!normalized || normalized.includes("模型") || normalized.includes("model") || normalized.includes("ollama")) {
+    return "provider-model";
+  }
+  if (normalized.includes("wiki")) return "provider-wiki";
+  if (normalized.includes("baidu")) return "provider-baidu";
+  if (normalized.includes("pubmed") || normalized.includes("ncbi")) return "provider-pubmed";
+  if (normalized.includes("cs") || normalized.includes("encyclopedia")) return "provider-cs";
+  return "provider-generic";
+};
+
+const LoadingDots: React.FC<{ compact?: boolean }> = ({ compact = false }) => (
+  <span className={`loading-dots ${compact ? "compact" : ""}`} aria-hidden="true">
+    <span />
+    <span />
+    <span />
+  </span>
+);
 
 const parseStylePosition = (
   value: React.CSSProperties["left"] | React.CSSProperties["top"],
@@ -103,6 +138,10 @@ export const TermExplainPopover: React.FC<TermExplainPopoverProps> = ({
   const [isExporting, setIsExporting] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [savedCard, setSavedCard] = useState<KnowledgeCardSummary | null>(null);
+  const [displayPhase, setDisplayPhase] = useState<"loading" | "success" | "error">("loading");
+  const [displayResult, setDisplayResult] = useState<ExplainResult | null>(null);
+  const [displayError, setDisplayError] = useState<string | null>(null);
+  const [isPhaseVisible, setIsPhaseVisible] = useState(true);
   const [position, setPosition] = useState(() => ({
     left: parseStylePosition(style?.left, POPOVER_MARGIN),
     top: parseStylePosition(style?.top, POPOVER_TOP_SAFE),
@@ -169,6 +208,22 @@ export const TermExplainPopover: React.FC<TermExplainPopoverProps> = ({
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, [clampPosition]);
+
+  useEffect(() => {
+    if (displayPhase === phase && displayResult === result && displayError === error) {
+      return;
+    }
+
+    setIsPhaseVisible(false);
+    const timer = window.setTimeout(() => {
+      setDisplayPhase(phase);
+      setDisplayResult(result);
+      setDisplayError(error);
+      setIsPhaseVisible(true);
+    }, PHASE_FADE_MS);
+
+    return () => window.clearTimeout(timer);
+  }, [displayError, displayPhase, displayResult, error, phase, result]);
 
   useEffect(() => {
     if (validationError) {
@@ -288,6 +343,10 @@ export const TermExplainPopover: React.FC<TermExplainPopoverProps> = ({
     top: `${position.top}px`,
   };
 
+  const activeResult = displayResult ?? result;
+  const sourceProviderLabel = activeResult?.source_provider || "模型";
+  const lookupModeLabel = LOOKUP_MODE_LABELS[activeResult?.lookup_mode ?? lookupMode];
+
   return (
     <div
       ref={popoverRef}
@@ -298,84 +357,105 @@ export const TermExplainPopover: React.FC<TermExplainPopoverProps> = ({
       <div className="term-popover-header" onMouseDown={handleHeaderMouseDown}>
         <div>
           <div className="term-popover-title">{normalizedText || "术语解释"}</div>
-          <div className="term-popover-subtitle">模式：{LOOKUP_MODE_LABELS[lookupMode]} · 可拖动</div>
+          <div className="term-popover-subtitle">模式：{lookupModeLabel} · 可拖动</div>
         </div>
         <button className="ghost-icon-button" onClick={onClose} aria-label="关闭术语解释">
           <X size={14} />
         </button>
       </div>
 
-      {phase === "loading" && (
-        <div className="term-popover-state">
-          <LoaderCircle size={16} className="spin" />
-          <span>正在获取解释与参考资料...</span>
-        </div>
-      )}
+      <div className={`term-popover-stage ${isPhaseVisible ? "is-visible" : "is-hidden"}`}>
+        {displayPhase === "loading" && (
+          <div className="term-popover-state term-popover-loading">
+            <div className="term-loading-head">
+              <div className="term-loading-breath" aria-hidden="true">
+                <LoadingDots />
+              </div>
+              <div>
+                <div className="term-loading-title">正在理解“{normalizedText}”</div>
+                <div className="term-loading-caption">正在结合页面上下文、外部资料与模型总结生成解释。</div>
+              </div>
+            </div>
+            <div className="term-loading-skeleton" aria-hidden="true">
+              <span className="term-loading-bar long" />
+              <span className="term-loading-bar medium" />
+              <span className="term-loading-bar short" />
+            </div>
+          </div>
+        )}
 
-      {phase === "error" && <div className="term-popover-error">{error}</div>}
+        {displayPhase === "error" && <div className="term-popover-error">{displayError}</div>}
 
-      {phase === "success" && result && (
-        <div className="term-popover-content">
-          <div className="status-chip">{SOURCE_STATUS_LABELS[result.source_status] ?? result.source_status}</div>
-          <div className="term-section">
-            <div className="term-section-label">通俗解释</div>
-            <div className="term-section-body">{result.plain_summary}</div>
-          </div>
-          <div className="term-section">
-            <div className="term-section-label">参考资料摘要</div>
-            <div className="term-section-body">{result.source_extract || "未命中外部资料，已退回模型总结。"}</div>
-          </div>
-          <div className="term-section-meta">
-            <span>来源：{result.source_provider || "模型"}</span>
-            {result.source_lang && <span>语言：{result.source_lang}</span>}
-          </div>
-          {result.source_title && <div className="term-source-title">{result.source_title}</div>}
-          {result.source_url && (
-            <a className="term-source-link" href={result.source_url} target="_blank" rel="noreferrer">
-              查看来源
-              <ExternalLink size={12} />
-            </a>
-          )}
-          <div className="term-popover-actions">
-            <button className="action-button primary" onClick={() => void handleSaveCard()} disabled={isSaving || !!savedCard}>
-              {isSaving ? (
-                <>
-                  <LoaderCircle size={14} className="spin" />
-                  保存中
-                </>
-              ) : savedCard ? (
-                <>
-                  <BookmarkPlus size={14} />
-                  已保存
-                </>
-              ) : (
-                <>
-                  <BookmarkPlus size={14} />
-                  保存为知识卡片
-                </>
-              )}
-            </button>
-            {savedCard && (
-              <button className="action-button" onClick={() => void handleExportCard()} disabled={isExporting}>
-                {isExporting ? (
+        {displayPhase === "success" && activeResult && (
+          <div className="term-popover-content">
+            <div className="term-badge-row">
+              <div className={`status-chip ${getSourceStatusTone(activeResult.source_status)}`}>
+                {SOURCE_STATUS_LABELS[activeResult.source_status] ?? activeResult.source_status}
+              </div>
+              <div className={`status-chip ${getSourceProviderTone(activeResult.source_provider)}`}>{sourceProviderLabel}</div>
+              <div className={`status-chip ${getLookupModeTone(activeResult.lookup_mode ?? lookupMode)}`}>{lookupModeLabel}</div>
+              {activeResult.source_lang && <div className="status-chip lang-badge">{activeResult.source_lang.toUpperCase()}</div>}
+            </div>
+
+            <div className="term-section">
+              <div className="term-section-label">通俗解释</div>
+              <div className="term-section-body">{activeResult.plain_summary}</div>
+            </div>
+
+            <div className="term-section">
+              <div className="term-section-label">参考资料摘要</div>
+              <div className="term-section-body">{activeResult.source_extract || "未命中外部资料，已退回模型总结。"}</div>
+            </div>
+
+            {activeResult.source_title && <div className="term-source-title">{activeResult.source_title}</div>}
+            {activeResult.source_url && (
+              <a className="term-source-link" href={activeResult.source_url} target="_blank" rel="noreferrer">
+                查看来源
+                <ExternalLink size={12} />
+              </a>
+            )}
+
+            <div className="term-popover-actions">
+              <button className="action-button primary" onClick={() => void handleSaveCard()} disabled={isSaving || !!savedCard}>
+                {isSaving ? (
                   <>
-                    <LoaderCircle size={14} className="spin" />
-                    导出中
+                    <LoadingDots compact />
+                    保存中
+                  </>
+                ) : savedCard ? (
+                  <>
+                    <BookmarkPlus size={14} />
+                    已保存
                   </>
                 ) : (
                   <>
-                    <Download size={14} />
-                    导出 Markdown
+                    <BookmarkPlus size={14} />
+                    保存为知识卡片
                   </>
                 )}
               </button>
-            )}
-            <button className="action-button" onClick={onClose}>
-              关闭
-            </button>
+              {savedCard && (
+                <button className="action-button" onClick={() => void handleExportCard()} disabled={isExporting}>
+                  {isExporting ? (
+                    <>
+                      <LoadingDots compact />
+                      导出中
+                    </>
+                  ) : (
+                    <>
+                      <Download size={14} />
+                      导出 Markdown
+                    </>
+                  )}
+                </button>
+              )}
+              <button className="action-button" onClick={onClose}>
+                关闭
+              </button>
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 };

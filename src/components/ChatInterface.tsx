@@ -1,10 +1,9 @@
-﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { ImagePlus, Maximize2, Minimize2, Send, X } from "lucide-react";
+import { ImagePlus, Send, X } from "lucide-react";
+import { Group, Panel, Separator } from "react-resizable-panels";
 import { MarkdownRenderer } from "./MarkdownRenderer";
-import { LookupMode } from "./TermExplainPopover";
-import { PdfReader } from "./PdfReader";
 
 type StatusTone = "info" | "error";
 
@@ -54,12 +53,13 @@ interface SelectionMenuState {
 interface ChatInterfaceProps {
   currentModel?: string;
   activeFilePath?: string | null;
+  pdfPage?: number;
+  onPdfPageChange?: (page: number) => void;
   onStatus: (message: string, tone?: StatusTone, persistent?: boolean) => void;
   onCardSaved: () => void;
 }
 
 const SESSION_KEY = "ra_chat_session_v3";
-const LOOKUP_MODE_KEY = "ra_term_lookup_mode_v1";
 
 const DEFAULT_MESSAGES: Message[] = [
   {
@@ -98,12 +98,17 @@ const readSession = (): SessionPayload | null => {
   }
 };
 
-export const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentModel, activeFilePath, onStatus, onCardSaved }) => {
+export const ChatInterface: React.FC<ChatInterfaceProps> = ({
+  currentModel,
+  activeFilePath,
+  pdfPage = 1,
+  onPdfPageChange,
+  onStatus,
+}) => {
   const [messages, setMessages] = useState<Message[]>(DEFAULT_MESSAGES);
   const [inputValue, setInputValue] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [imagePath, setImagePath] = useState<string | null>(null);
-  const [pdfPage, setPdfPage] = useState(1);
   const [citationDraft, setCitationDraft] = useState("");
   const [citations, setCitations] = useState<CitationItem[]>([]);
   const [notes, setNotes] = useState<NoteItem[]>([]);
@@ -113,14 +118,6 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentModel, acti
   const [isKnowledgeSearching, setIsKnowledgeSearching] = useState(false);
   const [selectionMenu, setSelectionMenu] = useState<SelectionMenuState | null>(null);
   const [isSessionHydrated, setIsSessionHydrated] = useState(false);
-  const [isReaderFocused, setIsReaderFocused] = useState(false);
-  const [lookupMode, setLookupMode] = useState<LookupMode>(() => {
-    const stored = localStorage.getItem(LOOKUP_MODE_KEY);
-    if (stored === "popular_cn" || stored === "cs_encyclopedia" || stored === "bioinformatics") {
-      return stored;
-    }
-    return "popular_cn";
-  });
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const selectionMenuRef = useRef<HTMLDivElement>(null);
@@ -149,13 +146,14 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentModel, acti
       setMessages(stored.messages?.length ? stored.messages : DEFAULT_MESSAGES);
       setInputValue(stored.inputValue || "");
       setImagePath(stored.imagePath || null);
-      setPdfPage(stored.pdfPage && stored.pdfPage > 0 ? stored.pdfPage : 1);
       setCitationDraft(stored.citationDraft || "");
       setCitations(Array.isArray(stored.citations) ? stored.citations : []);
       setNotes(Array.isArray(stored.notes) ? stored.notes : []);
+      const restoredPage = stored.pdfPage && stored.pdfPage > 0 ? stored.pdfPage : 1;
+      onPdfPageChange?.(restoredPage);
     }
     setIsSessionHydrated(true);
-  }, []);
+  }, [onPdfPageChange]);
 
   useEffect(() => {
     if (!isSessionHydrated) return;
@@ -163,18 +161,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentModel, acti
   }, [isSessionHydrated, persistSession]);
 
   useEffect(() => {
-    localStorage.setItem(LOOKUP_MODE_KEY, lookupMode);
-  }, [lookupMode]);
-
-  useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isLoading]);
-
-  useEffect(() => {
-    if (!activePdfPath) {
-      setIsReaderFocused(false);
-    }
-  }, [activePdfPath]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -372,7 +360,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentModel, acti
         query: question,
         context,
         model: currentModel || "qwen2.5:0.5b",
-        image_path: imagePath,
+        imagePath: imagePath,
       });
 
       setMessages((previous) => [
@@ -414,10 +402,10 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentModel, acti
     setMessages(stored.messages?.length ? stored.messages : DEFAULT_MESSAGES);
     setInputValue(stored.inputValue || "");
     setImagePath(stored.imagePath || null);
-    setPdfPage(stored.pdfPage && stored.pdfPage > 0 ? stored.pdfPage : 1);
     setCitationDraft(stored.citationDraft || "");
     setCitations(Array.isArray(stored.citations) ? stored.citations : []);
     setNotes(Array.isArray(stored.notes) ? stored.notes : []);
+    onPdfPageChange?.(stored.pdfPage && stored.pdfPage > 0 ? stored.pdfPage : 1);
     onStatus("已恢复会话。", "info", false);
   };
 
@@ -425,10 +413,10 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentModel, acti
     setMessages(DEFAULT_MESSAGES);
     setInputValue("");
     setImagePath(null);
-    setPdfPage(1);
     setCitationDraft("");
     setCitations([]);
     setNotes([]);
+    onPdfPageChange?.(1);
     localStorage.removeItem(SESSION_KEY);
     onStatus("已清空当前会话。", "info", false);
   };
@@ -501,28 +489,13 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentModel, acti
   const activeFileLabel = useMemo(() => (activeFilePath ? getFileName(activeFilePath) : "未选中文件"), [activeFilePath]);
 
   return (
-    <div className={`chat-container ${isReaderFocused ? "pdf-focus-mode" : ""}`}>
+    <div className="chat-container">
       <div className="chat-header">
         <div>
           <div className="main-view-title">科研助手</div>
           <div className="main-view-subtitle">当前文件：{activeFileLabel}</div>
         </div>
         <div className="chat-toolbar">
-          {activePdfPath && (
-            <button style={TOOL_BUTTON_STYLE} onClick={() => setIsReaderFocused((previous) => !previous)}>
-              {isReaderFocused ? (
-                <>
-                  <Minimize2 size={14} />
-                  退出专注阅读
-                </>
-              ) : (
-                <>
-                  <Maximize2 size={14} />
-                  放大阅读区
-                </>
-              )}
-            </button>
-          )}
           <button style={TOOL_BUTTON_STYLE} onClick={handleSaveSession}>
             保存会话
           </button>
@@ -538,150 +511,149 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentModel, acti
         </div>
       </div>
 
-      {activePdfPath && (
-        <div className={`pdf-workspace ${isReaderFocused ? "focus-mode" : ""}`}>
-          <PdfReader
-            activePdfPath={activePdfPath}
-            currentModel={currentModel || "qwen2.5:0.5b"}
-            lookupMode={lookupMode}
-            onLookupModeChange={setLookupMode}
-            onStatus={onStatus}
-            onSaveCardSuccess={onCardSaved}
-            onPageChange={setPdfPage}
-          />
-          <div className="citation-bar">
-            <textarea
-              value={citationDraft}
-              onChange={(event) => setCitationDraft(event.target.value)}
-              placeholder="如果要保留原文引用，可把当前选中的 PDF 片段粘贴到这里，再加入会话输入框。"
-              rows={2}
-            />
-            <button className="action-button primary" onClick={handleAddCitation} disabled={!citationDraft.trim()}>
-              加入引用
-            </button>
-          </div>
-        </div>
-      )}
-
-      <div className="messages-list" onMouseUp={handleScopedTextSelection}>
-        {messages.map((message) => (
-          <div key={message.id} className={`message ${message.role}`}>
-            {message.role === "ai" ? <MarkdownRenderer content={message.content} /> : <div style={{ whiteSpace: "pre-wrap" }}>{message.content}</div>}
-          </div>
-        ))}
-        {isLoading && (
-          <div className="message ai">
-            <span className="thinking-text">正在思考...</span>
-          </div>
-        )}
-        <div ref={messagesEndRef} />
-      </div>
-
-      <div className="input-area">
-        {imagePath && (
-          <div className="image-chip">
-            <span>图片：{getFileName(imagePath)}</span>
-            <button className="ghost-icon-button" onClick={() => setImagePath(null)} title="移除图片">
-              <X size={14} />
-            </button>
-          </div>
-        )}
-
-        <div className="chat-input-wrapper">
-          <button className="send-button" onClick={() => void handlePickImage()} disabled={isLoading} title="添加图片">
-            <ImagePlus size={18} />
-          </button>
-          <textarea
-            className="chat-input"
-            placeholder="输入消息，或先在 PDF 页面选词再点击解释。"
-            value={inputValue}
-            onChange={(event) => setInputValue(event.target.value)}
-            onKeyDown={handleKeyDown}
-            rows={1}
-          />
-          <button className="send-button" onClick={() => void handleSendMessage()} disabled={!inputValue.trim() || isLoading}>
-            <Send size={18} />
-          </button>
-        </div>
-
-        <div className="support-grid">
-          <section className="support-panel" onMouseUp={handleScopedTextSelection}>
-            <div className="support-panel-title">引用片段</div>
-            <div className="support-panel-body">
-              {citations.length === 0 && <div className="support-empty">暂无引用。</div>}
-              {citations.slice(0, 8).map((citation) => (
-                <div key={citation.id} className="support-item">
-                  <div className="support-item-title">
-                    {getFileName(citation.path)} p.{citation.page}
-                  </div>
-                  <div className="support-item-text">{citation.snippet}</div>
+      <div className="chat-body">
+        <Group orientation="vertical" className="chat-content-panels">
+          <Panel defaultSize="60%" minSize="20%">
+            <div className="messages-list" onMouseUp={handleScopedTextSelection}>
+              {messages.map((message) => (
+                <div key={message.id} className={`message ${message.role}`}>
+                  {message.role === "ai" ? <MarkdownRenderer content={message.content} /> : <div style={{ whiteSpace: "pre-wrap" }}>{message.content}</div>}
                 </div>
               ))}
-            </div>
-          </section>
-
-          <section className="support-panel" onMouseUp={handleScopedTextSelection}>
-            <div className="support-panel-title">笔记</div>
-            <div className="support-panel-body">
-              {notes.length === 0 && <div className="support-empty">暂无笔记。</div>}
-              {notes.slice(0, 8).map((note) => (
-                <div key={note.id} className="support-item">
-                  <div className="support-item-text">{note.text}</div>
-                  <div className="support-item-actions">
-                    <button style={TOOL_BUTTON_STYLE} onClick={() => handleInsertNote(note)}>
-                      插入输入框
-                    </button>
-                    <button style={TOOL_BUTTON_STYLE} onClick={() => handleDeleteNote(note.id)}>
-                      删除
-                    </button>
-                  </div>
+              {isLoading && (
+                <div className="message ai">
+                  <span className="thinking-text">正在思考...</span>
                 </div>
-              ))}
-            </div>
-          </section>
-
-          <section className="support-panel" onMouseUp={handleScopedTextSelection}>
-            <div className="support-panel-title">知识库搜索</div>
-            <div className="knowledge-search-row">
-              <input
-                className="knowledge-search-input"
-                value={knowledgeQuery}
-                onChange={(event) => setKnowledgeQuery(event.target.value)}
-                onKeyDown={handleKnowledgeSearchKeyDown}
-                placeholder="输入关键词检索已导入知识库，例如 LoRA、adapter、thyroid cancer"
-              />
-              <button
-                style={TOOL_BUTTON_STYLE}
-                onClick={() => void handleKnowledgeSearch()}
-                disabled={isKnowledgeSearching || !knowledgeQuery.trim()}
-              >
-                {isKnowledgeSearching ? "搜索中" : "搜索"}
-              </button>
-            </div>
-            <div className="support-panel-body">
-              {!lastKnowledgeQuery && !isKnowledgeSearching && <div className="support-empty">输入关键词后检索本地知识库摘要片段。</div>}
-              {lastKnowledgeQuery && !isKnowledgeSearching && knowledgeResults.length === 0 && (
-                <div className="support-empty">没有找到与“{lastKnowledgeQuery}”相关的知识库片段。</div>
               )}
-              {knowledgeResults.map((doc, index) => (
-                <div key={doc.id} className="support-item">
-                  <div className="support-item-title">
-                    {index + 1}. {getFileName(doc.path)}
-                  </div>
-                  <div className="support-item-text">{buildDocSnippet(doc.content)}</div>
-                  <div className="support-item-actions">
-                    <button style={TOOL_BUTTON_STYLE} onClick={() => handleInsertKnowledgeResult(doc)}>
-                      插入输入框
-                    </button>
-                    <button style={TOOL_BUTTON_STYLE} onClick={() => void invoke("open_file", { path: doc.path })}>
-                      打开文件
-                    </button>
-                  </div>
-                </div>
-              ))}
+              <div ref={messagesEndRef} />
             </div>
-          </section>
-        </div>
+          </Panel>
+
+          <Separator className="PanelResizeHandle PanelResizeHandle--row" />
+
+          <Panel defaultSize="40%" minSize="18%">
+            <div className="input-area">
+              {imagePath && (
+                <div className="image-chip">
+                  <span>图片：{getFileName(imagePath)}</span>
+                  <button className="ghost-icon-button" onClick={() => setImagePath(null)} title="移除图片">
+                    <X size={14} />
+                  </button>
+                </div>
+              )}
+
+              <div className="chat-input-wrapper">
+                <button className="send-button" onClick={() => void handlePickImage()} disabled={isLoading} title="添加图片">
+                  <ImagePlus size={18} />
+                </button>
+                <textarea
+                  className="chat-input"
+                  placeholder={activePdfPath ? "输入消息，或在右侧独立 PDF 页面中选词解释。" : "输入消息，开始和科研助手对话。"}
+                  value={inputValue}
+                  onChange={(event) => setInputValue(event.target.value)}
+                  onKeyDown={handleKeyDown}
+                  rows={1}
+                />
+                <button className="send-button" onClick={() => void handleSendMessage()} disabled={!inputValue.trim() || isLoading}>
+                  <Send size={18} />
+                </button>
+              </div>
+
+              {activePdfPath && (
+                <div className="citation-bar chat-citation-bar">
+                  <textarea
+                    value={citationDraft}
+                    onChange={(event) => setCitationDraft(event.target.value)}
+                    placeholder="如果要保留原文引用，可把当前选中的 PDF 片段粘贴到这里，再加入会话输入框。"
+                    rows={2}
+                  />
+                  <button className="action-button primary" onClick={handleAddCitation} disabled={!citationDraft.trim()}>
+                    加入引用
+                  </button>
+                </div>
+              )}
+
+              <div className="support-grid">
+                <section className="support-panel" onMouseUp={handleScopedTextSelection}>
+                  <div className="support-panel-title">引用片段</div>
+                  <div className="support-panel-body">
+                    {citations.length === 0 && <div className="support-empty">暂无引用。</div>}
+                    {citations.slice(0, 8).map((citation) => (
+                      <div key={citation.id} className="support-item">
+                        <div className="support-item-title">
+                          {getFileName(citation.path)} p.{citation.page}
+                        </div>
+                        <div className="support-item-text">{citation.snippet}</div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+
+                <section className="support-panel" onMouseUp={handleScopedTextSelection}>
+                  <div className="support-panel-title">笔记</div>
+                  <div className="support-panel-body">
+                    {notes.length === 0 && <div className="support-empty">暂无笔记。</div>}
+                    {notes.slice(0, 8).map((note) => (
+                      <div key={note.id} className="support-item">
+                        <div className="support-item-text">{note.text}</div>
+                        <div className="support-item-actions">
+                          <button style={TOOL_BUTTON_STYLE} onClick={() => handleInsertNote(note)}>
+                            插入输入框
+                          </button>
+                          <button style={TOOL_BUTTON_STYLE} onClick={() => handleDeleteNote(note.id)}>
+                            删除
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+
+                <section className="support-panel" onMouseUp={handleScopedTextSelection}>
+                  <div className="support-panel-title">知识库搜索</div>
+                  <div className="knowledge-search-row">
+                    <input
+                      className="knowledge-search-input"
+                      value={knowledgeQuery}
+                      onChange={(event) => setKnowledgeQuery(event.target.value)}
+                      onKeyDown={handleKnowledgeSearchKeyDown}
+                      placeholder="输入关键词检索已导入知识库，例如 LoRA、adapter、thyroid cancer"
+                    />
+                    <button
+                      style={TOOL_BUTTON_STYLE}
+                      onClick={() => void handleKnowledgeSearch()}
+                      disabled={isKnowledgeSearching || !knowledgeQuery.trim()}
+                    >
+                      {isKnowledgeSearching ? "搜索中" : "搜索"}
+                    </button>
+                  </div>
+                  <div className="support-panel-body">
+                    {!lastKnowledgeQuery && !isKnowledgeSearching && <div className="support-empty">输入关键词后检索本地知识库摘要片段。</div>}
+                    {lastKnowledgeQuery && !isKnowledgeSearching && knowledgeResults.length === 0 && (
+                      <div className="support-empty">没有找到与“{lastKnowledgeQuery}”相关的知识库片段。</div>
+                    )}
+                    {knowledgeResults.map((doc, index) => (
+                      <div key={doc.id} className="support-item">
+                        <div className="support-item-title">
+                          {index + 1}. {getFileName(doc.path)}
+                        </div>
+                        <div className="support-item-text">{buildDocSnippet(doc.content)}</div>
+                        <div className="support-item-actions">
+                          <button style={TOOL_BUTTON_STYLE} onClick={() => handleInsertKnowledgeResult(doc)}>
+                            插入输入框
+                          </button>
+                          <button style={TOOL_BUTTON_STYLE} onClick={() => void invoke("open_file", { path: doc.path })}>
+                            打开文件
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              </div>
+            </div>
+          </Panel>
+        </Group>
       </div>
 
       {selectionMenu && (
