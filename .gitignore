@@ -1,5 +1,5 @@
 # Logs
-logs
+logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
@@ -7,22 +7,43 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
+# Node / pnpm
+node_modules/
+.pnpm/
+.pnpm-store/
+mtest/
+mobile-app/node_modules.pnpm-backup/
+
+# Frontend build output
+dist/
+dist-ssr/
 *.local
-.expo
-mobile-app/.expo
-mobile-app/dist
-mobile-app/web-build
+
+# Expo / React Native local output
+.expo/
+mobile-app/.expo/
+mobile-app/dist/
+mobile-app/web-build/
+mobile-app/android/.gradle/
+mobile-app/android/.kotlin/
+mobile-app/android/build/
+mobile-app/android/app/build/
+mobile-app/android/app/.cxx/
+mobile-app/android/.cxx-expo-modules-core/
+mobile-app/android/autolink-*.json
+mobile-app/android/build-*.log
+mobile-app/android/local.properties
 mobile-app/android/keystore.properties
 mobile-app/android/app/*.keystore
 mobile-app/android/app/*.jks
 
+# Temporary files
+TEMP_app_slice.txt
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
-.idea
+.idea/
 .DS_Store
 *.suo
 *.ntvs*
@@ -30,8 +51,5 @@ mobile-app/android/app/*.jks
 *.sln
 *.sw?
 
-coding_plan.md
-masterplan.md
-
-# 忽略所有 Tauri 的边车(Sidecar)二进制文件
+# Tauri sidecar binaries
 src-tauri/binaries/*.exe

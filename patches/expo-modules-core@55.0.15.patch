@@ -1,0 +1,23 @@
+diff --git a/android/build.gradle b/android/build.gradle
+index 7f4780a..c46da1c 100644
+--- a/android/build.gradle
++++ b/android/build.gradle
+@@ -105,10 +105,11 @@ android {
+     externalNativeBuild {
+       cmake {
+         def cppArguments = [
+           "-DANDROID_STL=c++_shared",
+           "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON",
++          "-DCMAKE_OBJECT_PATH_MAX=180",
+           "-DREACT_NATIVE_DIR=${expoModuleExtension.reactNativeDir}",
+           "-DREACT_NATIVE_TARGET_VERSION=${expoModuleExtension.reactNativeVersion.minor}",
+           "-DUSE_HERMES=${USE_HERMES}",
+           "-DUNIT_TEST=${isExpoModulesCoreTests}"
+         ]
+@@ -127,5 +128,6 @@ android {
+   externalNativeBuild {
+     cmake {
+       path "CMakeLists.txt"
++      buildStagingDirectory "${rootProject.projectDir}/.cxx-expo-modules-core"
+     }
+   }
