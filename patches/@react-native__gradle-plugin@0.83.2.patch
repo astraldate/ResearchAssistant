@@ -1,0 +1,36 @@
+diff --git a/react-native-gradle-plugin/src/main/kotlin/com/facebook/react/tasks/BundleHermesCTask.kt b/react-native-gradle-plugin/src/main/kotlin/com/facebook/react/tasks/BundleHermesCTask.kt
+index 9f1b0ef..1ab74a0 100644
+--- a/react-native-gradle-plugin/src/main/kotlin/com/facebook/react/tasks/BundleHermesCTask.kt
++++ b/react-native-gradle-plugin/src/main/kotlin/com/facebook/react/tasks/BundleHermesCTask.kt
+@@ -10,4 +10,5 @@
+ import com.facebook.react.utils.Os.cliPath
++import com.facebook.react.utils.Os.isWindows
+ import com.facebook.react.utils.detectOSAwareHermesCommand
+ import com.facebook.react.utils.moveTo
+ import com.facebook.react.utils.windowsAwareCommandLine
+@@ -176,17 +177,21 @@ abstract class BundleHermesCTask : DefaultTask() {
+   internal fun getHermescCommand(
+       hermesCommand: String,
+       bytecodeFile: File,
+       bundleFile: File,
+   ): List<Any> {
+     val rootFile = root.get().asFile
+-    return windowsAwareCommandLine(
++    val bytecodePath = if (isWindows()) bytecodeFile.absolutePath else bytecodeFile.cliPath(rootFile)
++    val bundlePath = if (isWindows()) bundleFile.absolutePath else bundleFile.cliPath(rootFile)
++    val command =
++        listOf(
+         hermesCommand,
+         "-w",
+         "-emit-binary",
+         "-max-diagnostic-width=80",
+         "-out",
+-        bytecodeFile.cliPath(rootFile),
+-        bundleFile.cliPath(rootFile),
++        bytecodePath,
++        bundlePath,
+         *hermesFlags.get().toTypedArray(),
+-    )
++        )
++    return if (isWindows()) command else windowsAwareCommandLine(command)
+   }
