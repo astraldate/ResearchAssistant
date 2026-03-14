@@ -296,7 +296,17 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
   };
 
   return (
-    <div className="model-selector-container" style={{ padding: "16px", borderTop: "1px solid var(--border-color)" }}>
+    <div
+      className="model-selector-container"
+      style={{
+        padding: "16px",
+        borderTop: "1px solid var(--border-color)",
+        flexShrink: 0,
+        position: "relative",
+        zIndex: 1,
+        overflowX: "hidden",
+      }}
+    >
       <div
         className="model-selector-header"
         style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}
@@ -369,12 +379,20 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
         }}
       >
         <div style={{ fontSize: "0.8rem", color: "var(--text-secondary)", marginBottom: "6px" }}>{ZH.recTitle}</div>
-        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "minmax(0, 1fr) auto auto",
+            gap: "8px",
+            alignItems: "center",
+          }}
+        >
           <select
             value={selectedRecommended}
             onChange={(event) => setSelectedRecommended(event.target.value)}
             style={{
-              flex: 1,
+              minWidth: 0,
+              width: "100%",
               padding: "6px",
               borderRadius: "4px",
               border: "1px solid var(--border-color)",
@@ -440,7 +458,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
         )}
       </div>
 
-      <div className="pull-model-form" style={{ display: "flex", gap: "8px" }}>
+      <div className="pull-model-form" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: "8px" }}>
         <input
           type="text"
           placeholder={ZH.pullPlaceholder}
@@ -448,7 +466,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
           onChange={(e) => setNewModelName(e.target.value)}
           disabled={isPulling}
           style={{
-            flex: 1,
+            minWidth: 0,
             padding: "6px",
             borderRadius: "4px",
             border: "1px solid var(--border-color)",
