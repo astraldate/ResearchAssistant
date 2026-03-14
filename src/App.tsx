@@ -2,13 +2,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { BookOpen, ChevronDown, ChevronUp, FilePlus, FolderOpen, Inbox, LayoutGrid, MessageSquareText, Settings, X } from "lucide-react";
-import { Group, Panel, Separator } from "react-resizable-panels";
+import { BookOpen, FilePlus, FolderOpen, LayoutGrid, MessageSquareText, Settings, X } from "lucide-react";
+import { Group, Panel, Separator, type PanelImperativeHandle } from "react-resizable-panels";
 import { FileNode, FileTree } from "./components/FileTree";
 import { ChatInterface } from "./components/ChatInterface";
 import { CardLibrary } from "./components/CardLibrary";
 import { MobileInboxPanel } from "./components/MobileInboxPanel";
 import { ModelSelector } from "./components/ModelSelector";
+import { PdfDock } from "./components/PdfDock";
 import "./App.css";
 
 type InferenceMode = "single_mm" | "dual_pipeline";
@@ -133,51 +134,17 @@ const STAGE_LABELS: Record<string, string> = {
   finalize: "保存索引",
 };
 
-const normalizeOllamaVersion = (value: string) => value.trim().replace(/^v/i, "");
-
-const parseOllamaVersion = (value: string): [number, number, number] | null => {
-  const match = normalizeOllamaVersion(value).match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
-  if (!match) return null;
-  return [
-    Number.parseInt(match[1], 10),
-    Number.parseInt(match[2] ?? "0", 10),
-    Number.parseInt(match[3] ?? "0", 10),
-  ];
-};
-
-const compareOllamaVersions = (left: string, right: string) => {
-  const leftParts = parseOllamaVersion(left);
-  const rightParts = parseOllamaVersion(right);
-  if (!leftParts || !rightParts) return 0;
-
-  for (let index = 0; index < 3; index += 1) {
-    const diff = leftParts[index] - rightParts[index];
-    if (diff !== 0) {
-      return diff > 0 ? 1 : -1;
-    }
-  }
-
-  return 0;
-};
-
-const getErrorMessage = (error: unknown) => {
-  if (error instanceof Error) return error.message;
-  return String(error);
-};
-
-const isOllamaUpgradeRequiredError = (message: string) => {
-  const normalized = message.toLowerCase();
-  return (
-    normalized.includes("requires a newer version of ollama") ||
-    normalized.includes("pull model manifest: 412") ||
-    normalized.includes("download the latest version at: https://ollama.com/download")
-  );
-};
+const isPdfFile = (path: string | null | undefined) => Boolean(path && /\.pdf$/i.test(path));
+const DEFAULT_TWO_PANEL_LAYOUT = { sidebar: 24, main: 76 };
+const DEFAULT_THREE_PANEL_LAYOUT = { sidebar: 20, main: 35, pdf: 45 };
 
 function App() {
   const [files, setFiles] = useState<FileNode[]>([]);
   const [workspacePath, setWorkspacePath] = useState<string | null>(null);
   const [activeFilePath, setActiveFilePath] = useState<string | null>(null);
+  const [pdfPage, setPdfPage] = useState(1);
+  const [isPdfDockVisible, setIsPdfDockVisible] = useState(false);
+  const [isPdfFocusMode, setIsPdfFocusMode] = useState(false);
   const [currentModel, setCurrentModel] = useState("");
   const [mainView, setMainView] = useState<MainView>("chat");
   const [ingestMode, setIngestMode] = useState<IngestMode>("overwrite");
@@ -198,11 +165,17 @@ function App() {
   const [isStatusBannerExpanded, setIsStatusBannerExpanded] = useState(false);
 
   const statusTimerRef = useRef<number | null>(null);
+  const previousPdfPathRef = useRef<string | null>(null);
+  const focusRestoreLayoutRef = useRef(DEFAULT_THREE_PANEL_LAYOUT);
+  const sidebarPanelRef = useRef<PanelImperativeHandle | null>(null);
+  const mainPanelRef = useRef<PanelImperativeHandle | null>(null);
+  const pdfPanelRef = useRef<PanelImperativeHandle | null>(null);
 
   const progressPercent = useMemo(() => {
     if (!ingestProgress || ingestProgress.total <= 0) return 0;
     return Math.min(100, Math.round((ingestProgress.current / ingestProgress.total) * 100));
   }, [ingestProgress]);
+  const activePdfPath = useMemo(() => (isPdfFile(activeFilePath) ? activeFilePath : null), [activeFilePath]);
 
   const stageLabel = STAGE_LABELS[ingestProgress?.stage || ""] || "处理中";
 
@@ -579,7 +552,7 @@ function App() {
 
   const importAndIngestPath = async (selectedPath: string) => {
     const imported = await invoke<WorkspaceImportResult>("import_directory_to_workspace", {
-      source_path: selectedPath,
+      sourcePath: selectedPath,
       mode: ingestMode,
     });
     await applyImportedWorkspace(imported, "文件夹已导入工作空间。");
@@ -587,7 +560,7 @@ function App() {
 
   const importAndIngestFiles = async (selectedPaths: string[]) => {
     const imported = await invoke<WorkspaceImportResult>("import_paths_to_workspace", {
-      source_paths: selectedPaths,
+      sourcePaths: selectedPaths,
       mode: ingestMode,
     });
     await applyImportedWorkspace(imported, `已导入 ${selectedPaths.length} 个项目到工作空间。`);
@@ -636,7 +609,6 @@ function App() {
     const imported = await invoke<ZoteroImportResult>("import_zotero_storage_to_workspace", {
       sourceStorage: selected,
       sourceStoragePath: selected,
-      source_storage_path: selected,
       mode: ingestMode,
     });
     await applyImportedZotero(imported);
@@ -654,7 +626,6 @@ function App() {
       const imported = await invoke<ZoteroImportResult>("import_zotero_storage_to_workspace", {
         sourceStorage: best.storage_path,
         sourceStoragePath: best.storage_path,
-        source_storage_path: best.storage_path,
         mode: ingestMode,
       });
       await applyImportedZotero(imported);
@@ -671,13 +642,81 @@ function App() {
     if (node.type_name !== "file") return;
     setActiveFilePath(node.path);
     setMainView("chat");
-    if (node.path.toLowerCase().endsWith(".pdf")) return;
+    if (node.path.toLowerCase().endsWith(".pdf")) {
+      setPdfPage(1);
+      setIsPdfDockVisible(true);
+      return;
+    }
     try {
       await invoke("open_file", { path: node.path });
     } catch (error) {
       showPersistentStatus(`打开文件失败：${String(error)}`, "error");
     }
   };
+
+  useEffect(() => {
+    if (!activePdfPath) {
+      const restoredSidebarSize = isPdfFocusMode
+        ? focusRestoreLayoutRef.current.sidebar
+        : sidebarPanelRef.current?.getSize().asPercentage ?? DEFAULT_TWO_PANEL_LAYOUT.sidebar;
+      if (isPdfFocusMode) {
+        setIsPdfFocusMode(false);
+      }
+      focusRestoreLayoutRef.current = DEFAULT_THREE_PANEL_LAYOUT;
+      previousPdfPathRef.current = null;
+      setIsPdfDockVisible(false);
+      window.requestAnimationFrame(() => {
+        sidebarPanelRef.current?.resize(`${restoredSidebarSize}%`);
+        mainPanelRef.current?.resize(`${100 - restoredSidebarSize}%`);
+      });
+      return;
+    }
+    if (previousPdfPathRef.current !== activePdfPath) {
+      setIsPdfDockVisible(true);
+      previousPdfPathRef.current = activePdfPath;
+    }
+  }, [activePdfPath, isPdfFocusMode]);
+
+  const handleTogglePdfFocusMode = useCallback(() => {
+    if (!activePdfPath || !isPdfDockVisible) return;
+
+    if (isPdfFocusMode) {
+      const restored = focusRestoreLayoutRef.current;
+      setIsPdfFocusMode(false);
+      window.requestAnimationFrame(() => {
+        sidebarPanelRef.current?.resize(`${restored.sidebar}%`);
+        mainPanelRef.current?.resize(`${restored.main}%`);
+        pdfPanelRef.current?.resize(`${restored.pdf}%`);
+      });
+      return;
+    }
+
+    focusRestoreLayoutRef.current = {
+      sidebar: sidebarPanelRef.current?.getSize().asPercentage ?? DEFAULT_THREE_PANEL_LAYOUT.sidebar,
+      main: mainPanelRef.current?.getSize().asPercentage ?? DEFAULT_THREE_PANEL_LAYOUT.main,
+      pdf: pdfPanelRef.current?.getSize().asPercentage ?? DEFAULT_THREE_PANEL_LAYOUT.pdf,
+    };
+
+    setIsPdfFocusMode(true);
+    window.requestAnimationFrame(() => {
+      sidebarPanelRef.current?.resize("0%");
+      mainPanelRef.current?.resize("0%");
+      pdfPanelRef.current?.resize("100%");
+    });
+  }, [activePdfPath, isPdfDockVisible, isPdfFocusMode]);
+
+  const handleClosePdfDock = useCallback(() => {
+    const sidebarSize = isPdfFocusMode
+      ? focusRestoreLayoutRef.current.sidebar
+      : sidebarPanelRef.current?.getSize().asPercentage ?? DEFAULT_TWO_PANEL_LAYOUT.sidebar;
+    setIsPdfFocusMode(false);
+    focusRestoreLayoutRef.current = DEFAULT_THREE_PANEL_LAYOUT;
+    setIsPdfDockVisible(false);
+    window.requestAnimationFrame(() => {
+      sidebarPanelRef.current?.resize(`${sidebarSize}%`);
+      mainPanelRef.current?.resize(`${100 - sidebarSize}%`);
+    });
+  }, [isPdfFocusMode]);
 
   const handleInferenceModeChange = async (nextMode: InferenceMode) => {
     setIsSavingInferenceMode(true);
@@ -890,8 +929,14 @@ function App() {
         </div>
       )}
 
-      <Group orientation="horizontal" className="app-panels">
-        <Panel defaultSize={320} minSize={260} maxSize={680} className="sidebar-panel">
+      <Group orientation="horizontal" className="app-panels" id="app-main-panels">
+        <Panel
+          panelRef={sidebarPanelRef}
+          defaultSize={activePdfPath && isPdfDockVisible ? "20%" : "24%"}
+          minSize={isPdfFocusMode ? "0%" : "16%"}
+          maxSize="34%"
+          className={`sidebar-panel ${isPdfFocusMode ? "panel-collapsed" : ""}`}
+        >
           <aside className="sidebar">
             <div className="sidebar-header">
               <span>工作空间</span>
@@ -934,26 +979,65 @@ function App() {
           </aside>
         </Panel>
 
-        <Separator className="PanelResizeHandle" />
+        <Separator className={`PanelResizeHandle ${isPdfFocusMode ? "panel-separator-hidden" : ""}`} />
 
-        <Panel className="main-panel">
-          <div className="main-panel-tabs">
-            <button className={`tab-button ${mainView === "chat" ? "active" : ""}`} onClick={() => setMainView("chat")}>
-              <MessageSquareText size={16} />
-              对话
-            </button>
-            <button className={`tab-button ${mainView === "cards" ? "active" : ""}`} onClick={() => setMainView("cards")}>
-              <LayoutGrid size={16} />
-              卡片库
-            </button>
-            <button className={`tab-button ${mainView === "inbox" ? "active" : ""}`} onClick={() => setMainView("inbox")}>
-              <Inbox size={16} />
-              待处理收件箱
-            </button>
+        <Panel
+          panelRef={mainPanelRef}
+          defaultSize={activePdfPath && isPdfDockVisible ? "35%" : "76%"}
+          minSize={isPdfFocusMode ? "0%" : "24%"}
+          className={`main-panel ${isPdfFocusMode ? "panel-collapsed" : ""}`}
+        >
+          <div className="main-panel-frame">
+            <div className="main-panel-tabs">
+              <button className={`tab-button ${mainView === "chat" ? "active" : ""}`} onClick={() => setMainView("chat")}>
+                <MessageSquareText size={16} />
+                对话
+              </button>
+              <button className={`tab-button ${mainView === "cards" ? "active" : ""}`} onClick={() => setMainView("cards")}>
+                <LayoutGrid size={16} />
+                卡片库
+              </button>
+            </div>
+
+            {mainView === "chat" ? (
+              <ChatInterface
+                currentModel={currentModel}
+                activeFilePath={activeFilePath}
+                pdfPage={pdfPage}
+                onPdfPageChange={setPdfPage}
+                onStatus={handleChildStatus}
+                onCardSaved={handleCardSaved}
+              />
+            ) : (
+              <CardLibrary refreshToken={cardsRefreshToken} activeRoot={cardSettings?.active_root} onStatus={handleChildStatus} />
+            )}
           </div>
-
-          {mainContent}
         </Panel>
+
+        {activePdfPath && isPdfDockVisible && (
+          <>
+            <Separator className={`PanelResizeHandle ${isPdfFocusMode ? "panel-separator-hidden" : ""}`} />
+            <Panel
+              panelRef={pdfPanelRef}
+              defaultSize="45%"
+              minSize="28%"
+              maxSize={isPdfFocusMode ? "100%" : "62%"}
+              className={`pdf-dock-panel ${isPdfFocusMode ? "pdf-focus-active" : ""}`}
+            >
+              <PdfDock
+                activePdfPath={activePdfPath}
+                currentModel={currentModel || REQUIRED_MODELS.chat}
+                currentPage={pdfPage}
+                onPageChange={setPdfPage}
+                onStatus={handleChildStatus}
+                onCardSaved={handleCardSaved}
+                isFocusMode={isPdfFocusMode}
+                onToggleFocusMode={handleTogglePdfFocusMode}
+                onClose={handleClosePdfDock}
+              />
+            </Panel>
+          </>
+        )}
       </Group>
 
       <div className="app-copyright-badge" aria-label="版权声明">
