@@ -1,7 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { useLayoutEffect } from "react";
-import { AlertTriangle, List, LoaderCircle, MoveHorizontal, ZoomIn, ZoomOut } from "lucide-react";
+import { AlertTriangle, List, LoaderCircle, MoveHorizontal, X, ZoomIn, ZoomOut } from "lucide-react";
 import { GlobalWorkerOptions, getDocument, renderTextLayer } from "pdfjs-dist";
 import type { PDFDocumentLoadingTask, PDFDocumentProxy, PDFPageProxy, RenderTask, TextLayerRenderTask } from "pdfjs-dist";
 import { MarkdownRenderer } from "./MarkdownRenderer";
@@ -35,6 +34,21 @@ interface PdfSelectionState {
   popoverLeft: number;
   popoverTop: number;
   overlay: SelectionOverlayMode;
+}
+
+interface TranslatePdfPageResult {
+  page: number;
+  translated_markdown: string;
+  source_text_length: number;
+  generated_at: string;
+}
+
+interface PageTranslationState {
+  open: boolean;
+  phase: "idle" | "loading" | "success" | "error";
+  result: TranslatePdfPageResult | null;
+  error: string | null;
+  requestedPage: number | null;
 }
 
 interface RenderedPageState {
@@ -104,6 +118,8 @@ const POPOVER_ESTIMATED_HEIGHT = 560;
 const FLOATING_BUTTON_WIDTH = 84;
 const FLOATING_BUTTON_HEIGHT = 36;
 const POPOVER_ANCHOR_GAP = 14;
+const TOOL_MODE_STORAGE_KEY = "ra_pdf_reader_tool_mode_v1";
+const MAX_TRANSLATE_SELECTION_CHARS = 800;
 
 GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -131,6 +147,12 @@ const buildPageTranslationCacheKey = (pdfPath: string, page: number, model: stri
 const normalizeSelectedText = (value: string) => value.replace(/\s+/g, " ").trim();
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 const readStoredToolMode = (): ReaderToolMode => (localStorage.getItem(TOOL_MODE_STORAGE_KEY) === "translate" ? "translate" : "explain");
+const formatPdfRenderError = (message: string) => {
+  if (/ToUnicode CMap/i.test(message)) {
+    return "PDF 内嵌字体映射异常，已切换到兼容预览。这个文件的划词解释和整页翻译可能不可用。";
+  }
+  return `PDF 页面渲染失败，已切换为兼容模式：${message}`;
+};
 
 const resolveOutlinePageNumber = async (pdfDocument: PDFDocumentProxy, destination: unknown): Promise<number | null> => {
   let resolvedDestination = destination;
@@ -463,6 +485,8 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
   const viewportAnchorRef = useRef<ViewportAnchorState | null>(null);
   const gestureZoomStartRef = useRef<number | null>(null);
   const toolbarHideTimerRef = useRef<number | null>(null);
+  const onStatusRef = useRef(onStatus);
+  const onPageChangeRef = useRef(onPageChange);
 
   const [pdfBytes, setPdfBytes] = useState<Uint8Array | null>(null);
   const [pdfObjectUrl, setPdfObjectUrl] = useState<string | null>(null);
@@ -484,11 +508,16 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
   const [pageAspectRatios, setPageAspectRatios] = useState<Record<number, number>>({});
   const [renderWindow, setRenderWindow] = useState({ start: 1, end: 3 });
   const [isToolbarAutoHidden, setIsToolbarAutoHidden] = useState(false);
+  const [pageTranslation, setPageTranslation] = useState<PageTranslationState>(EMPTY_PAGE_TRANSLATION_STATE);
 
   useEffect(() => {
     onStatusRef.current = onStatus;
     onPageChangeRef.current = onPageChange;
   }, [onPageChange, onStatus]);
+
+  useEffect(() => {
+    localStorage.setItem(TOOL_MODE_STORAGE_KEY, readerToolMode);
+  }, [readerToolMode]);
 
   useEffect(() => {
     currentPageRef.current = currentPage;
@@ -546,6 +575,7 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
     setPageAspectRatios({});
     setRenderWindow({ start: 1, end: 3 });
     setIsToolbarAutoHidden(false);
+    setPageTranslation(EMPTY_PAGE_TRANSLATION_STATE);
     clearToolbarHideTimer();
     pageRefs.current.clear();
   }, [activePdfPath, clearToolbarHideTimer]);
@@ -1087,7 +1117,7 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
   }, [commitPageState, pageCount, pdfDocument, requestedPage, scrollToPage, viewerMode]);
 
   const handlePdfRenderError = useCallback((message: string) => {
-    const fullMessage = `PDF 页面渲染失败，已切换为兼容模式：${message}`;
+    const fullMessage = formatPdfRenderError(message);
     setViewerMode("compat");
     setViewerError(fullMessage);
     onStatusRef.current(fullMessage, "error", true);
@@ -1120,7 +1150,7 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
       if (readerToolMode === "translate" && text.length > MAX_TRANSLATE_SELECTION_CHARS) {
         setSelection(null);
         window.getSelection()?.removeAllRanges();
-        onStatusRef.current("选中文本过长，请使用“翻译本页”", "info", false);
+        onStatusRef.current("选中文本过长，请使用“整页翻译”", "info", false);
         return;
       }
 
@@ -1167,6 +1197,77 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
     setSelection(null);
     window.getSelection()?.removeAllRanges();
   };
+
+  const handleClosePageTranslation = useCallback(() => {
+    setPageTranslation(EMPTY_PAGE_TRANSLATION_STATE);
+  }, []);
+
+  const handleTranslateCurrentPage = useCallback(async () => {
+    if (viewerMode !== "pdfjs") return;
+    if (!currentModel) {
+      onStatusRef.current("当前没有可用模型，暂时无法执行整页翻译。", "error", true);
+      return;
+    }
+
+    const page = normalizePageNumber(currentPageRef.current);
+    const cacheKey = buildPageTranslationCacheKey(activePdfPath, page, currentModel);
+    const cached = sessionStorage.getItem(cacheKey);
+
+    setSelection(null);
+    window.getSelection()?.removeAllRanges();
+
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached) as TranslatePdfPageResult;
+        setPageTranslation({
+          open: true,
+          phase: "success",
+          result: parsed,
+          error: null,
+          requestedPage: page,
+        });
+        return;
+      } catch {
+        sessionStorage.removeItem(cacheKey);
+      }
+    }
+
+    setPageTranslation({
+      open: true,
+      phase: "loading",
+      result: null,
+      error: null,
+      requestedPage: page,
+    });
+
+    try {
+      const result = await invoke<TranslatePdfPageResult>("translate_pdf_page", {
+        request: {
+          pdf_path: activePdfPath,
+          page,
+          model: currentModel,
+        },
+      });
+      sessionStorage.setItem(cacheKey, JSON.stringify(result));
+      setPageTranslation({
+        open: true,
+        phase: "success",
+        result,
+        error: null,
+        requestedPage: page,
+      });
+    } catch (error) {
+      const message = String(error);
+      setPageTranslation({
+        open: true,
+        phase: "error",
+        result: null,
+        error: message,
+        requestedPage: page,
+      });
+      onStatusRef.current(`整页翻译失败：${message}`, "error", true);
+    }
+  }, [activePdfPath, currentModel, normalizePageNumber, viewerMode]);
 
   const zoomOut = () => {
     setSelection(null);
@@ -1351,7 +1452,7 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
 
   const pageNumbers = useMemo(() => Array.from({ length: pageCount }, (_, index) => index + 1), [pageCount]);
   const subtitleText = readerToolMode === "translate"
-    ? "翻译模式下，选中文字会直接弹出中文译文；较长内容请使用“翻译本页”。"
+    ? "翻译模式下，选中文字会直接弹出译文；较长内容请使用“整页翻译”。"
     : "解释模式下，选中术语后点击“解释”即可生成说明与知识卡片。";
   const translatedPageNumber = pageTranslation.result?.page ?? pageTranslation.requestedPage;
 
@@ -1440,6 +1541,36 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
                     ))}
                   </select>
                 </label>
+
+                <div className="pdf-toolbar-group" role="group" aria-label="划词工具模式">
+                  <button
+                    type="button"
+                    className={`action-button ${readerToolMode === "explain" ? "primary" : ""}`}
+                    onClick={() => setReaderToolMode("explain")}
+                    disabled={viewerMode !== "pdfjs"}
+                    title="选中文本后先显示解释入口"
+                  >
+                    解释模式
+                  </button>
+                  <button
+                    type="button"
+                    className={`action-button ${readerToolMode === "translate" ? "primary" : ""}`}
+                    onClick={() => setReaderToolMode("translate")}
+                    disabled={viewerMode !== "pdfjs"}
+                    title="选中文本后直接打开翻译"
+                  >
+                    翻译模式
+                  </button>
+                  <button
+                    type="button"
+                    className="action-button"
+                    onClick={() => void handleTranslateCurrentPage()}
+                    disabled={viewerMode !== "pdfjs" || isLoading || !currentModel}
+                    title={subtitleText}
+                  >
+                    整页翻译
+                  </button>
+                </div>
 
                 {toolbarActions ? <div className="pdf-toolbar-group pdf-toolbar-group-end">{toolbarActions}</div> : null}
               </div>
@@ -1559,6 +1690,21 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
               </aside>
             )}
           </div>
+        )}
+
+        {viewerMode === "compat" && !isLoading && (
+          pdfObjectUrl ? (
+            <iframe
+              className="pdf-compat-frame"
+              src={pdfObjectUrl}
+              title={`PDF 兼容预览：${getFileName(activePdfPath)}`}
+            />
+          ) : (
+            <div className="pdf-viewer-loading pdf-viewer-error-state">
+              <AlertTriangle size={16} />
+              <span>{viewerError || "无法加载 PDF 兼容预览。"}</span>
+            </div>
+          )
         )}
 
         {viewerMode === "pdfjs" && (
