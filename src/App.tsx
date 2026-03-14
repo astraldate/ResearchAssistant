@@ -2,7 +2,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { BookOpen, FilePlus, FolderOpen, LayoutGrid, MessageSquareText, Settings, X } from "lucide-react";
+import { BookOpen, ChevronDown, ChevronUp, FilePlus, FolderOpen, LayoutGrid, MessageSquareText, Settings, X } from "lucide-react";
 import { Group, Panel, Separator, type PanelImperativeHandle } from "react-resizable-panels";
 import { FileNode, FileTree } from "./components/FileTree";
 import { ChatInterface } from "./components/ChatInterface";
@@ -134,9 +134,50 @@ const STAGE_LABELS: Record<string, string> = {
   finalize: "保存索引",
 };
 
+const OLLAMA_VERSION_PATTERN = /(\d+)\.(\d+)\.(\d+)/;
+
 const isPdfFile = (path: string | null | undefined) => Boolean(path && /\.pdf$/i.test(path));
 const DEFAULT_TWO_PANEL_LAYOUT = { sidebar: 24, main: 76 };
 const DEFAULT_THREE_PANEL_LAYOUT = { sidebar: 20, main: 35, pdf: 45 };
+
+const normalizeOllamaVersion = (value: string | null | undefined) => {
+  const normalized = value?.trim();
+  if (!normalized) return "unknown";
+  const match = normalized.match(OLLAMA_VERSION_PATTERN);
+  return match ? `${match[1]}.${match[2]}.${match[3]}` : normalized;
+};
+
+const parseOllamaVersionParts = (value: string | null | undefined) => {
+  const match = normalizeOllamaVersion(value).match(OLLAMA_VERSION_PATTERN);
+  if (!match) return [0, 0, 0];
+  return match.slice(1).map((part) => Number.parseInt(part, 10));
+};
+
+const compareOllamaVersions = (left: string | null | undefined, right: string | null | undefined) => {
+  const leftParts = parseOllamaVersionParts(left);
+  const rightParts = parseOllamaVersionParts(right);
+  for (let index = 0; index < Math.max(leftParts.length, rightParts.length); index += 1) {
+    const delta = (leftParts[index] ?? 0) - (rightParts[index] ?? 0);
+    if (delta !== 0) return delta;
+  }
+  return 0;
+};
+
+const getErrorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+const isOllamaUpgradeRequiredError = (message: string) => {
+  const normalized = message.toLowerCase();
+  const mentionsOllama = normalized.includes("ollama") || message.includes("Ollama");
+  const indicatesUpgrade =
+    normalized.includes("too old") ||
+    normalized.includes("outdated") ||
+    normalized.includes("unsupported") ||
+    normalized.includes("upgrade") ||
+    normalized.includes("update") ||
+    message.includes("版本过旧") ||
+    message.includes("至少需要");
+  return mentionsOllama && indicatesUpgrade;
+};
 
 function App() {
   const [files, setFiles] = useState<FileNode[]>([]);
@@ -195,7 +236,7 @@ function App() {
     clearStatusTimer();
     const nextBanner: StatusBanner = { message, tone, action };
     const startsExpanded = Boolean((timeoutMs && timeoutMs > 0) || tone === "error" || action);
-    setIsStatusBannerExpanded(startsExpanded);
+    setIsStatusBannerExpanded((current) => current || startsExpanded);
     setStatusBanner(nextBanner);
     if (timeoutMs && timeoutMs > 0) {
       statusTimerRef.current = window.setTimeout(() => {
@@ -798,6 +839,8 @@ function App() {
       <ChatInterface
         currentModel={currentModel}
         activeFilePath={activeFilePath}
+        pdfPage={pdfPage}
+        onPdfPageChange={setPdfPage}
         onStatus={handleChildStatus}
         onCardSaved={handleCardSaved}
       />
@@ -999,18 +1042,7 @@ function App() {
               </button>
             </div>
 
-            {mainView === "chat" ? (
-              <ChatInterface
-                currentModel={currentModel}
-                activeFilePath={activeFilePath}
-                pdfPage={pdfPage}
-                onPdfPageChange={setPdfPage}
-                onStatus={handleChildStatus}
-                onCardSaved={handleCardSaved}
-              />
-            ) : (
-              <CardLibrary refreshToken={cardsRefreshToken} activeRoot={cardSettings?.active_root} onStatus={handleChildStatus} />
-            )}
+            {mainContent}
           </div>
         </Panel>
 
