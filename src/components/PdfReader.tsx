@@ -1,6 +1,6 @@
 ﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { AlertTriangle, ChevronLeft, ChevronRight, LoaderCircle, ZoomIn, ZoomOut } from "lucide-react";
+import { AlertTriangle, LoaderCircle, ZoomIn, ZoomOut } from "lucide-react";
 import { GlobalWorkerOptions, getDocument, renderTextLayer } from "pdfjs-dist";
 import type { PDFDocumentLoadingTask, PDFDocumentProxy, PDFPageProxy, RenderTask, TextLayerRenderTask } from "pdfjs-dist";
 import { LookupMode, TermExplainPopover } from "./TermExplainPopover";
@@ -625,14 +625,6 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
     window.getSelection()?.removeAllRanges();
   };
 
-  const goToPreviousPage = () => {
-    scrollToPage(Math.max(1, currentPageRef.current - 1));
-  };
-
-  const goToNextPage = () => {
-    scrollToPage(Math.min(pageCount || currentPageRef.current + 1, currentPageRef.current + 1));
-  };
-
   const zoomOut = () => {
     setZoomPercent((previous) => Math.max(MIN_ZOOM, previous - ZOOM_STEP));
   };
@@ -664,23 +656,17 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
   return (
     <div className="pdf-reader-shell">
       <div className="pdf-reader-toolbar">
-        <div>
-          <div className="pdf-reader-title">{getFileName(activePdfPath)}</div>
+        <div className="pdf-reader-header-main">
+          <div className="pdf-reader-title" title={getFileName(activePdfPath)}>
+            {getFileName(activePdfPath)}
+          </div>
           <div className="pdf-reader-subtitle">直接在页面上选中术语，点击“解释”即可生成说明与知识卡片。</div>
         </div>
         <div className="pdf-toolbar-actions">
           <div className="pdf-toolbar-group">
-            <button className="action-button" onClick={goToPreviousPage} disabled={viewerMode !== "pdfjs" || currentPage <= 1}>
-              <ChevronLeft size={14} />
-              上一页
-            </button>
             <span className="pdf-toolbar-text">
               {currentPage} / {pageCount || "-"}
             </span>
-            <button className="action-button" onClick={goToNextPage} disabled={viewerMode !== "pdfjs" || (pageCount > 0 && currentPage >= pageCount)}>
-              下一页
-              <ChevronRight size={14} />
-            </button>
           </div>
           <div className="pdf-toolbar-group">
             <button className="action-button" onClick={zoomOut} disabled={viewerMode !== "pdfjs" || zoomPercent <= MIN_ZOOM}>

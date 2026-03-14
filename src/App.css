@@ -392,11 +392,25 @@ textarea:focus {
   font-weight: 700;
 }
 
+.main-view-subtitle {
+  max-width: min(72vw, 760px);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pdf-reader-title {
+  max-width: min(58vw, 920px);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .pdf-workspace {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 14px 18px;
+  gap: 8px;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--border-color);
   background: linear-gradient(180deg, rgba(251, 249, 243, 0.9), rgba(245, 242, 234, 0.78));
 }
@@ -410,7 +424,8 @@ textarea:focus {
 .pdf-reader-shell {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 6px;
+  min-height: 0;
 }
 
 .pdf-workspace.focus-mode .pdf-reader-shell,
@@ -425,7 +440,16 @@ textarea:focus {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
+}
+
+.pdf-reader-toolbar {
+  padding: 2px 0;
+}
+
+.pdf-reader-header-main {
+  min-width: 0;
+  flex: 1;
 }
 
 .pdf-mode-control {
@@ -447,11 +471,14 @@ textarea:focus {
 
 .pdf-toolbar-actions {
   justify-content: flex-end;
+  flex-wrap: nowrap;
+  flex-shrink: 0;
 }
 
 .pdf-toolbar-text {
   font-size: 0.8rem;
   color: var(--text-secondary);
+  white-space: nowrap;
 }
 
 .pdf-mode-control select,
@@ -469,18 +496,18 @@ textarea:focus {
 
 .pdf-viewer-frame {
   position: relative;
-  min-height: 420px;
+  min-height: 520px;
   border: 1px solid var(--border-color);
   overflow: hidden;
   background: rgba(255, 255, 255, 0.96);
 }
 
 .pdfjs-stage {
-  min-height: 520px;
-  height: clamp(520px, 76vh, 1280px);
+  min-height: 620px;
+  height: clamp(620px, 82vh, 1440px);
   overflow: auto;
   background: linear-gradient(180deg, #efe9dc, #e6dfd1);
-  padding: 20px 12px 28px;
+  padding: 12px 10px 14px;
 }
 
 .pdf-workspace.focus-mode .pdfjs-stage {
@@ -611,6 +638,17 @@ textarea:focus {
 
 .pdf-reader-hint {
   color: var(--text-secondary);
+}
+
+.pdf-reader-subtitle {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pdf-reader-footer {
+  font-size: 0.78rem;
+  min-height: 24px;
 }
 
 .pdf-selection-target {

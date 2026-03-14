@@ -505,7 +505,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentModel, acti
       <div className="chat-header">
         <div>
           <div className="main-view-title">科研助手</div>
-          <div className="main-view-subtitle">当前文件：{activeFileLabel}</div>
+          <div className="main-view-subtitle" title={activeFileLabel}>
+            当前文件：{activeFileLabel}
+          </div>
         </div>
         <div className="chat-toolbar">
           {activePdfPath && (
