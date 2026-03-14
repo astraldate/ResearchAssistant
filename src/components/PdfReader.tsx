@@ -1,13 +1,17 @@
-﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useLayoutEffect } from "react";
 import { AlertTriangle, List, LoaderCircle, MoveHorizontal, ZoomIn, ZoomOut } from "lucide-react";
 import { GlobalWorkerOptions, getDocument, renderTextLayer } from "pdfjs-dist";
 import type { PDFDocumentLoadingTask, PDFDocumentProxy, PDFPageProxy, RenderTask, TextLayerRenderTask } from "pdfjs-dist";
+import { MarkdownRenderer } from "./MarkdownRenderer";
+import { PdfTranslatePopover } from "./PdfTranslatePopover";
 import { LookupMode, TermExplainPopover } from "./TermExplainPopover";
 
 type StatusTone = "info" | "error";
 type ViewerMode = "pdfjs" | "compat";
+type ReaderToolMode = "explain" | "translate";
+type SelectionOverlayMode = "button" | "explain" | "translate";
 
 interface PdfReaderProps {
   activePdfPath: string;
@@ -30,7 +34,7 @@ interface PdfSelectionState {
   targetTop: number;
   popoverLeft: number;
   popoverTop: number;
-  showPopover: boolean;
+  overlay: SelectionOverlayMode;
 }
 
 interface RenderedPageState {
@@ -103,6 +107,14 @@ const POPOVER_ANCHOR_GAP = 14;
 
 GlobalWorkerOptions.workerSrc = workerUrl;
 
+const EMPTY_PAGE_TRANSLATION_STATE: PageTranslationState = {
+  open: false,
+  phase: "idle",
+  result: null,
+  error: null,
+  requestedPage: null,
+};
+
 const base64ToBytes = (base64: string) => {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
@@ -114,9 +126,11 @@ const base64ToBytes = (base64: string) => {
 
 const getFileName = (path: string) => path.split(/[\\/]/).pop() || path;
 const storageKey = (path: string) => `ra_pdf_page_v1:${path}`;
+const buildPageTranslationCacheKey = (pdfPath: string, page: number, model: string) =>
+  `ra_pdf_translate_page_v2:${pdfPath}:${page}:${model}`;
 const normalizeSelectedText = (value: string) => value.replace(/\s+/g, " ").trim();
-
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+const readStoredToolMode = (): ReaderToolMode => (localStorage.getItem(TOOL_MODE_STORAGE_KEY) === "translate" ? "translate" : "explain");
 
 const resolveOutlinePageNumber = async (pdfDocument: PDFDocumentProxy, destination: unknown): Promise<number | null> => {
   let resolvedDestination = destination;
@@ -276,9 +290,7 @@ const PdfPageCanvas: React.FC<PdfPageCanvasProps> = ({
 
     const canvasElement = canvasRef.current;
     const textLayerElement = textLayerRef.current;
-    if (!canvasElement || !textLayerElement) {
-      return;
-    }
+    if (!canvasElement || !textLayerElement) return;
 
     let cancelled = false;
     const deviceScale = window.devicePixelRatio || 1;
@@ -368,9 +380,7 @@ const PdfPageCanvas: React.FC<PdfPageCanvasProps> = ({
         setRenderedPage({ width: viewport.width, height: viewport.height });
         setPreviewScale(1);
       } catch (error) {
-        if (cancelled || isCancelledRenderError(error)) {
-          return;
-        }
+        if (cancelled || isCancelledRenderError(error)) return;
         onRenderError(`第 ${pageNumber} 页渲染失败：${String(error)}`);
       }
     };
@@ -442,13 +452,11 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
   onPageChange,
 }) => {
   const stageRef = useRef<HTMLDivElement | null>(null);
-  const onStatusRef = useRef(onStatus);
-  const onPageChangeRef = useRef(onPageChange);
-  const currentPageRef = useRef(1);
   const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const pdfObjectUrlRef = useRef<string | null>(null);
   const pdfDocumentRef = useRef<PDFDocumentProxy | null>(null);
   const loadingTaskRef = useRef<PDFDocumentLoadingTask | null>(null);
+  const currentPageRef = useRef(1);
   const initialPageRef = useRef(1);
   const isPageInputFocusedRef = useRef(false);
   const zoomPercentRef = useRef(100);
@@ -466,6 +474,7 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
   const [stageWidth, setStageWidth] = useState(MIN_STAGE_WIDTH);
   const [viewerMode, setViewerMode] = useState<ViewerMode>("pdfjs");
   const [viewerError, setViewerError] = useState<string | null>(null);
+  const [readerToolMode, setReaderToolMode] = useState<ReaderToolMode>(() => readStoredToolMode());
   const [selection, setSelection] = useState<PdfSelectionState | null>(null);
   const [pageInputValue, setPageInputValue] = useState("1");
   const [outlineEntries, setOutlineEntries] = useState<PdfOutlineEntry[]>([]);
@@ -663,7 +672,7 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
       window.clearTimeout(timeoutId);
       destroyLoadingTask(loadingTask);
     };
-  }, [pdfBytes, viewerMode]);
+  }, [activePdfPath, pdfBytes, viewerMode]);
 
   const handlePageRefChange = useCallback((pageNumber: number, node: HTMLDivElement | null) => {
     if (node) {
@@ -913,7 +922,7 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
 
     const clearSelectionForNavigation = () => {
       window.getSelection()?.removeAllRanges();
-      setSelection((previous) => (previous?.showPopover ? previous : null));
+      setSelection((previous) => (previous && previous.overlay !== "button" ? previous : null));
     };
 
     const handleScroll = () => {
@@ -1090,25 +1099,28 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
     window.requestAnimationFrame(() => {
       const browserSelection = window.getSelection();
       if (!browserSelection || browserSelection.rangeCount === 0 || browserSelection.isCollapsed) {
-        setSelection((previous) => (previous?.showPopover ? previous : null));
+        setSelection((previous) => (previous && previous.overlay !== "button" ? previous : null));
         return;
       }
 
       const anchorNode = browserSelection.anchorNode;
       const focusNode = browserSelection.focusNode;
-      if (!anchorNode || !focusNode) {
-        return;
-      }
+      if (!anchorNode || !focusNode) return;
 
       const pageNumber = resolvePageFromNode(anchorNode) ?? resolvePageFromNode(focusNode) ?? currentPageRef.current;
       const pageElement = pageRefs.current.get(pageNumber);
-      if (!pageElement || !pageElement.contains(anchorNode) || !pageElement.contains(focusNode)) {
-        return;
-      }
+      if (!pageElement || !pageElement.contains(anchorNode) || !pageElement.contains(focusNode)) return;
 
       const text = normalizeSelectedText(browserSelection.toString());
       if (!text) {
         setSelection(null);
+        return;
+      }
+
+      if (readerToolMode === "translate" && text.length > MAX_TRANSLATE_SELECTION_CHARS) {
+        setSelection(null);
+        window.getSelection()?.removeAllRanges();
+        onStatusRef.current("选中文本过长，请使用“翻译本页”", "info", false);
         return;
       }
 
@@ -1142,13 +1154,13 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
         targetTop,
         popoverLeft,
         popoverTop,
-        showPopover: false,
+        overlay: readerToolMode === "translate" ? "translate" : "button",
       });
     });
   };
 
-  const handleOpenPopover = () => {
-    setSelection((previous) => (previous ? { ...previous, showPopover: true } : previous));
+  const handleOpenExplainPopover = () => {
+    setSelection((previous) => (previous ? { ...previous, overlay: "explain" } : previous));
   };
 
   const handleClosePopover = () => {
@@ -1338,6 +1350,10 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
   }, [selection]);
 
   const pageNumbers = useMemo(() => Array.from({ length: pageCount }, (_, index) => index + 1), [pageCount]);
+  const subtitleText = readerToolMode === "translate"
+    ? "翻译模式下，选中文字会直接弹出中文译文；较长内容请使用“翻译本页”。"
+    : "解释模式下，选中术语后点击“解释”即可生成说明与知识卡片。";
+  const translatedPageNumber = pageTranslation.result?.page ?? pageTranslation.requestedPage;
 
   return (
     <div className="pdf-reader-shell">
@@ -1513,21 +1529,52 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
                 />
               ))}
             </div>
-          </div>
-        )}
 
-        {viewerMode === "compat" && pdfObjectUrl && (
-          <iframe className="pdf-compat-frame" title={getFileName(activePdfPath)} src={`${pdfObjectUrl}#page=${currentPage}`} />
+            {pageTranslation.open && (
+              <aside className="pdf-page-translation-panel">
+                <div className="pdf-page-translation-header">
+                  <div>
+                    <div className="pdf-page-translation-title">当前页译文</div>
+                    <div className="pdf-page-translation-meta">当前显示的是第 {translatedPageNumber ?? currentPage} 页译文</div>
+                  </div>
+                  <button className="ghost-icon-button" onClick={handleClosePageTranslation} aria-label="关闭译文面板">
+                    <X size={14} />
+                  </button>
+                </div>
+
+                {pageTranslation.phase === "loading" && (
+                  <div className="pdf-page-translation-state">
+                    <LoaderCircle size={16} className="spin" />
+                    <span>正在翻译第 {pageTranslation.requestedPage ?? currentPage} 页...</span>
+                  </div>
+                )}
+
+                {pageTranslation.phase === "error" && <div className="term-popover-error">{pageTranslation.error}</div>}
+
+                {pageTranslation.phase === "success" && pageTranslation.result && (
+                  <div className="pdf-page-translation-content">
+                    <MarkdownRenderer content={pageTranslation.result.translated_markdown} />
+                  </div>
+                )}
+              </aside>
+            )}
+          </div>
         )}
 
         {viewerMode === "pdfjs" && (
           <div className="pdf-selection-overlay">
-            {selection && !selection.showPopover && (
-              <button className="pdf-selection-target" style={selectionStyle} onMouseDown={(event) => event.preventDefault()} onClick={handleOpenPopover}>
+            {selection && selection.overlay === "button" && (
+              <button
+                className="pdf-selection-target"
+                style={selectionStyle}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={handleOpenExplainPopover}
+              >
                 解释
               </button>
             )}
-            {selection && selection.showPopover && (
+
+            {selection && selection.overlay === "explain" && (
               <TermExplainPopover
                 selectedText={selection.text}
                 pdfPath={activePdfPath}
@@ -1536,6 +1583,18 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
                 lookupMode={lookupMode}
                 onClose={handleClosePopover}
                 onSaveCardSuccess={onSaveCardSuccess}
+                onStatus={onStatus}
+                style={popoverStyle}
+              />
+            )}
+
+            {selection && selection.overlay === "translate" && (
+              <PdfTranslatePopover
+                selectedText={selection.text}
+                pdfPath={activePdfPath}
+                page={selection.page}
+                currentModel={currentModel}
+                onClose={handleClosePopover}
                 onStatus={onStatus}
                 style={popoverStyle}
               />

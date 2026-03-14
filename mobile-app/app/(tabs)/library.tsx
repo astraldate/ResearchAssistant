@@ -1,0 +1,124 @@
+import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { CardTile } from "../../src/components/CardTile";
+import { ScreenShell } from "../../src/components/ScreenShell";
+import { listCards } from "../../src/lib/database";
+import { bootstrapSync } from "../../src/lib/sync";
+import { palette, spacing } from "../../src/theme";
+
+export default function LibraryScreen() {
+  const [searchText, setSearchText] = useState("");
+  const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const cardsQuery = useQuery({
+    queryKey: ["cards", searchText],
+    queryFn: () => listCards(searchText),
+  });
+
+  const selectedCard = cardsQuery.data?.find((card) => card.id === selectedCardId) ?? cardsQuery.data?.[0] ?? null;
+
+  const handleRefresh = async () => {
+    setIsRefreshing(true);
+    try {
+      await bootstrapSync();
+      await cardsQuery.refetch();
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
+  return (
+    <ScreenShell
+      title="卡片库"
+      subtitle="浏览桌面端同步到手机本地的 Markdown 卡片，搜索只查本机缓存。"
+      headerRight={
+        <Pressable style={styles.headerButton} onPress={() => void handleRefresh()}>
+          <Text style={styles.headerButtonText}>{isRefreshing ? "同步中" : "立即同步"}</Text>
+        </Pressable>
+      }
+    >
+      <TextInput
+        value={searchText}
+        onChangeText={setSearchText}
+        placeholder="搜索术语、标题或摘要"
+        placeholderTextColor={palette.slate}
+        style={styles.searchInput}
+      />
+
+      {cardsQuery.isLoading ? (
+        <View style={styles.emptyState}>
+          <ActivityIndicator color={palette.primary} />
+        </View>
+      ) : cardsQuery.data?.length ? (
+        <>
+          {cardsQuery.data.map((card) => (
+            <CardTile key={card.id} card={card} selected={selectedCard?.id === card.id} onPress={() => setSelectedCardId(card.id)} />
+          ))}
+          {selectedCard ? (
+            <View style={styles.detailPanel}>
+              <Text style={styles.detailTitle}>{selectedCard.title || selectedCard.term}</Text>
+              <Text style={styles.detailBody}>{selectedCard.markdown}</Text>
+            </View>
+          ) : null}
+        </>
+      ) : (
+        <View style={styles.emptyState}>
+          <Text style={styles.emptyText}>当前没有可用卡片。先完成桌面端配对，并执行一次同步。</Text>
+        </View>
+      )}
+    </ScreenShell>
+  );
+}
+
+const styles = StyleSheet.create({
+  headerButton: {
+    borderRadius: 999,
+    backgroundColor: palette.primary,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  headerButtonText: {
+    color: "#fff",
+    fontWeight: "700",
+  },
+  searchInput: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: palette.border,
+    backgroundColor: palette.panel,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    color: palette.ink,
+  },
+  detailPanel: {
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: palette.border,
+    backgroundColor: "#fffefb",
+    padding: spacing.lg,
+    gap: spacing.sm,
+  },
+  detailTitle: {
+    color: palette.ink,
+    fontSize: 18,
+    fontWeight: "800",
+  },
+  detailBody: {
+    color: palette.slate,
+    lineHeight: 24,
+  },
+  emptyState: {
+    borderRadius: 22,
+    padding: spacing.xl,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: palette.panel,
+    minHeight: 180,
+  },
+  emptyText: {
+    color: palette.slate,
+    lineHeight: 22,
+    textAlign: "center",
+  },
+});

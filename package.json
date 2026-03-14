@@ -5,9 +5,22 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:desktop": "pnpm run tauri dev",
+    "dev:mobile": "pnpm --dir mobile-app dev",
     "build": "tsc && vite build",
+    "typecheck": "tsc --noEmit",
     "preview": "vite preview",
     "tauri": "tauri"
+  },
+  "workspaces": [
+    "mobile-app",
+    "packages/*"
+  ],
+  "pnpm": {
+    "patchedDependencies": {
+      "@react-native/gradle-plugin@0.83.2": "patches/@react-native__gradle-plugin@0.83.2.patch",
+      "expo-modules-core@55.0.15": "patches/expo-modules-core@55.0.15.patch"
+    }
   },
   "dependencies": {
     "@react-pdf-viewer/core": "^3.12.0",

@@ -1,0 +1,84 @@
+pluginManagement {
+  def reactNativeGradlePlugin = new File(
+    providers.exec {
+      workingDir(rootDir)
+      commandLine("node", "--print", "require.resolve('@react-native/gradle-plugin/package.json', { paths: [require.resolve('react-native/package.json')] })")
+    }.standardOutput.asText.get().trim()
+  ).getParentFile().absolutePath
+  includeBuild(reactNativeGradlePlugin)
+  
+  def expoPluginsPath = new File(
+    providers.exec {
+      workingDir(rootDir)
+      commandLine("node", "--print", "require.resolve('expo-modules-autolinking/package.json', { paths: [require.resolve('expo/package.json')] })")
+    }.standardOutput.asText.get().trim(),
+    "../android/expo-gradle-plugin"
+  ).absolutePath
+  includeBuild(expoPluginsPath)
+}
+
+plugins {
+  id("com.facebook.react.settings")
+  id("expo-autolinking-settings")
+}
+
+extensions.configure(com.facebook.react.ReactSettingsExtension) { ex ->
+  if (System.getenv('EXPO_USE_COMMUNITY_AUTOLINKING') == '1') {
+    ex.autolinkLibrariesFromCommand()
+  } else {
+    def appProjectRoot = new File(rootDir, "..").absolutePath
+    def appNodeModules = new File(rootDir, "../node_modules").absolutePath
+    def expoAutolinkCommand = expoAutolinking.rnConfigCommand
+    def autolinkSnapshot = new File(rootDir, "autolink-node-modules.json")
+    if (org.gradle.internal.os.OperatingSystem.current().isWindows()) {
+      if (autolinkSnapshot.exists()) {
+        expoAutolinkCommand = [
+          "cmd",
+          "/c",
+          "type",
+          autolinkSnapshot.absolutePath,
+        ]
+      } else {
+        def autolinkingScript = new File(rootDir, "../node_modules/.bin/expo-modules-autolinking.CMD").absolutePath
+        expoAutolinkCommand = [
+          "cmd",
+          "/c",
+          autolinkingScript,
+          "react-native-config",
+          "--json",
+          "--platform",
+          "android",
+          "--project-root",
+          appProjectRoot,
+          appNodeModules,
+        ]
+      }
+    } else {
+      expoAutolinkCommand = expoAutolinkCommand + ["--project-root", appProjectRoot, appNodeModules]
+    }
+    ex.autolinkLibrariesFromCommand(expoAutolinkCommand)
+  }
+}
+expoAutolinking.useExpoModules()
+
+def preferShortProjectDir = { projectName, relativePath ->
+  def shortDir = new File(rootDir, relativePath)
+  if (shortDir.exists()) {
+    project(projectName).projectDir = shortDir
+  }
+}
+
+preferShortProjectDir(":expo", "../node_modules/expo/android")
+preferShortProjectDir(":expo-constants", "../node_modules/expo-constants/android")
+preferShortProjectDir(":expo-log-box", "../node_modules/@expo/log-box/android")
+preferShortProjectDir(":expo-modules-core", "../node_modules/expo-modules-core/android")
+preferShortProjectDir(":react-native-gesture-handler", "../node_modules/react-native-gesture-handler/android")
+preferShortProjectDir(":react-native-safe-area-context", "../node_modules/react-native-safe-area-context/android")
+preferShortProjectDir(":react-native-screens", "../node_modules/react-native-screens/android")
+
+rootProject.name = 'Research Assistant Mobile'
+
+expoAutolinking.useExpoVersionCatalog()
+
+include ':app'
+includeBuild(expoAutolinking.reactNativeGradlePlugin)
