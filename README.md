@@ -9,6 +9,7 @@ ResearchAssistant 是一个本地优先的科研助理工作台，当前同时�
 
 ## 仓库结构
 
+
 - `src`：桌面端前端
 - `src-tauri`：桌面端 Rust 后端与移动 companion service
 - `mobile-app`：移动端 Expo Router 工程
