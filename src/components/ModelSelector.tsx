@@ -296,7 +296,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
   };
 
   return (
-    <div className="model-selector-container" style={{ padding: "16px", borderTop: "1px solid var(--border-color)" }}>
+    <div className="model-selector-container">
       <div
         className="model-selector-header"
         style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}
@@ -360,6 +360,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
       )}
 
       <div
+        className="recommended-models-panel"
         style={{
           marginBottom: "10px",
           padding: "8px",
@@ -369,7 +370,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
         }}
       >
         <div style={{ fontSize: "0.8rem", color: "var(--text-secondary)", marginBottom: "6px" }}>{ZH.recTitle}</div>
-        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+        <div className="recommended-models-row" style={{ display: "flex", gap: "8px", alignItems: "center" }}>
           <select
             value={selectedRecommended}
             onChange={(event) => setSelectedRecommended(event.target.value)}
@@ -394,6 +395,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
             ))}
           </select>
           <button
+            className="recommended-action"
             onClick={() => setNewModelName(selectedRecommended)}
             style={{
               padding: "6px 10px",
@@ -407,6 +409,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
             {ZH.fill}
           </button>
           <button
+            className="recommended-action"
             onClick={handlePullSelectedModel}
             disabled={isPulling || !selectedRecommended}
             style={{
