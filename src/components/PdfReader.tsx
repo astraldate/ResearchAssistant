@@ -104,7 +104,7 @@ const base64ToBytes = (base64: string) => {
 const getFileName = (path: string) => path.split(/[\\/]/).pop() || path;
 const storageKey = (path: string) => `ra_pdf_page_v1:${path}`;
 const buildPageTranslationCacheKey = (pdfPath: string, page: number, model: string) =>
-  `ra_pdf_translate_page_v1:${pdfPath}:${page}:${model}`;
+  `ra_pdf_translate_page_v2:${pdfPath}:${page}:${model}`;
 const normalizeSelectedText = (value: string) => value.replace(/\s+/g, " ").trim();
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 const readStoredToolMode = (): ReaderToolMode => (localStorage.getItem(TOOL_MODE_STORAGE_KEY) === "translate" ? "translate" : "explain");
@@ -873,14 +873,14 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
         {!isLoading && (
           <div className={`pdf-reader-body ${pageTranslation.open ? "split" : ""}`}>
             <div className="pdf-reader-main-pane">
-              {viewerMode === "pdfjs" && (
+              {viewerMode === "pdfjs" && pdfDocument && (
                 <div className="pdfjs-stage" ref={stageRef}>
                   <div className="pdfjs-pages">
                     {pageNumbers.map((pageNumber) => (
                       <PdfPageCanvas
                         key={`${activePdfPath}:${pageNumber}:${zoomPercent}:${stageWidth}`}
                         pageNumber={pageNumber}
-                        pdfDocument={pdfDocument as PDFDocumentProxy}
+                        pdfDocument={pdfDocument}
                         stageWidth={stageWidth}
                         zoomPercent={zoomPercent}
                         onSelectionCapture={handleSelectionCapture}

@@ -1,4 +1,4 @@
-﻿use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,7 +24,10 @@ pub struct ReferenceEntry {
     pub extract: String,
 }
 
-pub async fn lookup_term(term: &str, mode: TermLookupMode) -> Result<Option<ReferenceEntry>, String> {
+pub async fn lookup_term(
+    term: &str,
+    mode: TermLookupMode,
+) -> Result<Option<ReferenceEntry>, String> {
     let normalized = term.trim();
     if normalized.is_empty() {
         return Ok(None);
@@ -72,11 +75,9 @@ fn http_client() -> Result<reqwest::Client, String> {
 
 async fn fetch_baidu_baike(term: &str) -> Result<Option<ReferenceEntry>, String> {
     let client = http_client()?;
-    let url = reqwest::Url::parse_with_params(
-        "https://baike.baidu.com/search/word",
-        &[("word", term)],
-    )
-    .map_err(|e| e.to_string())?;
+    let url =
+        reqwest::Url::parse_with_params("https://baike.baidu.com/search/word", &[("word", term)])
+            .map_err(|e| e.to_string())?;
 
     let response = client
         .get(url)
@@ -160,7 +161,10 @@ async fn fetch_stackoverflow_tag_wiki(term: &str) -> Result<Option<ReferenceEntr
 
     Ok(excerpt.map(|text| ReferenceEntry {
         title,
-        url: format!("https://stackoverflow.com/tags/{}/info", percent_encode(&tag)),
+        url: format!(
+            "https://stackoverflow.com/tags/{}/info",
+            percent_encode(&tag)
+        ),
         provider: "Stack Overflow Tag Wiki".to_string(),
         language: Some("en".to_string()),
         extract: text,
@@ -281,7 +285,11 @@ async fn fetch_ncbi_gene_summary(term: &str) -> Result<Option<ReferenceEntry>, S
 
     let url = reqwest::Url::parse_with_params(
         "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi",
-        &[("db", "gene"), ("retmode", "json"), ("id", gene_id.as_str())],
+        &[
+            ("db", "gene"),
+            ("retmode", "json"),
+            ("id", gene_id.as_str()),
+        ],
     )
     .map_err(|e| e.to_string())?;
 
@@ -365,7 +373,10 @@ async fn fetch_ncbi_gene_summary(term: &str) -> Result<Option<ReferenceEntry>, S
     }))
 }
 
-async fn search_ncbi_gene_id(client: &reqwest::Client, term: &str) -> Result<Option<String>, String> {
+async fn search_ncbi_gene_id(
+    client: &reqwest::Client,
+    term: &str,
+) -> Result<Option<String>, String> {
     let url = reqwest::Url::parse_with_params(
         "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
         &[("db", "gene"), ("retmode", "json"), ("term", term)],

@@ -1,19 +1,18 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-use tauri::{State, Emitter, Window};
-use serde::{Deserialize, Serialize};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use futures_util::StreamExt;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::sync::Mutex;
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use tauri::{Emitter, State, Window};
 
-mod rag;
 mod cards;
 mod encyclopedia;
+mod mobile;
+mod rag;
 mod text_decode;
-use cards::{
-    CardSettings, KnowledgeCardDetail, KnowledgeCardSummary, SaveKnowledgeCardRequest,
-};
+use cards::{CardSettings, KnowledgeCardDetail, KnowledgeCardSummary, SaveKnowledgeCardRequest};
 use encyclopedia::TermLookupMode;
 use rag::{Document, IngestMode, IngestProgress, RagState};
 use text_decode::{decode_command_output, decode_text_bytes, read_text_file_auto};
@@ -38,6 +37,35 @@ pub struct OllamaModel {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct OllamaModelList {
     pub models: Vec<OllamaModel>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct OllamaVersionInfo {
+    pub version: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct SystemOllamaInspection {
+    pub app_path: Option<String>,
+    pub app_version: Option<String>,
+    pub service_path: Option<String>,
+    pub service_reported_version: Option<String>,
+    pub service_client_version: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct PrivateOllamaRuntimeInfo {
+    pub executable_path: Option<String>,
+    pub reported_version: Option<String>,
+    pub client_version: Option<String>,
+    pub runtime_root: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct OllamaRuntimeProgress {
+    pub status: String,
+    pub total: Option<u64>,
+    pub completed: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -290,7 +318,10 @@ fn build_tree(path: &Path) -> FileNode {
 }
 
 fn copy_directory_recursive(source_root: &Path, target_root: &Path) -> Result<(), String> {
-    for entry in walkdir::WalkDir::new(source_root).into_iter().filter_map(|e| e.ok()) {
+    for entry in walkdir::WalkDir::new(source_root)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
         let src_path = entry.path();
         let rel = src_path
             .strip_prefix(source_root)
@@ -358,8 +389,14 @@ fn copy_path_into_root(source_path: &Path, target_root: &Path) -> Result<(), Str
     if let Some(parent) = destination.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    std::fs::copy(source_path, &destination)
-        .map_err(|e| format!("Failed to copy '{}' -> '{}': {}", source_path.display(), destination.display(), e))?;
+    std::fs::copy(source_path, &destination).map_err(|e| {
+        format!(
+            "Failed to copy '{}' -> '{}': {}",
+            source_path.display(),
+            destination.display(),
+            e
+        )
+    })?;
     Ok(())
 }
 
@@ -534,12 +571,7 @@ fn collect_zotero_data_dirs_from_profiles(profile_roots: &[PathBuf]) -> Vec<Path
             if !entry.file_type().is_file() {
                 continue;
             }
-            if entry
-                .file_name()
-                .to_string_lossy()
-                .to_lowercase()
-                != "prefs.js"
-            {
+            if entry.file_name().to_string_lossy().to_lowercase() != "prefs.js" {
                 continue;
             }
 
@@ -718,7 +750,10 @@ async fn import_zotero_storage_to_workspace(
 
     let mut copied_pdfs = 0usize;
     let mut skipped_existing = 0usize;
-    for entry in walkdir::WalkDir::new(&storage_root).into_iter().filter_map(|e| e.ok()) {
+    for entry in walkdir::WalkDir::new(&storage_root)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
         if !entry.file_type().is_file() {
             continue;
         }
@@ -746,8 +781,14 @@ async fn import_zotero_storage_to_workspace(
             continue;
         }
 
-        std::fs::copy(entry.path(), &dst)
-            .map_err(|e| format!("Failed to copy '{}' -> '{}': {}", entry.path().display(), dst.display(), e))?;
+        std::fs::copy(entry.path(), &dst).map_err(|e| {
+            format!(
+                "Failed to copy '{}' -> '{}': {}",
+                entry.path().display(),
+                dst.display(),
+                e
+            )
+        })?;
         copied_pdfs += 1;
     }
 
@@ -847,7 +888,10 @@ async fn import_paths_to_workspace(
     for source_raw in &source_paths {
         let source = PathBuf::from(source_raw.trim());
         if !source.exists() {
-            return Err(format!("Selected path does not exist: {}", source.display()));
+            return Err(format!(
+                "Selected path does not exist: {}",
+                source.display()
+            ));
         }
         copy_path_into_root(&source, &target_root)?;
     }
@@ -879,14 +923,19 @@ fn load_inference_settings_from_disk(app: &AppHandle) -> Result<InferenceSetting
     serde_json::from_str::<InferenceSettings>(&content).map_err(|e| e.to_string())
 }
 
-fn save_inference_settings_to_disk(app: &AppHandle, settings: &InferenceSettings) -> Result<(), String> {
+fn save_inference_settings_to_disk(
+    app: &AppHandle,
+    settings: &InferenceSettings,
+) -> Result<(), String> {
     let path = inference_settings_file_path(app)?;
     let content = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
     std::fs::write(path, content).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn get_inference_settings(state: State<'_, InferenceSettingsState>) -> Result<InferenceSettings, String> {
+async fn get_inference_settings(
+    state: State<'_, InferenceSettingsState>,
+) -> Result<InferenceSettings, String> {
     state.get()
 }
 
@@ -920,15 +969,15 @@ fn reveal_path_in_explorer(path: &str) -> Result<(), String> {
     }
     #[cfg(target_os = "linux")]
     {
-         // Try dbus or xdg-open (xdg-open usually opens the file, not folder)
-         // For now, just open the parent folder
-         use std::process::Command;
-         if let Some(parent) = std::path::Path::new(path).parent() {
-             Command::new("xdg-open")
+        // Try dbus or xdg-open (xdg-open usually opens the file, not folder)
+        // For now, just open the parent folder
+        use std::process::Command;
+        if let Some(parent) = std::path::Path::new(path).parent() {
+            Command::new("xdg-open")
                 .arg(parent)
                 .spawn()
                 .map_err(|e| e.to_string())?;
-         }
+        }
     }
     Ok(())
 }
@@ -1011,7 +1060,8 @@ async fn extract_pdf_page_text(path: String, page: u32) -> Result<String, String
 #[tauri::command]
 async fn get_pdf_page_count(path: String) -> Result<u32, String> {
     let doc = lopdf::Document::load(path).map_err(|e| e.to_string())?;
-    u32::try_from(doc.get_pages().len()).map_err(|_| "PDF page count exceeds supported range.".to_string())
+    u32::try_from(doc.get_pages().len())
+        .map_err(|_| "PDF page count exceeds supported range.".to_string())
 }
 
 #[tauri::command]
@@ -1051,29 +1101,609 @@ async fn save_knowledge_card_from_explanation(
 #[tauri::command]
 async fn check_ollama_status() -> bool {
     let client = reqwest::Client::new();
-    client.get("http://localhost:11434")
-        .send()
-        .await
-        .is_ok()
+    client.get("http://localhost:11434").send().await.is_ok()
 }
 
-use tauri_plugin_shell::ShellExt;
-use tauri_plugin_shell::process::CommandEvent;
+const PRIVATE_OLLAMA_RUNTIME_DIR: &str = "ollama_private_runtime";
+const PRIVATE_OLLAMA_RUNTIME_TARGET_VERSION: &str = "0.17.7";
 
-#[tauri::command]
-async fn start_ollama(app: AppHandle) -> Result<String, String> {
-    // Check for system proxy settings
-    let http_proxy = std::env::var("HTTP_PROXY").ok();
-    let https_proxy = std::env::var("HTTPS_PROXY").ok();
-    
-    if let Some(proxy) = &http_proxy {
-        println!("Detected HTTP_PROXY: {}", proxy);
-    }
-    if let Some(proxy) = &https_proxy {
-        println!("Detected HTTPS_PROXY: {}", proxy);
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+const PRIVATE_OLLAMA_RUNTIME_ZIP_URL: &str =
+    "https://github.com/ollama/ollama/releases/download/v0.17.7/ollama-windows-amd64.zip";
+
+#[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+const PRIVATE_OLLAMA_RUNTIME_ZIP_URL: &str =
+    "https://github.com/ollama/ollama/releases/download/v0.17.7/ollama-windows-arm64.zip";
+
+fn private_ollama_runtime_root(app: &AppHandle) -> Result<PathBuf, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    if !app_data_dir.exists() {
+        std::fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
     }
 
-    // Keep Ollama models in app data dir to avoid repeated downloads.
+    let runtime_root = app_data_dir.join(PRIVATE_OLLAMA_RUNTIME_DIR);
+    if !runtime_root.exists() {
+        std::fs::create_dir_all(&runtime_root).map_err(|e| e.to_string())?;
+    }
+    Ok(runtime_root)
+}
+
+fn private_ollama_runtime_current_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(private_ollama_runtime_root(app)?.join("current"))
+}
+
+fn find_ollama_executable_under(root: &Path) -> Option<PathBuf> {
+    walkdir::WalkDir::new(root)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+        .find_map(|entry| {
+            if !entry.file_type().is_file() {
+                return None;
+            }
+
+            let lower_name = entry.file_name().to_string_lossy().to_lowercase();
+            if lower_name == "ollama.exe" {
+                Some(entry.path().to_path_buf())
+            } else {
+                None
+            }
+        })
+}
+
+fn private_ollama_executable_path(app: &AppHandle) -> Result<Option<PathBuf>, String> {
+    let current_dir = private_ollama_runtime_current_dir(app)?;
+    if !current_dir.exists() {
+        return Ok(None);
+    }
+    Ok(find_ollama_executable_under(&current_dir))
+}
+
+#[cfg(target_os = "windows")]
+fn collect_system_ollama_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+        candidates.push(
+            PathBuf::from(local_app_data)
+                .join("Programs")
+                .join("Ollama")
+                .join("ollama.exe"),
+        );
+    }
+    if let Some(program_files) = std::env::var_os("ProgramFiles") {
+        candidates.push(
+            PathBuf::from(program_files)
+                .join("Ollama")
+                .join("ollama.exe"),
+        );
+    }
+    if let Some(program_files_x86) = std::env::var_os("ProgramFiles(x86)") {
+        candidates.push(
+            PathBuf::from(program_files_x86)
+                .join("Ollama")
+                .join("ollama.exe"),
+        );
+    }
+
+    if let Ok(output) = std::process::Command::new("where").arg("ollama").output() {
+        if output.status.success() {
+            let resolved = decode_command_output(&output.stdout);
+            for line in resolved.lines() {
+                let path = line.trim();
+                if !path.is_empty() {
+                    candidates.push(PathBuf::from(path));
+                }
+            }
+        }
+    }
+
+    let mut deduped = Vec::new();
+    let mut seen = HashSet::new();
+    for candidate in candidates {
+        let key = candidate.to_string_lossy().to_lowercase();
+        if seen.insert(key) {
+            deduped.push(candidate);
+        }
+    }
+
+    deduped
+}
+
+#[cfg(target_os = "windows")]
+fn find_system_ollama_executable() -> Option<PathBuf> {
+    collect_system_ollama_candidates()
+        .into_iter()
+        .find(|path| path.exists() && path.is_file())
+}
+
+#[cfg(target_os = "windows")]
+fn system_ollama_app_path(service_path: &Path) -> Option<PathBuf> {
+    service_path
+        .parent()
+        .map(|parent| parent.join("ollama app.exe"))
+        .filter(|path| path.exists() && path.is_file())
+}
+
+#[cfg(target_os = "windows")]
+fn run_ollama_version_command(executable: &Path) -> Result<String, String> {
+    let output = std::process::Command::new(executable)
+        .arg("--version")
+        .output()
+        .map_err(|e| format!("Failed to run '{} --version': {}", executable.display(), e))?;
+
+    let stdout = decode_command_output(&output.stdout);
+    let stderr = decode_command_output(&output.stderr);
+    let combined = format!("{}\n{}", stdout.trim(), stderr.trim())
+        .trim()
+        .to_string();
+    if combined.is_empty() {
+        Err(format!(
+            "'{} --version' returned empty output.",
+            executable.display()
+        ))
+    } else {
+        Ok(combined)
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn parse_version_after_marker(text: &str, marker: &str) -> Option<String> {
+    let start = text.find(marker)? + marker.len();
+    let remainder = text[start..].trim_start();
+    let version = remainder
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .trim_matches(|ch: char| ch == '.' || ch == ',' || ch == ';');
+    if version.is_empty() {
+        None
+    } else {
+        Some(version.to_string())
+    }
+}
+
+fn parse_semver_triplet(value: &str) -> Option<(u32, u32, u32)> {
+    let normalized = value.trim().trim_start_matches('v');
+    let mut parts = normalized.split('.');
+    let major = parts.next()?.parse::<u32>().ok()?;
+    let minor = parts.next().unwrap_or("0").parse::<u32>().ok()?;
+    let patch_part = parts.next().unwrap_or("0");
+    let patch = patch_part
+        .split(|ch: char| !ch.is_ascii_digit())
+        .next()
+        .unwrap_or("0")
+        .parse::<u32>()
+        .ok()?;
+    Some((major, minor, patch))
+}
+
+fn compare_semver_strings(left: &str, right: &str) -> std::cmp::Ordering {
+    match (parse_semver_triplet(left), parse_semver_triplet(right)) {
+        (Some(left_parts), Some(right_parts)) => left_parts.cmp(&right_parts),
+        _ => left.trim().cmp(right.trim()),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn inspect_system_ollama_installation_windows() -> Result<SystemOllamaInspection, String> {
+    let Some(service_path) = find_system_ollama_executable() else {
+        return Ok(SystemOllamaInspection::default());
+    };
+
+    let service_version_output = run_ollama_version_command(&service_path).ok();
+    let app_path = system_ollama_app_path(&service_path);
+    let app_version_output = app_path
+        .as_ref()
+        .and_then(|path| run_ollama_version_command(path).ok());
+
+    Ok(SystemOllamaInspection {
+        app_path: app_path.map(|path| path.to_string_lossy().to_string()),
+        app_version: app_version_output
+            .as_deref()
+            .and_then(|text| text.lines().next())
+            .map(|line| line.trim().to_string())
+            .filter(|text| !text.is_empty()),
+        service_path: Some(service_path.to_string_lossy().to_string()),
+        service_reported_version: service_version_output
+            .as_deref()
+            .and_then(|text| parse_version_after_marker(text, "ollama version is")),
+        service_client_version: service_version_output
+            .as_deref()
+            .and_then(|text| parse_version_after_marker(text, "client version is")),
+    })
+}
+
+fn private_ollama_runtime_info_from_path(
+    runtime_root: &Path,
+    executable_path: Option<PathBuf>,
+) -> PrivateOllamaRuntimeInfo {
+    let mut info = PrivateOllamaRuntimeInfo {
+        executable_path: executable_path
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string()),
+        reported_version: None,
+        client_version: None,
+        runtime_root: runtime_root.to_string_lossy().to_string(),
+    };
+
+    if let Some(executable) = executable_path {
+        if let Ok(output) = run_ollama_version_command(&executable) {
+            info.reported_version = parse_version_after_marker(&output, "ollama version is");
+            info.client_version = parse_version_after_marker(&output, "client version is");
+        }
+    }
+
+    info
+}
+
+fn inspect_private_ollama_runtime_internal(
+    app: &AppHandle,
+) -> Result<PrivateOllamaRuntimeInfo, String> {
+    let runtime_root = private_ollama_runtime_root(app)?;
+    let executable = private_ollama_executable_path(app)?;
+    Ok(private_ollama_runtime_info_from_path(
+        &runtime_root,
+        executable,
+    ))
+}
+
+fn emit_ollama_runtime_progress(
+    window: Option<&Window>,
+    status: impl Into<String>,
+    total: Option<u64>,
+    completed: Option<u64>,
+) {
+    if let Some(window) = window {
+        let _ = window.emit(
+            "ollama-runtime-progress",
+            OllamaRuntimeProgress {
+                status: status.into(),
+                total,
+                completed,
+            },
+        );
+    }
+}
+
+fn replace_directory(target_dir: &Path, replacement_dir: &Path) -> Result<(), String> {
+    if target_dir.exists() {
+        std::fs::remove_dir_all(target_dir)
+            .map_err(|e| format!("Failed to remove '{}': {}", target_dir.display(), e))?;
+    }
+    std::fs::rename(replacement_dir, target_dir).map_err(|e| {
+        format!(
+            "Failed to activate runtime '{}': {}",
+            replacement_dir.display(),
+            e
+        )
+    })
+}
+
+fn extract_ollama_runtime_zip(zip_path: &Path, target_dir: &Path) -> Result<(), String> {
+    let file = std::fs::File::open(zip_path).map_err(|e| {
+        format!(
+            "Failed to open downloaded runtime archive '{}': {}",
+            zip_path.display(),
+            e
+        )
+    })?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| {
+        format!(
+            "Failed to read runtime archive '{}': {}",
+            zip_path.display(),
+            e
+        )
+    })?;
+
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(|e| e.to_string())?;
+        let Some(safe_path) = entry.enclosed_name().map(|path| path.to_path_buf()) else {
+            continue;
+        };
+        let output_path = target_dir.join(safe_path);
+
+        if entry.name().ends_with('/') {
+            std::fs::create_dir_all(&output_path).map_err(|e| e.to_string())?;
+            continue;
+        }
+
+        if let Some(parent) = output_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+
+        let mut output = std::fs::File::create(&output_path).map_err(|e| e.to_string())?;
+        std::io::copy(&mut entry, &mut output).map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+async fn update_private_ollama_runtime_internal(
+    app: &AppHandle,
+    window: Option<&Window>,
+) -> Result<PrivateOllamaRuntimeInfo, String> {
+    let runtime_root = private_ollama_runtime_root(app)?;
+    let download_dir = runtime_root.join("downloads");
+    let staging_dir = runtime_root.join("current.new");
+    let archive_path = download_dir.join("ollama-runtime.zip");
+
+    if download_dir.exists() {
+        std::fs::remove_dir_all(&download_dir).map_err(|e| e.to_string())?;
+    }
+    if staging_dir.exists() {
+        std::fs::remove_dir_all(&staging_dir).map_err(|e| e.to_string())?;
+    }
+
+    std::fs::create_dir_all(&download_dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&staging_dir).map_err(|e| e.to_string())?;
+
+    emit_ollama_runtime_progress(
+        window,
+        format!(
+            "正在下载应用私有 Ollama {}...",
+            PRIVATE_OLLAMA_RUNTIME_TARGET_VERSION
+        ),
+        None,
+        None,
+    );
+    let client = reqwest::Client::new();
+    let response = client
+        .get(PRIVATE_OLLAMA_RUNTIME_ZIP_URL)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to download private Ollama runtime: {}", e))?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "Private Ollama runtime download failed: {}",
+            response.status()
+        ));
+    }
+
+    let total = response.content_length();
+    let mut stream = response.bytes_stream();
+    let mut archive_file = std::fs::File::create(&archive_path).map_err(|e| {
+        format!(
+            "Failed to create runtime archive '{}': {}",
+            archive_path.display(),
+            e
+        )
+    })?;
+    let mut downloaded = 0u64;
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| e.to_string())?;
+        use std::io::Write as _;
+        archive_file.write_all(&chunk).map_err(|e| e.to_string())?;
+        downloaded += chunk.len() as u64;
+        emit_ollama_runtime_progress(
+            window,
+            format!(
+                "正在下载应用私有 Ollama {}...",
+                PRIVATE_OLLAMA_RUNTIME_TARGET_VERSION
+            ),
+            total,
+            Some(downloaded),
+        );
+    }
+
+    emit_ollama_runtime_progress(window, "正在解压应用私有 Ollama 引擎...", None, None);
+    extract_ollama_runtime_zip(&archive_path, &staging_dir)?;
+
+    let current_dir = private_ollama_runtime_current_dir(app)?;
+    replace_directory(&current_dir, &staging_dir)?;
+    let _ = std::fs::remove_dir_all(&download_dir);
+
+    let executable = private_ollama_executable_path(app)?;
+    if executable.is_none() {
+        return Err("Downloaded private Ollama runtime does not contain ollama.exe.".to_string());
+    }
+
+    let runtime_info = private_ollama_runtime_info_from_path(&runtime_root, executable);
+    let effective_version = runtime_info
+        .client_version
+        .as_deref()
+        .or(runtime_info.reported_version.as_deref())
+        .ok_or_else(|| {
+            "Downloaded private Ollama runtime version could not be determined.".to_string()
+        })?;
+
+    if compare_semver_strings(effective_version, PRIVATE_OLLAMA_RUNTIME_TARGET_VERSION).is_lt() {
+        return Err(format!(
+            "Downloaded private Ollama runtime version {} is lower than required {}.",
+            effective_version, PRIVATE_OLLAMA_RUNTIME_TARGET_VERSION
+        ));
+    }
+
+    emit_ollama_runtime_progress(
+        window,
+        format!("应用私有 Ollama 已更新到 {}。", effective_version),
+        None,
+        None,
+    );
+    Ok(runtime_info)
+}
+
+#[cfg(not(target_os = "windows"))]
+async fn update_private_ollama_runtime_internal(
+    _app: &AppHandle,
+    _window: Option<&Window>,
+) -> Result<PrivateOllamaRuntimeInfo, String> {
+    Err("Private Ollama runtime updates are currently implemented on Windows only.".to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn find_listening_pid_on_port(port: u16) -> Result<Option<u32>, String> {
+    let output = std::process::Command::new("netstat")
+        .args(["-ano", "-p", "tcp"])
+        .output()
+        .map_err(|e| format!("Failed to inspect TCP listeners: {}", e))?;
+
+    if !output.status.success() {
+        return Err(format!("netstat failed with status {}", output.status));
+    }
+
+    let text = decode_command_output(&output.stdout);
+    let suffix = format!(":{}", port);
+    for line in text.lines() {
+        let columns: Vec<&str> = line.split_whitespace().collect();
+        if columns.len() < 5 {
+            continue;
+        }
+        if !columns[0].eq_ignore_ascii_case("TCP") {
+            continue;
+        }
+        if !columns[1].ends_with(&suffix) {
+            continue;
+        }
+        if !columns[3].eq_ignore_ascii_case("LISTENING") {
+            continue;
+        }
+        if let Ok(pid) = columns[4].parse::<u32>() {
+            return Ok(Some(pid));
+        }
+    }
+
+    Ok(None)
+}
+
+#[cfg(target_os = "windows")]
+fn process_name_from_pid(pid: u32) -> Result<Option<String>, String> {
+    let filter = format!("PID eq {}", pid);
+    let output = std::process::Command::new("tasklist")
+        .args(["/FI", &filter, "/FO", "CSV", "/NH"])
+        .output()
+        .map_err(|e| format!("Failed to inspect process {}: {}", pid, e))?;
+
+    if !output.status.success() {
+        return Err(format!("tasklist failed with status {}", output.status));
+    }
+
+    let text = decode_command_output(&output.stdout);
+    let first_line = text.lines().next().unwrap_or("").trim();
+    if first_line.is_empty() || first_line.starts_with("INFO:") {
+        return Ok(None);
+    }
+
+    let normalized = first_line.trim_matches('"');
+    let name = normalized.split("\",\"").next().unwrap_or("").trim();
+    if name.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(name.to_string()))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn taskkill_image(image_name: &str) -> Result<(), String> {
+    let output = std::process::Command::new("taskkill")
+        .args(["/IM", image_name, "/F", "/T"])
+        .output()
+        .map_err(|e| format!("Failed to stop process '{}': {}", image_name, e))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = decode_command_output(&output.stderr);
+    let stdout = decode_command_output(&output.stdout);
+    let combined = format!("{} {}", stdout.trim(), stderr.trim()).to_lowercase();
+    if combined.contains("not found") || combined.contains("no running instance") {
+        return Ok(());
+    }
+
+    Err(format!(
+        "Failed to stop process '{}': {} {}",
+        image_name,
+        stdout.trim(),
+        stderr.trim()
+    ))
+}
+
+#[cfg(target_os = "windows")]
+fn stop_ollama_listener_on_default_port() -> Result<(), String> {
+    let Some(pid) = find_listening_pid_on_port(11434)? else {
+        return Ok(());
+    };
+
+    let process_name = process_name_from_pid(pid)?.ok_or_else(|| {
+        format!(
+            "Port 11434 is occupied by PID {}, but its process name could not be resolved.",
+            pid
+        )
+    })?;
+    let lower_name = process_name.to_lowercase();
+    if lower_name != "ollama.exe" && lower_name != "ollama" {
+        return Err(format!(
+            "Port 11434 is occupied by '{}' (PID {}), refusing to terminate a non-Ollama process.",
+            process_name, pid
+        ));
+    }
+
+    let output = std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/F"])
+        .output()
+        .map_err(|e| format!("Failed to stop Ollama process {}: {}", pid, e))?;
+
+    if !output.status.success() {
+        let stderr = decode_command_output(&output.stderr);
+        return Err(format!(
+            "Failed to stop Ollama process {}: {}",
+            pid,
+            stderr.trim()
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn stop_all_ollama_processes() -> Result<(), String> {
+    taskkill_image("ollama.exe")?;
+    taskkill_image("ollama app.exe")?;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn spawn_system_ollama_process(
+    executable: &Path,
+    models_dir: &Path,
+    http_proxy: Option<&String>,
+    https_proxy: Option<&String>,
+) -> Result<String, String> {
+    let mut system_command = std::process::Command::new(executable);
+    system_command
+        .arg("serve")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .env("HF_ENDPOINT", "https://hf-mirror.com")
+        .env("OLLAMA_MODELS", models_dir.to_string_lossy().to_string());
+
+    if let Some(proxy) = http_proxy {
+        system_command.env("HTTP_PROXY", proxy);
+    }
+    if let Some(proxy) = https_proxy {
+        system_command.env("HTTPS_PROXY", proxy);
+    }
+
+    system_command.spawn().map_err(|e| {
+        format!(
+            "Failed to start system Ollama '{}': {}",
+            executable.display(),
+            e
+        )
+    })?;
+
+    Ok(format!(
+        "System Ollama started from {}",
+        executable.display()
+    ))
+}
+
+fn ollama_models_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     if !app_data_dir.exists() {
         std::fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
@@ -1082,11 +1712,81 @@ async fn start_ollama(app: AppHandle) -> Result<String, String> {
     if !models_dir.exists() {
         std::fs::create_dir_all(&models_dir).map_err(|e| e.to_string())?;
     }
+    Ok(models_dir)
+}
+
+fn spawn_private_ollama_process(app: &AppHandle) -> Result<String, String> {
+    let executable = private_ollama_executable_path(app)?
+        .ok_or_else(|| "Private Ollama runtime is not available yet.".to_string())?;
+    let models_dir = ollama_models_dir(app)?;
+    let http_proxy = std::env::var("HTTP_PROXY").ok();
+    let https_proxy = std::env::var("HTTPS_PROXY").ok();
+
+    let mut command = std::process::Command::new(&executable);
+    command
+        .arg("serve")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .env("HF_ENDPOINT", "https://hf-mirror.com")
+        .env("OLLAMA_MODELS", models_dir.to_string_lossy().to_string());
+
+    if let Some(proxy) = &http_proxy {
+        command.env("HTTP_PROXY", proxy);
+    }
+    if let Some(proxy) = &https_proxy {
+        command.env("HTTPS_PROXY", proxy);
+    }
+
+    command.spawn().map_err(|e| {
+        format!(
+            "Failed to start private Ollama runtime '{}': {}",
+            executable.display(),
+            e
+        )
+    })?;
+
+    Ok(format!(
+        "Private Ollama started from {}",
+        executable.display()
+    ))
+}
+
+use tauri_plugin_shell::process::CommandEvent;
+use tauri_plugin_shell::ShellExt;
+
+#[tauri::command]
+async fn start_ollama(app: AppHandle, window: Window) -> Result<String, String> {
+    // Check for system proxy settings
+    let http_proxy = std::env::var("HTTP_PROXY").ok();
+    let https_proxy = std::env::var("HTTPS_PROXY").ok();
+
+    if let Some(proxy) = &http_proxy {
+        println!("Detected HTTP_PROXY: {}", proxy);
+    }
+    if let Some(proxy) = &https_proxy {
+        println!("Detected HTTPS_PROXY: {}", proxy);
+    }
+
+    let models_dir = ollama_models_dir(&app)?;
+
+    if let Some(_) = private_ollama_executable_path(&app)? {
+        return spawn_private_ollama_process(&app);
+    }
+
+    emit_ollama_runtime_progress(
+        Some(&window),
+        "未发现应用私有 Ollama 引擎，正在使用随应用附带的内置引擎...",
+        None,
+        None,
+    );
 
     // Use Tauri sidecar API to spawn bundled ollama
-    let mut sidecar_command = app.shell().sidecar("ollama")
+    let mut sidecar_command = app
+        .shell()
+        .sidecar("ollama")
         .map_err(|e| format!("Failed to create sidecar command: {}", e))?;
-    
+
     // Explicitly pass proxy environment variables to the sidecar
     // Note: sidecar might not inherit environment by default on all platforms
     if let Some(proxy) = http_proxy {
@@ -1095,10 +1795,11 @@ async fn start_ollama(app: AppHandle) -> Result<String, String> {
     if let Some(proxy) = https_proxy {
         sidecar_command = sidecar_command.env("HTTPS_PROXY", proxy);
     }
-    
+
     // Set HF_ENDPOINT to hf-mirror.com to speed up potential HF downloads
     sidecar_command = sidecar_command.env("HF_ENDPOINT", "https://hf-mirror.com");
-    sidecar_command = sidecar_command.env("OLLAMA_MODELS", models_dir.to_string_lossy().to_string());
+    sidecar_command =
+        sidecar_command.env("OLLAMA_MODELS", models_dir.to_string_lossy().to_string());
 
     let (mut rx, _) = sidecar_command
         .args(["serve"])
@@ -1121,13 +1822,73 @@ async fn start_ollama(app: AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn pull_model_from_modelscope(name: String, url: String, filename: String, window: Window) -> Result<(), String> {
+async fn switch_to_system_ollama(app: AppHandle) -> Result<String, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let system_ollama = find_system_ollama_executable().ok_or_else(|| {
+            "No system-installed Ollama executable was found. Please install Ollama first."
+                .to_string()
+        })?;
+
+        let http_proxy = std::env::var("HTTP_PROXY").ok();
+        let https_proxy = std::env::var("HTTPS_PROXY").ok();
+        let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        if !app_data_dir.exists() {
+            std::fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
+        }
+        let models_dir = app_data_dir.join("ollama_models");
+        if !models_dir.exists() {
+            std::fs::create_dir_all(&models_dir).map_err(|e| e.to_string())?;
+        }
+
+        // Clear old bundled sidecars and the desktop tray app first; otherwise the old service
+        // may keep or immediately reclaim port 11434 and mask the newly installed version.
+        stop_all_ollama_processes()?;
+        stop_ollama_listener_on_default_port()?;
+        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        let result = spawn_system_ollama_process(
+            &system_ollama,
+            &models_dir,
+            http_proxy.as_ref(),
+            https_proxy.as_ref(),
+        )?;
+
+        for _ in 0..20 {
+            if check_ollama_status().await {
+                return Ok(result);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+
+        Err(
+            "System Ollama was launched but did not become ready on port 11434 in time."
+                .to_string(),
+        )
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = app;
+        Err("switch_to_system_ollama is currently only implemented on Windows.".to_string())
+    }
+}
+
+#[tauri::command]
+async fn pull_model_from_modelscope(
+    name: String,
+    url: String,
+    filename: String,
+    window: Window,
+) -> Result<(), String> {
     use std::io::Write;
     use tauri::Manager;
 
     let app_handle = window.app_handle();
-    let app_data_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
-    
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+
     if !app_data_dir.exists() {
         std::fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
     }
@@ -1138,11 +1899,15 @@ async fn pull_model_from_modelscope(name: String, url: String, filename: String,
     }
 
     let gguf_path = temp_dir.join(&filename);
-    
+
     // 1. Download GGUF
     let client = reqwest::Client::new();
-    let res = client.get(&url).send().await.map_err(|e| format!("Failed to connect to mirror: {}", e))?;
-    
+    let res = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to connect to mirror: {}", e))?;
+
     if !res.status().is_success() {
         return Err(format!("Mirror download failed: {}", res.status()));
     }
@@ -1158,29 +1923,39 @@ async fn pull_model_from_modelscope(name: String, url: String, filename: String,
         downloaded += chunk.len() as u64;
 
         // Emit progress
-        let _ = window.emit("pull-progress", &PullProgress {
-            status: format!("Downloading from mirror: {}/{}", downloaded, total_size),
-            digest: None,
-            total: Some(total_size),
-            completed: Some(downloaded),
-        });
+        let _ = window.emit(
+            "pull-progress",
+            &PullProgress {
+                status: format!("Downloading from mirror: {}/{}", downloaded, total_size),
+                digest: None,
+                total: Some(total_size),
+                completed: Some(downloaded),
+            },
+        );
     }
 
     // 2. Create Modelfile
     let modelfile_path = temp_dir.join("Modelfile");
-    let modelfile_content = format!("FROM \"{}\"", gguf_path.to_string_lossy().replace("\\", "/"));
+    let modelfile_content = format!(
+        "FROM \"{}\"",
+        gguf_path.to_string_lossy().replace("\\", "/")
+    );
     std::fs::write(&modelfile_path, modelfile_content).map_err(|e| e.to_string())?;
 
     // 3. Call Ollama Create API
-    let _ = window.emit("pull-progress", &PullProgress {
-        status: "Importing model into Ollama...".to_string(),
-        digest: None,
-        total: None,
-        completed: None,
-    });
+    let _ = window.emit(
+        "pull-progress",
+        &PullProgress {
+            status: "Importing model into Ollama...".to_string(),
+            digest: None,
+            total: None,
+            completed: None,
+        },
+    );
 
     let client = reqwest::Client::new();
-    let res = client.post("http://localhost:11434/api/create")
+    let res = client
+        .post("http://localhost:11434/api/create")
         .json(&serde_json::json!({
             "name": name,
             "modelfile": format!("FROM \"{}\"", gguf_path.to_string_lossy().replace("\\", "/")),
@@ -1214,7 +1989,8 @@ async fn pull_model_from_modelscope(name: String, url: String, filename: String,
 async fn resolve_hf_gguf(repo: String) -> Result<HfResolveResult, String> {
     let api_url = format!("https://huggingface.co/api/models/{}", repo);
     let client = reqwest::Client::new();
-    let res = client.get(api_url)
+    let res = client
+        .get(api_url)
         .send()
         .await
         .map_err(|e| format!("Failed to connect to Hugging Face API: {}", e))?;
@@ -1224,7 +2000,8 @@ async fn resolve_hf_gguf(repo: String) -> Result<HfResolveResult, String> {
     }
 
     let info: HfApiResponse = res.json().await.map_err(|e| e.to_string())?;
-    let mut gguf_files: Vec<String> = info.siblings
+    let mut gguf_files: Vec<String> = info
+        .siblings
         .into_iter()
         .map(|s| s.rfilename)
         .filter(|f| f.ends_with(".gguf"))
@@ -1258,7 +2035,6 @@ async fn resolve_hf_gguf(repo: String) -> Result<HfResolveResult, String> {
     Ok(HfResolveResult { url, filename })
 }
 
-
 #[tauri::command]
 async fn ingest_knowledge_base(
     path: String,
@@ -1281,7 +2057,7 @@ async fn ingest_knowledge_base(
         .ingest_directory(&path, &model, selected_mode, Some(progress_tx))
         .await
         .map_err(|e| e.to_string())?;
-    
+
     // Save to disk
     if let Ok(app_data_dir) = app.path().app_data_dir() {
         if !app_data_dir.exists() {
@@ -1292,19 +2068,23 @@ async fn ingest_knowledge_base(
             println!("Failed to save database: {}", e);
         }
     }
-    
+
     Ok(count)
 }
 
 #[tauri::command]
-async fn query_knowledge_base(query: String, state: State<'_, RagState>) -> Result<Vec<Document>, String> {
+async fn query_knowledge_base(
+    query: String,
+    state: State<'_, RagState>,
+) -> Result<Vec<Document>, String> {
     state.search(&query, 5).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn get_ollama_models() -> Result<Vec<OllamaModel>, String> {
     let client = reqwest::Client::new();
-    let res = client.get("http://localhost:11434/api/tags")
+    let res = client
+        .get("http://localhost:11434/api/tags")
         .send()
         .await
         .map_err(|e| format!("Failed to connect to Ollama: {}", e))?;
@@ -1318,10 +2098,83 @@ async fn get_ollama_models() -> Result<Vec<OllamaModel>, String> {
 }
 
 #[tauri::command]
+async fn get_ollama_version() -> Result<OllamaVersionInfo, String> {
+    let client = reqwest::Client::new();
+    let res = client
+        .get("http://localhost:11434/api/version")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to connect to Ollama: {}", e))?;
+
+    if res.status().is_success() {
+        res.json::<OllamaVersionInfo>()
+            .await
+            .map_err(|e| e.to_string())
+    } else {
+        Err(format!("Ollama API error: {}", res.status()))
+    }
+}
+
+#[tauri::command]
+async fn inspect_system_ollama_installation() -> Result<SystemOllamaInspection, String> {
+    #[cfg(target_os = "windows")]
+    {
+        inspect_system_ollama_installation_windows()
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(SystemOllamaInspection::default())
+    }
+}
+
+#[tauri::command]
+async fn get_private_ollama_runtime_info(
+    app: AppHandle,
+) -> Result<PrivateOllamaRuntimeInfo, String> {
+    inspect_private_ollama_runtime_internal(&app)
+}
+
+#[tauri::command]
+async fn activate_private_ollama(
+    force_update: Option<bool>,
+    app: AppHandle,
+    window: Window,
+) -> Result<PrivateOllamaRuntimeInfo, String> {
+    let should_update = force_update.unwrap_or(false);
+    let current_runtime = inspect_private_ollama_runtime_internal(&app)?;
+
+    let runtime_info = if should_update || current_runtime.executable_path.is_none() {
+        update_private_ollama_runtime_internal(&app, Some(&window)).await?
+    } else {
+        current_runtime
+    };
+
+    stop_all_ollama_processes()?;
+    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+    let _ = spawn_private_ollama_process(&app)?;
+
+    for _ in 0..20 {
+        if check_ollama_status().await {
+            return inspect_private_ollama_runtime_internal(&app);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+
+    Err(format!(
+        "Private Ollama runtime '{}' was prepared but did not become ready on port 11434 in time.",
+        runtime_info
+            .executable_path
+            .unwrap_or_else(|| "unknown".to_string())
+    ))
+}
+
+#[tauri::command]
 async fn pull_ollama_model(name: String, window: Window) -> Result<(), String> {
     let client = reqwest::Client::new();
-    let res = client.post("http://localhost:11434/api/pull")
-        .json(&serde_json::json!({ "name": name, "stream": true }))
+    let res = client
+        .post("http://localhost:11434/api/pull")
+        .json(&serde_json::json!({ "model": name, "stream": true }))
         .send()
         .await
         .map_err(|e| format!("Failed to connect to Ollama: {}", e))?;
@@ -1337,8 +2190,16 @@ async fn pull_ollama_model(name: String, window: Window) -> Result<(), String> {
             Ok(bytes) => {
                 let text = decode_command_output(&bytes);
                 for line in text.lines() {
-                    if !line.trim().is_empty() {
-                        if let Ok(progress) = serde_json::from_str::<PullProgress>(line) {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+
+                    if let Ok(payload) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                        if let Some(error) = payload.get("error").and_then(|value| value.as_str()) {
+                            return Err(format!("Ollama pull failed: {}", error));
+                        }
+                        if let Ok(progress) = serde_json::from_value::<PullProgress>(payload) {
                             let _ = window.emit("pull-progress", &progress);
                         }
                     }
@@ -1392,6 +2253,65 @@ fn trim_non_empty_model_output(text: String, empty_message: &str) -> Result<Stri
     } else {
         Ok(trimmed.to_string())
     }
+}
+
+fn is_cjk_char(ch: char) -> bool {
+    matches!(ch as u32, 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF)
+}
+
+fn contains_cjk(text: &str) -> bool {
+    text.chars().any(is_cjk_char)
+}
+
+fn normalize_translation_compare_text(text: &str) -> String {
+    text.chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || is_cjk_char(*ch))
+        .flat_map(|ch| ch.to_lowercase())
+        .collect::<String>()
+}
+
+fn looks_like_untranslated_output(original_text: &str, translated_text: &str) -> bool {
+    let original_norm = normalize_translation_compare_text(original_text);
+    let translated_norm = normalize_translation_compare_text(translated_text);
+    if original_norm.is_empty() || translated_norm.is_empty() {
+        return false;
+    }
+
+    if original_norm == translated_norm {
+        return true;
+    }
+
+    if !contains_cjk(translated_text) {
+        let original_len = original_norm.chars().count();
+        let translated_len = translated_norm.chars().count();
+        let min_len = original_len.min(translated_len);
+        if min_len == 0 {
+            return false;
+        }
+
+        let same_positions = original_norm
+            .chars()
+            .zip(translated_norm.chars())
+            .filter(|(left, right)| left == right)
+            .count();
+        return same_positions * 100 / min_len >= 85;
+    }
+
+    false
+}
+
+fn validate_translation_output(
+    original_text: &str,
+    translated_text: String,
+) -> Result<String, String> {
+    let trimmed = trim_non_empty_model_output(translated_text, "模型返回了空翻译。")?;
+    if looks_like_untranslated_output(original_text, &trimmed) {
+        return Err(
+            "当前模型未生成有效中文译文，请切换到更强模型后重试，例如 qwen3.5:9b 或 qwen3:8b。"
+                .to_string(),
+        );
+    }
+    Ok(trimmed)
 }
 
 async fn run_ollama_chat(model: &str, messages: Vec<serde_json::Value>) -> Result<String, String> {
@@ -1472,7 +2392,7 @@ async fn translate_pdf_selection_text(
         .filter(|text| !text.trim().is_empty())
         .unwrap_or_else(|| "当前页上下文不可用。".to_string());
     let user_prompt = format!(
-        "请把下面来自学术 PDF 的选中文本翻译成中文。\n\n要求：\n1. 只输出中文译文，不要前言，不要解释。\n2. 优先直译，并结合当前页语境做必要消歧。\n3. 专有名词保留英文原文在括号中。\n4. 不扩写，不做百科说明。\n5. 公式、变量名、URL、DOI、代码片段尽量保持原样。\n\n当前页上下文（仅用于消歧）：\n{context_block}\n\n待翻译原文：\n{selected_text}"
+        "请把下面来自学术 PDF 的选中文本翻译成中文。\n\n要求：\n1. 只输出中文译文，不要前言，不要解释。\n2. 优先直译，并结合当前页语境做必要消歧。\n3. 专有名词保留英文原文放在括号中。\n4. 不扩写，不做百科说明。\n5. 公式、变量名、URL、DOI、代码片段尽量保持原样。\n\n当前页上下文（仅用于消歧）：\n{context_block}\n\n待翻译原文：\n{selected_text}"
     );
 
     run_ollama_chat(
@@ -1480,7 +2400,7 @@ async fn translate_pdf_selection_text(
         vec![
             serde_json::json!({
                 "role": "system",
-                "content": "你是学术 PDF 阅读助手中的精确翻译器。你的任务是将用户选中的原文准确翻译成中文，只输出译文正文。"
+                "content": "你是学术 PDF 阅读助手中的精准翻译器。你的任务是把用户选中的原文准确翻译成中文，只输出译文正文。"
             }),
             serde_json::json!({
                 "role": "user",
@@ -1489,12 +2409,12 @@ async fn translate_pdf_selection_text(
         ],
     )
     .await
-    .and_then(|text| trim_non_empty_model_output(text, "模型返回空译文。"))
+    .and_then(|text| trim_non_empty_model_output(text, "模型返回了空翻译。"))
 }
 
 async fn translate_pdf_page_markdown(page_text: &str, model: &str) -> Result<String, String> {
     let user_prompt = format!(
-        "请把下面这整页学术 PDF 文本翻译成中文 Markdown。\n\n要求：\n1. 只输出 Markdown 正文，不要写前言或总结。\n2. 尽量保留原有段落和小标题结构。\n3. 不总结，不省略主干文本。\n4. 公式、变量名、URL、DOI、代码片段尽量保留原样。\n5. 如果某些行明显是碎片化 OCR / 提取噪声，可在不改变主干信息的前提下做最少整理。\n\n待翻译页面文本：\n{page_text}"
+        "请把下面这一整页学术 PDF 文本翻译成中文 Markdown。\n\n要求：\n1. 只输出 Markdown 正文，不要写前言或总结。\n2. 尽量保留原有段落和小标题结构。\n3. 不总结，不省略主干文本。\n4. 公式、变量名、URL、DOI、代码片段尽量保留原样。\n5. 如果某些行明显是碎片化 OCR 或提取噪声，可在不改变主干信息的前提下做最少整理。\n\n待翻译页面文本：\n{page_text}"
     );
 
     run_ollama_chat(
@@ -1511,7 +2431,107 @@ async fn translate_pdf_page_markdown(page_text: &str, model: &str) -> Result<Str
         ],
     )
     .await
-    .and_then(|text| trim_non_empty_model_output(text, "模型返回空译文。"))
+    .and_then(|text| trim_non_empty_model_output(text, "模型返回了空翻译。"))
+}
+
+async fn translate_pdf_selection_text_v2(
+    selected_text: &str,
+    page_context: Option<&str>,
+    model: &str,
+) -> Result<String, String> {
+    let context_block = page_context
+        .map(|text| truncate_chars(text, 1200))
+        .filter(|text| !text.trim().is_empty())
+        .unwrap_or_else(|| "No page context is available.".to_string());
+    let primary_prompt = format!(
+        "Translate the following academic PDF selection into Simplified Chinese.\n\nRules:\n1. Output Chinese translation only.\n2. Do not copy the English source unless it is a formula, variable name, URL, DOI, or code fragment.\n3. Keep proper nouns in Chinese and preserve the original English in parentheses when helpful.\n4. Use the page context only for disambiguation.\n5. Do not explain, summarize, or add notes.\n\nPage context:\n{context_block}\n\nSource text:\n{selected_text}"
+    );
+
+    let primary_result = run_ollama_chat(
+        model,
+        vec![
+            serde_json::json!({
+                "role": "system",
+                "content": "You are a precise academic translator. Always translate the source text into Simplified Chinese. Never return the original English sentence unchanged."
+            }),
+            serde_json::json!({
+                "role": "user",
+                "content": primary_prompt
+            }),
+        ],
+    )
+    .await
+    .and_then(|text| validate_translation_output(selected_text, text));
+
+    if let Ok(validated) = primary_result {
+        return Ok(validated);
+    }
+
+    let retry_prompt = format!(
+        "The previous attempt failed because it kept too much English. Try again.\n\nTranslate the source text into natural Simplified Chinese.\n\nStrict rules:\n1. Your answer must be Chinese translation, not the original English.\n2. Replace full English clauses with Chinese.\n3. Keep formulas, tensor names, URLs, DOI, and code identifiers as-is.\n4. If a proper noun must stay in English, keep a short Chinese translation and put the English in parentheses.\n5. No explanation. No bullet points. No preface.\n\nPage context:\n{context_block}\n\nSource text:\n{selected_text}"
+    );
+
+    run_ollama_chat(
+        model,
+        vec![
+            serde_json::json!({
+                "role": "system",
+                "content": "You are an academic English-to-Chinese translator. You must return a valid Simplified Chinese translation, not a paraphrase and not a copy of the source."
+            }),
+            serde_json::json!({
+                "role": "user",
+                "content": retry_prompt
+            }),
+        ],
+    )
+    .await
+    .and_then(|text| validate_translation_output(selected_text, text))
+}
+
+async fn translate_pdf_page_markdown_v2(page_text: &str, model: &str) -> Result<String, String> {
+    let primary_prompt = format!(
+        "Translate the following full PDF page into Simplified Chinese Markdown.\n\nRules:\n1. Output Markdown only.\n2. Preserve headings, paragraph structure, and list structure whenever present.\n3. Do not summarize or omit the main content.\n4. Keep formulas, variable names, URLs, DOI, and code snippets unchanged.\n5. Translate normal English prose into Chinese rather than copying it.\n\nPage text:\n{page_text}"
+    );
+
+    let primary_result = run_ollama_chat(
+        model,
+        vec![
+            serde_json::json!({
+                "role": "system",
+                "content": "You are an academic PDF page translator. Return Simplified Chinese Markdown and do not leave normal English prose untranslated."
+            }),
+            serde_json::json!({
+                "role": "user",
+                "content": primary_prompt
+            }),
+        ],
+    )
+    .await
+    .and_then(|text| validate_translation_output(page_text, text));
+
+    if let Ok(validated) = primary_result {
+        return Ok(validated);
+    }
+
+    let retry_prompt = format!(
+        "The previous attempt copied too much English. Retry and translate the page into Simplified Chinese Markdown.\n\nStrict rules:\n1. Translate all normal English prose into Chinese.\n2. Keep formulas, variable names, URLs, DOI, and code snippets unchanged.\n3. Preserve section structure and paragraph breaks.\n4. Do not summarize.\n\nPage text:\n{page_text}"
+    );
+
+    run_ollama_chat(
+        model,
+        vec![
+            serde_json::json!({
+                "role": "system",
+                "content": "You must produce a valid Simplified Chinese Markdown translation of the source page."
+            }),
+            serde_json::json!({
+                "role": "user",
+                "content": retry_prompt
+            }),
+        ],
+    )
+    .await
+    .and_then(|text| validate_translation_output(page_text, text))
 }
 
 async fn summarize_term_for_beginner(
@@ -1560,8 +2580,7 @@ fn is_common_everyday_english_word(term: &str) -> bool {
     let normalized = term.trim().to_ascii_lowercase();
     matches!(
         normalized.as_str(),
-        "a"
-            | "an"
+        "a" | "an"
             | "the"
             | "and"
             | "or"
@@ -1621,7 +2640,11 @@ fn is_common_everyday_english_word(term: &str) -> bool {
 }
 
 fn is_likely_entertainment_reference(reference: &encyclopedia::ReferenceEntry) -> bool {
-    let haystack = format!("{} {} {}", reference.title, reference.provider, reference.extract).to_lowercase();
+    let haystack = format!(
+        "{} {} {}",
+        reference.title, reference.provider, reference.extract
+    )
+    .to_lowercase();
     [
         "song",
         "single",
@@ -1650,15 +2673,14 @@ fn is_likely_entertainment_reference(reference: &encyclopedia::ReferenceEntry) -
     .any(|keyword| haystack.contains(keyword))
 }
 
-fn should_ignore_reference_for_term(
-    term: &str,
-    reference: &encyclopedia::ReferenceEntry,
-) -> bool {
+fn should_ignore_reference_for_term(term: &str, reference: &encyclopedia::ReferenceEntry) -> bool {
     is_plain_ascii_lowercase_word(term) && is_likely_entertainment_reference(reference)
 }
 
 #[tauri::command]
-async fn explain_pdf_selection(request: ExplainPdfSelectionRequest) -> Result<ExplainPdfSelectionResult, String> {
+async fn explain_pdf_selection(
+    request: ExplainPdfSelectionRequest,
+) -> Result<ExplainPdfSelectionResult, String> {
     let term = request.term.trim().to_string();
     if term.is_empty() {
         return Err("Term must not be empty.".to_string());
@@ -1743,16 +2765,13 @@ async fn translate_pdf_selection(
     }
 
     if original_text.chars().count() > MAX_PDF_SELECTION_TRANSLATE_CHARS {
-        return Err("选中文本过长，请使用“翻译本页”".to_string());
+        return Err("选中文本过长，请使用“翻译本页”。".to_string());
     }
 
     let page_context = extract_pdf_page_text_internal(&request.pdf_path, request.page).ok();
-    let translated_text = translate_pdf_selection_text(
-        &original_text,
-        page_context.as_deref(),
-        &request.model,
-    )
-    .await?;
+    let translated_text =
+        translate_pdf_selection_text_v2(&original_text, page_context.as_deref(), &request.model)
+            .await?;
 
     Ok(TranslatePdfSelectionResult {
         original_text,
@@ -1763,20 +2782,22 @@ async fn translate_pdf_selection(
 }
 
 #[tauri::command]
-async fn translate_pdf_page(request: TranslatePdfPageRequest) -> Result<TranslatePdfPageResult, String> {
+async fn translate_pdf_page(
+    request: TranslatePdfPageRequest,
+) -> Result<TranslatePdfPageResult, String> {
     let page_text = extract_pdf_page_text_internal(&request.pdf_path, request.page)?;
     let source_text_length = page_text.chars().count();
 
     if page_text.trim().is_empty() {
         return Ok(TranslatePdfPageResult {
             page: request.page,
-            translated_markdown: "当前页无可翻译文本，OCR 后可支持".to_string(),
+            translated_markdown: "当前页没有可翻译文本，OCR 后可重试。".to_string(),
             source_text_length: 0,
             generated_at: cards::current_timestamp_iso_utc(),
         });
     }
 
-    let translated_markdown = translate_pdf_page_markdown(&page_text, &request.model).await?;
+    let translated_markdown = translate_pdf_page_markdown_v2(&page_text, &request.model).await?;
     Ok(TranslatePdfPageResult {
         page: request.page,
         translated_markdown,
@@ -1822,10 +2843,43 @@ async fn chat_with_llm(
     .await
 }
 
+#[tauri::command]
+async fn get_mobile_companion_status(
+    app: AppHandle,
+    state: State<'_, mobile::MobileCompanionState>,
+) -> Result<mobile::MobileCompanionStatus, String> {
+    mobile::get_mobile_companion_status(&app, &state)
+}
+
+#[tauri::command]
+async fn refresh_mobile_pair_code(
+    app: AppHandle,
+    state: State<'_, mobile::MobileCompanionState>,
+) -> Result<mobile::MobileCompanionStatus, String> {
+    mobile::refresh_mobile_pair_code(&app, &state)
+}
+
+#[tauri::command]
+async fn list_mobile_inbox_items(
+    app: AppHandle,
+) -> Result<Vec<mobile::DesktopMobileInboxItem>, String> {
+    mobile::list_mobile_inbox_items(&app)
+}
+
+#[tauri::command]
+async fn set_mobile_inbox_item_status(
+    app: AppHandle,
+    item_id: String,
+    processed: bool,
+) -> Result<mobile::DesktopMobileInboxItem, String> {
+    mobile::set_mobile_inbox_item_status(&app, &item_id, processed)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let rag_state = RagState::new();
     let inference_settings_state = InferenceSettingsState::new();
+    let mobile_companion_state = mobile::MobileCompanionState::new();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -1834,6 +2888,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(rag_state)
         .manage(inference_settings_state)
+        .manage(mobile_companion_state)
         .setup(|app| {
             let handle = app.handle().clone();
 
@@ -1850,36 +2905,48 @@ pub fn run() {
                 }
                 Err(e) => println!("Failed to load inference settings: {}", e),
             }
-            
+
             // Try to load existing database
             if let Ok(app_data_dir) = handle.path().app_data_dir() {
-                 let db_path = app_data_dir.join("knowledge_base.json");
-                 if db_path.exists() {
-                     let path_str = db_path.to_string_lossy().to_string();
-                     let load_handle = handle.clone();
-                     tauri::async_runtime::spawn(async move {
-                         let state = load_handle.state::<RagState>();
-                         if let Err(e) = state.load(&path_str).await {
-                             println!("Failed to load database: {}", e);
-                         } else {
-                             println!("Loaded database from {}", path_str);
-                         }
-                     });
-                 }
+                let db_path = app_data_dir.join("knowledge_base.json");
+                if db_path.exists() {
+                    let path_str = db_path.to_string_lossy().to_string();
+                    let load_handle = handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let state = load_handle.state::<RagState>();
+                        if let Err(e) = state.load(&path_str).await {
+                            println!("Failed to load database: {}", e);
+                        } else {
+                            println!("Loaded database from {}", path_str);
+                        }
+                    });
+                }
+            }
+
+            let mobile_state = handle
+                .state::<mobile::MobileCompanionState>()
+                .inner()
+                .clone();
+            if let Err(error) = mobile::initialize_mobile_companion(handle.clone(), mobile_state) {
+                println!("Failed to initialize mobile companion service: {}", error);
             }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            greet, 
-            scan_directory, 
+            greet,
+            scan_directory,
             get_workspace_snapshot,
             import_directory_to_workspace,
             import_paths_to_workspace,
             import_zotero_storage_to_workspace,
             detect_zotero_storage,
-            ingest_knowledge_base, 
+            ingest_knowledge_base,
             query_knowledge_base,
             get_ollama_models,
+            get_ollama_version,
+            inspect_system_ollama_installation,
+            get_private_ollama_runtime_info,
+            activate_private_ollama,
             pull_ollama_model,
             pull_model_from_modelscope,
             resolve_hf_gguf,
@@ -1902,26 +2969,28 @@ pub fn run() {
             translate_pdf_selection,
             translate_pdf_page,
             check_ollama_status,
-            start_ollama
+            start_ollama,
+            switch_to_system_ollama,
+            get_mobile_companion_status,
+            refresh_mobile_pair_code,
+            list_mobile_inbox_items,
+            set_mobile_inbox_item_status
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app_handle, event| {
-             if let RunEvent::Exit = event {
-                 // Kill all child processes when the app exits
-                 // This is a forceful way to ensure development server and other spawned processes die
-                 #[cfg(debug_assertions)]
-                 {
-                     #[cfg(target_os = "windows")]
-                     {
-                         let _ = std::process::Command::new("taskkill")
-                             .args(["/F", "/IM", "node.exe"])
-                             .spawn();
-                     }
-                 }
-             }
+            if let RunEvent::Exit = event {
+                // Kill all child processes when the app exits
+                // This is a forceful way to ensure development server and other spawned processes die
+                #[cfg(debug_assertions)]
+                {
+                    #[cfg(target_os = "windows")]
+                    {
+                        let _ = std::process::Command::new("taskkill")
+                            .args(["/F", "/IM", "node.exe"])
+                            .spawn();
+                    }
+                }
+            }
         });
 }
-
-
-

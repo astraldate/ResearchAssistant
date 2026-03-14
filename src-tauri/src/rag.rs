@@ -63,7 +63,9 @@ fn emit_progress(tx: &Option<UnboundedSender<IngestProgress>>, progress: IngestP
 fn read_pdf_text(path: &std::path::Path) -> std::io::Result<String> {
     let doc = lopdf::Document::load(path).map_err(|e| std::io::Error::other(e.to_string()))?;
     let pages = doc.get_pages().keys().cloned().collect::<Vec<_>>();
-    let text = doc.extract_text(&pages).map_err(|e| std::io::Error::other(e.to_string()))?;
+    let text = doc
+        .extract_text(&pages)
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
 
     Ok(text
         .lines()
@@ -178,7 +180,10 @@ impl RagState {
                     continue;
                 }
 
-                let ext = match path.extension().map(|value| value.to_string_lossy().to_lowercase()) {
+                let ext = match path
+                    .extension()
+                    .map(|value| value.to_string_lossy().to_lowercase())
+                {
                     Some(ext) => ext,
                     None => continue,
                 };
@@ -219,7 +224,10 @@ impl RagState {
         let splitter = TextSplitter::new(6000);
         let mut file_chunks: Vec<(String, Vec<String>)> = Vec::new();
         for (index, (file_path, content)) in raw_files.iter().enumerate() {
-            let chunks: Vec<String> = splitter.chunks(content).map(|chunk| chunk.to_string()).collect();
+            let chunks: Vec<String> = splitter
+                .chunks(content)
+                .map(|chunk| chunk.to_string())
+                .collect();
             if !chunks.is_empty() {
                 file_chunks.push((file_path.clone(), chunks));
             }
@@ -316,7 +324,8 @@ impl RagState {
                 store.extend(final_docs);
             }
             IngestMode::Incremental => {
-                let mut existing: HashSet<String> = store.iter().map(|doc| doc.id.clone()).collect();
+                let mut existing: HashSet<String> =
+                    store.iter().map(|doc| doc.id.clone()).collect();
                 for doc in final_docs {
                     if existing.insert(doc.id.clone()) {
                         store.push(doc);

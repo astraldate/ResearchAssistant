@@ -20,6 +20,7 @@ interface PullProgress {
 interface ModelSelectorProps {
   currentModel: string;
   onModelChange: (model: string) => void;
+  onStatus?: (message: string, tone?: "info" | "error", persistent?: boolean) => void;
 }
 
 type ModelCategory = "general" | "reasoning" | "coding" | "vision" | "embedding";
@@ -186,7 +187,7 @@ const isInstalled = (target: string, installed: OllamaModel[]) => {
   });
 };
 
-export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onModelChange }) => {
+export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onModelChange, onStatus }) => {
   const [models, setModels] = useState<OllamaModel[]>([]);
   const [isOpen, setIsOpen] = useState(false);
   const [newModelName, setNewModelName] = useState("");
@@ -278,7 +279,9 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
       onModelChange(resolvePulledModelName(requestedName, latestList));
     } catch (err) {
       console.error("Pull failed:", err);
-      setError(`${ZH.pullFailed}${String(err)}`);
+      const message = `${ZH.pullFailed}${String(err)}`;
+      setError(message);
+      onStatus?.(message, "error", true);
     } finally {
       setIsPulling(false);
       setPullProgress(null);

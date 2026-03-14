@@ -1,4 +1,4 @@
-﻿use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -95,7 +95,9 @@ pub fn set_card_root_path(app: &AppHandle, path: Option<String>) -> Result<CardS
     }
 
     let stored = StoredCardSettings {
-        custom_root: next.as_ref().map(|value| value.to_string_lossy().to_string()),
+        custom_root: next
+            .as_ref()
+            .map(|value| value.to_string_lossy().to_string()),
     };
     write_stored_settings(app, &stored)?;
     get_card_settings(app)
@@ -107,7 +109,10 @@ pub fn list_knowledge_cards(app: &AppHandle) -> Result<Vec<KnowledgeCardSummary>
     ensure_directory_writable(&root)?;
 
     let mut cards = Vec::new();
-    for entry in WalkDir::new(&root).into_iter().filter_map(|value| value.ok()) {
+    for entry in WalkDir::new(&root)
+        .into_iter()
+        .filter_map(|value| value.ok())
+    {
         if !entry.file_type().is_file() {
             continue;
         }
@@ -161,7 +166,8 @@ pub fn save_knowledge_card_from_explanation(
 }
 
 fn parse_card_file(path: &Path) -> Result<ParsedCard, String> {
-    let raw = fs::read_to_string(path).map_err(|e| format!("Failed to read card '{}': {}", path.display(), e))?;
+    let raw = fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read card '{}': {}", path.display(), e))?;
     let normalized = raw.replace("\r\n", "\n");
     let (frontmatter, body) = split_frontmatter(&normalized)
         .ok_or_else(|| format!("Card '{}' is missing YAML frontmatter.", path.display()))?;
@@ -241,7 +247,10 @@ fn parse_frontmatter(frontmatter: &str) -> HashMap<String, String> {
                 return None;
             }
             let (key, value) = trimmed.split_once(':')?;
-            Some((key.trim().to_string(), parse_frontmatter_value(value.trim())))
+            Some((
+                key.trim().to_string(),
+                parse_frontmatter_value(value.trim()),
+            ))
         })
         .collect()
 }
@@ -320,11 +329,15 @@ fn render_yaml_string(value: &str) -> String {
 }
 
 fn render_yaml_option(value: Option<&str>) -> String {
-    value.map(render_yaml_string).unwrap_or_else(|| "null".to_string())
+    value
+        .map(render_yaml_string)
+        .unwrap_or_else(|| "null".to_string())
 }
 
 fn render_yaml_option_number(value: Option<u32>) -> String {
-    value.map(|number| number.to_string()).unwrap_or_else(|| "null".to_string())
+    value
+        .map(|number| number.to_string())
+        .unwrap_or_else(|| "null".to_string())
 }
 
 fn extract_section(body: &str, heading: &str) -> Option<String> {
@@ -344,9 +357,11 @@ fn truncate_preview(input: &str, limit: usize) -> String {
 }
 
 fn ensure_directory_writable(path: &Path) -> Result<(), String> {
-    fs::create_dir_all(path).map_err(|e| format!("Failed to create directory '{}': {}", path.display(), e))?;
+    fs::create_dir_all(path)
+        .map_err(|e| format!("Failed to create directory '{}': {}", path.display(), e))?;
     let probe = path.join(".card_write_test");
-    fs::write(&probe, b"ok").map_err(|e| format!("Directory '{}' is not writable: {}", path.display(), e))?;
+    fs::write(&probe, b"ok")
+        .map_err(|e| format!("Directory '{}' is not writable: {}", path.display(), e))?;
     let _ = fs::remove_file(probe);
     Ok(())
 }
@@ -379,7 +394,10 @@ fn write_stored_settings(app: &AppHandle, settings: &StoredCardSettings) -> Resu
     fs::write(path, content).map_err(|e| e.to_string())
 }
 
-fn resolve_active_root_path(app: &AppHandle, stored: &StoredCardSettings) -> Result<PathBuf, String> {
+fn resolve_active_root_path(
+    app: &AppHandle,
+    stored: &StoredCardSettings,
+) -> Result<PathBuf, String> {
     match &stored.custom_root {
         Some(path) if !path.trim().is_empty() => Ok(PathBuf::from(path.trim())),
         _ => default_card_root_path(app),

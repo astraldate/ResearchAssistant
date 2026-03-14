@@ -5,6 +5,33 @@ This template should help get you started developing with Tauri, React and Types
 ## Recommended IDE Setup
 
 - [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+
+## Mobile App Testing
+
+### Desktop
+
+- Start the desktop app with `pnpm run tauri dev`.
+- Open the desktop settings modal and find the `移动端配套` section.
+- Record the LAN address such as `http://192.168.1.20:38465` and the 6-digit pair code.
+- Open the new `待处理收件箱` tab to inspect captures sent from the phone.
+
+### Mobile App
+
+- Start the Expo app with `pnpm --dir mobile-app dev`.
+- For real-device testing, keep the phone and PC on the same Wi-Fi and prefer `expo start --lan`.
+- Install `Expo Go` on the phone and scan the QR code from the Expo terminal.
+- On the phone, open `配对桌面端`, enter the desktop LAN address and pair code, then wait for the first bootstrap sync to finish.
+
+### Android Emulator
+
+- Windows can test the mobile app with an Android emulator.
+- Start an Android emulator from Android Studio, then run `pnpm --dir mobile-app android` or press `a` in the Expo terminal.
+- When pairing from the emulator, use `http://10.0.2.2:38465` instead of `127.0.0.1`.
+
+### iPhone
+
+- Windows cannot run the iOS Simulator.
+- iPhone testing still works through `Expo Go` on a real device, as long as it is on the same LAN as the desktop app.
   
 2.  **启动应用**：
     ```bash

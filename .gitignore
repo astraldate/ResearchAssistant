@@ -11,6 +11,13 @@ node_modules
 dist
 dist-ssr
 *.local
+.expo
+mobile-app/.expo
+mobile-app/dist
+mobile-app/web-build
+mobile-app/android/keystore.properties
+mobile-app/android/app/*.keystore
+mobile-app/android/app/*.jks
 
 # Editor directories and files
 .vscode/*

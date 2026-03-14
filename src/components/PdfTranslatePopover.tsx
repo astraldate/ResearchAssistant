@@ -27,7 +27,7 @@ const FALLBACK_POPOVER_WIDTH = 420;
 const FALLBACK_POPOVER_HEIGHT = 420;
 
 const buildCacheKey = (pdfPath: string, page: number, text: string) =>
-  `ra_pdf_translate_selection_v1:${pdfPath}:${page}:${text}`;
+  `ra_pdf_translate_selection_v2:${pdfPath}:${page}:${text}`;
 
 const normalizeSelection = (value: string) => value.replace(/\s+/g, " ").trim();
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
