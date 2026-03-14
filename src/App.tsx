@@ -304,7 +304,7 @@ function App() {
 
   const importAndIngestPath = async (selectedPath: string) => {
     const imported = await invoke<WorkspaceImportResult>("import_directory_to_workspace", {
-      source_path: selectedPath,
+      sourcePath: selectedPath,
       mode: ingestMode,
     });
     await applyImportedWorkspace(imported, "文件夹已导入工作空间。");
@@ -312,7 +312,7 @@ function App() {
 
   const importAndIngestFiles = async (selectedPaths: string[]) => {
     const imported = await invoke<WorkspaceImportResult>("import_paths_to_workspace", {
-      source_paths: selectedPaths,
+      sourcePaths: selectedPaths,
       mode: ingestMode,
     });
     await applyImportedWorkspace(imported, `已导入 ${selectedPaths.length} 个项目到工作空间。`);
