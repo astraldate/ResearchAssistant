@@ -20,6 +20,7 @@ interface PullProgress {
 interface ModelSelectorProps {
   currentModel: string;
   onModelChange: (model: string) => void;
+  onStatus?: (message: string, tone?: "info" | "error", persistent?: boolean) => void;
 }
 
 type ModelCategory = "general" | "reasoning" | "coding" | "vision" | "embedding";
@@ -64,6 +65,14 @@ const CATEGORY_LABELS: Record<ModelCategory, string> = {
 };
 
 const RECOMMENDED_MODELS: RecommendedModel[] = [
+  {
+    name: "qwen3.5:9b",
+    category: "general",
+    summary: "通用/多模态/中文友好/平衡型，适合中文对话、文档理解与混合任务。",
+    approxSize: "~6.6GB",
+    sourceUrl: "https://ollama.com/library/qwen3.5",
+    checkedAt: "2026-03-12",
+  },
   {
     name: "qwen3:8b",
     category: "general",
@@ -178,7 +187,7 @@ const isInstalled = (target: string, installed: OllamaModel[]) => {
   });
 };
 
-export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onModelChange }) => {
+export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onModelChange, onStatus }) => {
   const [models, setModels] = useState<OllamaModel[]>([]);
   const [isOpen, setIsOpen] = useState(false);
   const [newModelName, setNewModelName] = useState("");
@@ -270,7 +279,9 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
       onModelChange(resolvePulledModelName(requestedName, latestList));
     } catch (err) {
       console.error("Pull failed:", err);
-      setError(`${ZH.pullFailed}${String(err)}`);
+      const message = `${ZH.pullFailed}${String(err)}`;
+      setError(message);
+      onStatus?.(message, "error", true);
     } finally {
       setIsPulling(false);
       setPullProgress(null);
@@ -375,7 +386,8 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
             value={selectedRecommended}
             onChange={(event) => setSelectedRecommended(event.target.value)}
             style={{
-              flex: 1,
+              minWidth: 0,
+              width: "100%",
               padding: "6px",
               borderRadius: "4px",
               border: "1px solid var(--border-color)",
@@ -443,7 +455,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
         )}
       </div>
 
-      <div className="pull-model-form" style={{ display: "flex", gap: "8px" }}>
+      <div className="pull-model-form" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: "8px" }}>
         <input
           type="text"
           placeholder={ZH.pullPlaceholder}
@@ -451,7 +463,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
           onChange={(e) => setNewModelName(e.target.value)}
           disabled={isPulling}
           style={{
-            flex: 1,
+            minWidth: 0,
             padding: "6px",
             borderRadius: "4px",
             border: "1px solid var(--border-color)",
