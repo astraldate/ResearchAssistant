@@ -25,12 +25,14 @@ import { FileNode, FileTree } from "./components/FileTree";
 import { ChatInterface } from "./components/ChatInterface";
 import { CardLibrary } from "./components/CardLibrary";
 import { PdfDock } from "./components/PdfDock";
+import { resolveMirrorModel } from "./utils/modelMirrors";
 import "./App.css";
 
 type InferenceMode = "single_mm" | "dual_pipeline";
 type IngestMode = "overwrite" | "incremental";
 type SidebarTool = "workspace" | "citations" | "notes" | "knowledge" | "cards";
 type StatusTone = "info" | "error";
+type AiRequirement = "chat" | "index";
 
 interface InferenceSettings {
   mode: InferenceMode;
@@ -114,6 +116,10 @@ interface OllamaVersionInfo {
   version: string;
 }
 
+interface OllamaModelSummary {
+  name: string;
+}
+
 interface PrivateOllamaRuntimeInfo {
   executable_path?: string | null;
   reported_version?: string | null;
@@ -159,13 +165,6 @@ const REQUIRED_MODELS = {
 
 const OLLAMA_MIN_RECOMMENDED_VERSION = "0.17.7";
 
-const MIRROR_MODELS: Record<string, { url: string; filename: string }> = {
-  "nomic-embed-text": {
-    url: "https://modelscope.cn/models/AI-ModelScope/nomic-embed-text-v1.5-GGUF/resolve/master/nomic-embed-text-v1.5.Q4_K_M.gguf",
-    filename: "nomic-embed-text-v1.5.Q4_K_M.gguf",
-  },
-};
-
 const STAGE_LABELS: Record<string, string> = {
   scan: "扫描文件",
   chunk: "切分文本",
@@ -181,6 +180,29 @@ const isPdfFile = (path: string | null | undefined) =>
   Boolean(path && /\.pdf$/i.test(path));
 const DEFAULT_TWO_PANEL_LAYOUT = { sidebar: 24, main: 76 };
 const DEFAULT_THREE_PANEL_LAYOUT = { sidebar: 20, main: 35, pdf: 45 };
+const AI_IDLE_CHECK_DELAY_MS = 1200;
+const logTiming = (label: string, startedAt: number) => {
+  const duration = Math.round(performance.now() - startedAt);
+  console.info(`[startup] ${label}: ${duration}ms`);
+};
+
+const attachChildrenToTree = (
+  nodes: FileNode[],
+  targetPath: string,
+  children: FileNode[],
+): FileNode[] =>
+  nodes.map((node) => {
+    if (node.path === targetPath) {
+      return { ...node, children, has_children: children.length > 0 };
+    }
+    if (node.children && node.children.length > 0) {
+      return {
+        ...node,
+        children: attachChildrenToTree(node.children, targetPath, children),
+      };
+    }
+    return node;
+  });
 
 const normalizeOllamaVersion = (value: string | null | undefined) => {
   const normalized = value?.trim();
@@ -231,6 +253,7 @@ const isOllamaUpgradeRequiredError = (message: string) => {
 };
 
 function App() {
+  const appStartedAtRef = useRef(performance.now());
   const [files, setFiles] = useState<FileNode[]>([]);
   const [workspacePath, setWorkspacePath] = useState<string | null>(null);
   const [activeFilePath, setActiveFilePath] = useState<string | null>(null);
@@ -280,6 +303,11 @@ function App() {
   const sidebarPanelRef = useRef<PanelImperativeHandle | null>(null);
   const mainPanelRef = useRef<PanelImperativeHandle | null>(null);
   const pdfPanelRef = useRef<PanelImperativeHandle | null>(null);
+  const aiPreparationPromiseRef = useRef<Promise<string> | null>(null);
+  const aiPreparedStateRef = useRef<{ chat: boolean; index: boolean }>({
+    chat: false,
+    index: false,
+  });
 
   const progressPercent = useMemo(() => {
     if (!ingestProgress || ingestProgress.total <= 0) return 0;
@@ -507,6 +535,7 @@ function App() {
   }, [ingestMode]);
 
   const loadInferenceSettings = async () => {
+    const startedAt = performance.now();
     try {
       const settings = await invoke<InferenceSettings>(
         "get_inference_settings",
@@ -515,10 +544,13 @@ function App() {
       setSettingsError(null);
     } catch (error) {
       setSettingsError(`加载推理模式失败：${String(error)}`);
+    } finally {
+      logTiming("loadInferenceSettings", startedAt);
     }
   };
 
   const loadWorkspaceSnapshot = async () => {
+    const startedAt = performance.now();
     try {
       const snapshot = await invoke<WorkspaceSnapshot>(
         "get_workspace_snapshot",
@@ -527,20 +559,26 @@ function App() {
       setFiles([snapshot.tree]);
     } catch (error) {
       console.error("Failed to load workspace snapshot:", error);
+    } finally {
+      logTiming("loadWorkspaceSnapshot", startedAt);
     }
   };
 
   const loadCardSettings = async () => {
+    const startedAt = performance.now();
     try {
       const settings = await invoke<CardSettings>("get_card_settings");
       setCardSettings(settings);
       setCardSettingsError(null);
     } catch (error) {
       setCardSettingsError(`加载知识卡片路径失败：${String(error)}`);
+    } finally {
+      logTiming("loadCardSettings", startedAt);
     }
   };
 
   const loadMobileCompanionStatus = async () => {
+    const startedAt = performance.now();
     setIsLoadingMobileStatus(true);
     try {
       const status = await invoke<MobileCompanionStatus>(
@@ -552,14 +590,38 @@ function App() {
       setMobileStatusError(`加载移动端配套状态失败：${String(error)}`);
     } finally {
       setIsLoadingMobileStatus(false);
+      logTiming("loadMobileCompanionStatus", startedAt);
     }
   };
 
+  const loadDirectoryChildren = useCallback(async (path: string) => {
+    const startedAt = performance.now();
+    try {
+      const children = await invoke<FileNode[]>("list_directory_children", {
+        path,
+      });
+      console.info(
+        "[tree] app received children",
+        path,
+        children.length,
+        children.map((child) => `${child.type_name}:${child.name}`),
+      );
+      setFiles((previous) => attachChildrenToTree(previous, path, children));
+      return children;
+    } finally {
+      logTiming(`loadDirectoryChildren ${path}`, startedAt);
+    }
+  }, []);
+
   useEffect(() => {
+    console.info("[startup] App mounted");
     void loadInferenceSettings();
     void loadWorkspaceSnapshot();
     void loadCardSettings();
-    void loadMobileCompanionStatus();
+  }, []);
+
+  useEffect(() => {
+    logTiming("firstAppEffect", appStartedAtRef.current);
   }, []);
 
   useEffect(() => {
@@ -606,9 +668,12 @@ function App() {
   }, [showPersistentStatus]);
 
   useEffect(() => {
-    const initOllama = async () => {
+    let cancelled = false;
+    let timerId: number | null = null;
+    let cancelIdleCheck: (() => void) | null = null;
+
+    const runIdleCheck = async () => {
       try {
-        showPersistentStatus("正在检查本地 AI 环境...");
         const isRunning = await invoke<boolean>("check_ollama_status");
         if (!isRunning) {
           const privateVersion = await activatePrivateOllama(
@@ -658,37 +723,6 @@ function App() {
           console.warn("Failed to read Ollama version:", error);
         }
 
-        const pullModel = async (name: string) => {
-          const mirror = MIRROR_MODELS[name];
-          if (mirror) {
-            try {
-              showPersistentStatus(`正在通过镜像拉取 ${name}...`);
-              await invoke("pull_model_from_modelscope", {
-                name,
-                url: mirror.url,
-                filename: mirror.filename,
-              });
-              return;
-            } catch (error) {
-              console.error("Mirror pull failed:", error);
-            }
-          }
-          showPersistentStatus(`正在拉取模型 ${name}...`);
-          await invoke("pull_ollama_model", { name });
-        };
-
-        let models = await invoke<Array<{ name: string }>>("get_ollama_models");
-        let names = models.map((model) => model.name);
-
-        if (!names.some((name) => name.includes(REQUIRED_MODELS.embedding))) {
-          await pullModel(REQUIRED_MODELS.embedding);
-        }
-        if (!names.some((name) => name.includes(REQUIRED_MODELS.chat))) {
-          await pullModel(REQUIRED_MODELS.chat);
-        }
-
-        models = await invoke<Array<{ name: string }>>("get_ollama_models");
-        names = models.map((model) => model.name);
         const selectedModel =
           names.find((name) => name === REQUIRED_MODELS.chat) ||
           names.find((name) => name.includes(REQUIRED_MODELS.chat)) ||
@@ -750,9 +784,10 @@ function App() {
       message: "正在扫描文件...",
     });
     try {
+      const model = await ensureAiReady("index");
       const count = await invoke<number>("ingest_knowledge_base", {
         path,
-        model: currentModel || REQUIRED_MODELS.chat,
+        model,
         mode: ingestMode,
       });
       showTemporaryStatus(`索引完成，已处理 ${count} 个片段。`);
@@ -1529,6 +1564,7 @@ function App() {
               <PdfDock
                 activePdfPath={activePdfPath}
                 currentModel={currentModel || REQUIRED_MODELS.chat}
+                ensureAiReady={ensureAiReady}
                 currentPage={pdfPage}
                 onPageChange={setPdfPage}
                 onStatus={handleChildStatus}

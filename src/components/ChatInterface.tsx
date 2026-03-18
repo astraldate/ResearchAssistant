@@ -59,6 +59,7 @@ interface SelectionMenuState {
 
 interface ChatInterfaceProps {
   currentModel?: string;
+  ensureAiReady?: () => Promise<string>;
   activeFilePath?: string | null;
   pdfPage?: number;
   onPdfPageChange?: (page: number) => void;
@@ -111,6 +112,7 @@ const readSession = (): SessionPayload | null => {
 
 export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   currentModel,
+  ensureAiReady,
   activeFilePath,
   pdfPage = 1,
   onPdfPageChange,
@@ -399,6 +401,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     setIsLoading(true);
 
     try {
+      const activeModel = ensureAiReady
+        ? await ensureAiReady()
+        : currentModel || "qwen2.5:0.5b";
       let context = "";
       try {
         const docs = await invoke<DocumentResult[]>("query_knowledge_base", {

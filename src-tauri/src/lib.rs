@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Instant;
 use tauri::{Emitter, State, Window};
 
 mod cards;
@@ -23,6 +24,7 @@ pub struct FileNode {
     pub name: String,
     pub path: String,
     pub type_name: String, // "file" or "folder"
+    pub has_children: bool,
     pub children: Option<Vec<FileNode>>,
 }
 
@@ -259,46 +261,113 @@ async fn scan_directory(path: String) -> Result<FileNode, String> {
 
 #[tauri::command]
 async fn get_workspace_snapshot(app: AppHandle) -> Result<WorkspaceSnapshot, String> {
+    let started = Instant::now();
     let workspace_root = workspace_root_dir(&app)?;
-    Ok(WorkspaceSnapshot {
+    let snapshot = WorkspaceSnapshot {
         workspace_path: workspace_root.to_string_lossy().to_string(),
-        tree: build_tree(&workspace_root),
-    })
+        tree: build_tree_with_depth(&workspace_root, 2),
+    };
+    println!(
+        "[startup] get_workspace_snapshot finished in {}ms",
+        started.elapsed().as_millis()
+    );
+    Ok(snapshot)
+}
+
+#[tauri::command]
+async fn list_directory_children(path: String) -> Result<Vec<FileNode>, String> {
+    let started = Instant::now();
+    let target = Path::new(&path);
+    if !target.exists() {
+        return Err("Path does not exist.".to_string());
+    }
+    if !target.is_dir() {
+        return Err("Path is not a directory.".to_string());
+    }
+    let children = read_tree_children(target, 1);
+    println!(
+        "[startup] list_directory_children '{}' finished in {}ms",
+        path,
+        started.elapsed().as_millis()
+    );
+    println!(
+        "[tree] list_directory_children '{}' -> count={} names={:?}",
+        path,
+        children.len(),
+        children
+            .iter()
+            .map(|child| format!("{}:{}", child.type_name, child.name))
+            .collect::<Vec<_>>()
+    );
+    Ok(children)
 }
 
 use tauri::{AppHandle, Manager, RunEvent};
 
+fn is_hidden_path(path: &Path) -> bool {
+    path.file_name()
+        .map(|n| n.to_string_lossy().starts_with('.'))
+        .unwrap_or(false)
+}
+
+fn has_visible_children(path: &Path) -> bool {
+    if !path.is_dir() {
+        return false;
+    }
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return false;
+    };
+
+    for entry in entries.filter_map(|entry| entry.ok()) {
+        let child = entry.path();
+        if !is_hidden_path(&child) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn sort_tree_nodes(nodes: &mut [FileNode]) {
+    nodes.sort_by(|a, b| match (a.type_name.as_str(), b.type_name.as_str()) {
+        ("folder", "file") => std::cmp::Ordering::Less,
+        ("file", "folder") => std::cmp::Ordering::Greater,
+        _ => a.name.cmp(&b.name),
+    });
+}
+
+fn read_tree_children(path: &Path, depth: usize) -> Vec<FileNode> {
+    let mut nodes = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let child_path = entry.path();
+            if is_hidden_path(&child_path) {
+                continue;
+            }
+            nodes.push(build_tree_with_depth(&child_path, depth.saturating_sub(1)));
+        }
+    }
+    sort_tree_nodes(&mut nodes);
+    nodes
+}
+
 fn build_tree(path: &Path) -> FileNode {
+    build_tree_with_depth(path, usize::MAX)
+}
+
+fn build_tree_with_depth(path: &Path, depth: usize) -> FileNode {
     let name = path
         .file_name()
         .unwrap_or_default()
         .to_string_lossy()
         .to_string();
     let is_dir = path.is_dir();
-
-    let mut children = if is_dir { Some(Vec::new()) } else { None };
-
-    if is_dir {
-        if let Ok(entries) = std::fs::read_dir(path) {
-            let mut nodes = Vec::new();
-            for entry in entries.filter_map(|e| e.ok()) {
-                let p = entry.path();
-                if p.file_name()
-                    .map(|n| n.to_string_lossy().starts_with('.'))
-                    .unwrap_or(false)
-                {
-                    continue;
-                }
-                nodes.push(build_tree(&p));
-            }
-            nodes.sort_by(|a, b| match (a.type_name.as_str(), b.type_name.as_str()) {
-                ("folder", "file") => std::cmp::Ordering::Less,
-                ("file", "folder") => std::cmp::Ordering::Greater,
-                _ => a.name.cmp(&b.name),
-            });
-            children = Some(nodes);
-        }
-    }
+    let has_children = if is_dir { has_visible_children(path) } else { false };
+    let children = if is_dir && depth > 0 {
+        Some(read_tree_children(path, depth))
+    } else {
+        None
+    };
 
     FileNode {
         id: path.to_string_lossy().to_string(),
@@ -313,6 +382,7 @@ fn build_tree(path: &Path) -> FileNode {
         } else {
             "file".to_string()
         },
+        has_children,
         children,
     }
 }
@@ -796,7 +866,7 @@ async fn import_zotero_storage_to_workspace(
         return Err("No PDF files found in Zotero storage.".to_string());
     }
 
-    let tree = build_tree(&workspace_root);
+    let tree = build_tree_with_depth(&workspace_root, 2);
     Ok(ZoteroImportResult {
         source_storage_path: storage_root.to_string_lossy().to_string(),
         workspace_path: workspace_root.to_string_lossy().to_string(),
@@ -851,7 +921,7 @@ async fn import_directory_to_workspace(
         }
     }
 
-    let tree = build_tree(&workspace_root);
+    let tree = build_tree_with_depth(&workspace_root, 2);
     Ok(WorkspaceImportResult {
         source_path: source_root.to_string_lossy().to_string(),
         workspace_path: workspace_root.to_string_lossy().to_string(),
@@ -896,7 +966,7 @@ async fn import_paths_to_workspace(
         copy_path_into_root(&source, &target_root)?;
     }
 
-    let tree = build_tree(&workspace_root);
+    let tree = build_tree_with_depth(&workspace_root, 2);
     Ok(WorkspaceImportResult {
         source_path: source_paths.join("; "),
         workspace_path: workspace_root.to_string_lossy().to_string(),
@@ -1698,12 +1768,13 @@ fn spawn_system_ollama_process(
     })?;
 
     Ok(format!(
-        "System Ollama started from {}",
-        executable.display()
+        "System Ollama started from {} (models: {})",
+        executable.display(),
+        models_dir.display()
     ))
 }
 
-fn ollama_models_dir(app: &AppHandle) -> Result<PathBuf, String> {
+fn default_private_ollama_models_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     if !app_data_dir.exists() {
         std::fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
@@ -1715,10 +1786,51 @@ fn ollama_models_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(models_dir)
 }
 
-fn spawn_private_ollama_process(app: &AppHandle) -> Result<String, String> {
+fn is_valid_ollama_models_dir(path: &Path) -> bool {
+    path.join("blobs").is_dir() && path.join("manifests").is_dir()
+}
+
+fn sniff_local_ollama_models_dir() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Some(user_profile) = std::env::var_os("USERPROFILE") {
+        candidates.push(PathBuf::from(user_profile).join(".ollama").join("models"));
+    }
+
+    if let Some(models_dir) = std::env::var_os("OLLAMA_MODELS") {
+        candidates.push(PathBuf::from(models_dir));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        for drive in b'C'..=b'Z' {
+            let root = format!("{}:\\", drive as char);
+            let root_path = PathBuf::from(root);
+            if !root_path.exists() {
+                continue;
+            }
+
+            candidates.push(root_path.join("OllamaModels"));
+            candidates.push(root_path.join("Models").join("OllamaModels"));
+        }
+    }
+
+    candidates
+        .into_iter()
+        .find(|candidate| is_valid_ollama_models_dir(candidate))
+}
+
+fn resolve_ollama_models_dir(app: &AppHandle) -> Result<(PathBuf, bool), String> {
+    if let Some(existing_models_dir) = sniff_local_ollama_models_dir() {
+        return Ok((existing_models_dir, true));
+    }
+
+    Ok((default_private_ollama_models_dir(app)?, false))
+}
+
+fn spawn_private_ollama_process(app: &AppHandle, models_dir: &Path) -> Result<String, String> {
     let executable = private_ollama_executable_path(app)?
         .ok_or_else(|| "Private Ollama runtime is not available yet.".to_string())?;
-    let models_dir = ollama_models_dir(app)?;
     let http_proxy = std::env::var("HTTP_PROXY").ok();
     let https_proxy = std::env::var("HTTPS_PROXY").ok();
 
@@ -1747,8 +1859,9 @@ fn spawn_private_ollama_process(app: &AppHandle) -> Result<String, String> {
     })?;
 
     Ok(format!(
-        "Private Ollama started from {}",
-        executable.display()
+        "Private Ollama started from {} (models: {})",
+        executable.display(),
+        models_dir.display()
     ))
 }
 
@@ -1768,10 +1881,26 @@ async fn start_ollama(app: AppHandle, window: Window) -> Result<String, String> 
         println!("Detected HTTPS_PROXY: {}", proxy);
     }
 
-    let models_dir = ollama_models_dir(&app)?;
+    let (models_dir, reused_local_models_dir) = resolve_ollama_models_dir(&app)?;
+
+    if reused_local_models_dir {
+        emit_ollama_runtime_progress(
+            Some(&window),
+            format!("检测到本地 Ollama 模型库，应用私有引擎将复用：{}", models_dir.display()),
+            None,
+            None,
+        );
+    } else {
+        emit_ollama_runtime_progress(
+            Some(&window),
+            format!("未发现可复用的本地模型库，应用私有引擎将使用自有模型库：{}", models_dir.display()),
+            None,
+            None,
+        );
+    }
 
     if let Some(_) = private_ollama_executable_path(&app)? {
-        return spawn_private_ollama_process(&app);
+        return spawn_private_ollama_process(&app, &models_dir);
     }
 
     emit_ollama_runtime_progress(
@@ -1818,7 +1947,10 @@ async fn start_ollama(app: AppHandle, window: Window) -> Result<String, String> 
         }
     });
 
-    Ok("Ollama sidecar started".to_string())
+    Ok(format!(
+        "Ollama sidecar started (models: {})",
+        models_dir.display()
+    ))
 }
 
 #[tauri::command]
@@ -2150,9 +2282,26 @@ async fn activate_private_ollama(
         current_runtime
     };
 
+    let (models_dir, reused_local_models_dir) = resolve_ollama_models_dir(&app)?;
+    if reused_local_models_dir {
+        emit_ollama_runtime_progress(
+            Some(&window),
+            format!("检测到本地 Ollama 模型库，应用私有引擎将复用：{}", models_dir.display()),
+            None,
+            None,
+        );
+    } else {
+        emit_ollama_runtime_progress(
+            Some(&window),
+            format!("未发现可复用的本地模型库，应用私有引擎将使用自有模型库：{}", models_dir.display()),
+            None,
+            None,
+        );
+    }
+
     stop_all_ollama_processes()?;
     tokio::time::sleep(std::time::Duration::from_millis(800)).await;
-    let _ = spawn_private_ollama_process(&app)?;
+    let _ = spawn_private_ollama_process(&app, &models_dir)?;
 
     for _ in 0..20 {
         if check_ollama_status().await {
@@ -2890,6 +3039,7 @@ pub fn run() {
         .manage(inference_settings_state)
         .manage(mobile_companion_state)
         .setup(|app| {
+            let started = Instant::now();
             let handle = app.handle().clone();
 
             // Load inference settings and persist defaults if file does not exist yet.
@@ -2930,12 +3080,14 @@ pub fn run() {
             if let Err(error) = mobile::initialize_mobile_companion(handle.clone(), mobile_state) {
                 println!("Failed to initialize mobile companion service: {}", error);
             }
+            println!("[startup] tauri setup finished in {}ms", started.elapsed().as_millis());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             greet,
             scan_directory,
             get_workspace_snapshot,
+            list_directory_children,
             import_directory_to_workspace,
             import_paths_to_workspace,
             import_zotero_storage_to_workspace,
