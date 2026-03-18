@@ -180,13 +180,7 @@ const TreeNode: React.FC<{
         ) : (
           <File size={14} color="#68707f" />
         )}
-        <span className="tree-item-label">{node.name}</span>
-        {node.type_name === "folder" && isLoading && (
-          <span className="tree-item-empty">加载中</span>
-        )}
-        {node.type_name === "folder" && loadError && (
-          <span className="tree-item-empty">加载失败</span>
-        )}
+        <span className="tree-item-label" title={node.name}>{node.name}</span>
         {shouldShowEmpty && <span className="tree-item-empty">空</span>}
       </div>
 
@@ -293,3 +287,5 @@ export const FileTree: React.FC<FileTreeProps> = ({
     </div>
   );
 };
+
+

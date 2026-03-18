@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -32,12 +32,8 @@ interface PullProgress {
 interface ModelSelectorProps {
   currentModel: string;
   onModelChange: (model: string) => void;
-  onStatus?: (
-    message: string,
-    tone?: "info" | "error",
-    persistent?: boolean,
-  ) => void;
-  variant?: "compact" | "drawer";
+  onStatus?: (message: string, tone?: "info" | "error", persistent?: boolean) => void;
+  variant?: "full" | "compact" | "drawer";
 }
 
 type ModelCategory =
@@ -96,7 +92,7 @@ const RECOMMENDED_MODELS: RecommendedModel[] = [
   {
     name: "qwen3.5:9b",
     category: "general",
-    summary: "通用/多模态/中文友好/平衡型，适合中文对话、文档理解与混合任务。",
+    summary: "General-purpose multilingual model for chat and mixed tasks.",
     approxSize: "~6.6GB",
     sourceUrl: "https://ollama.com/library/qwen3.5",
     checkedAt: "2026-03-12",
@@ -104,7 +100,7 @@ const RECOMMENDED_MODELS: RecommendedModel[] = [
   {
     name: "qwen3:8b",
     category: "general",
-    summary: "Qwen 3 系列，中文能力、通用问答和推理能力比较均衡。",
+    summary: "Balanced Chinese/English general model for Q&A and reasoning.",
     approxSize: "~5GB",
     sourceUrl: "https://ollama.com/library/qwen3",
     checkedAt: "2026-03-05",
@@ -112,15 +108,15 @@ const RECOMMENDED_MODELS: RecommendedModel[] = [
   {
     name: "gemma3:4b",
     category: "general",
-    summary: "Gemma 3 小体量多模态模型，适合轻量本地部署。",
+    summary: "Lightweight multimodal model for local use.",
     approxSize: "~3.3GB",
     sourceUrl: "https://www.ollama.com/library/gemma3",
     checkedAt: "2026-03-05",
   },
   {
     name: "deepseek-r1",
-    category: "reasoning",
-    summary: "偏推理强化，适合数学、逻辑和复杂分析任务。",
+    category: "general",
+    summary: "Reasoning-focused model for math, logic, and analysis.",
     approxSize: "~5GB (default distilled variant)",
     sourceUrl: "https://ollama.com/library/deepseek-r1",
     checkedAt: "2026-03-05",
@@ -128,63 +124,63 @@ const RECOMMENDED_MODELS: RecommendedModel[] = [
   {
     name: "llama3.3",
     category: "general",
-    summary: "大参数通用模型，适合多语言写作和长对话。",
+    summary: "Large general model for long-form and multilingual chat.",
     approxSize: "~43GB",
     sourceUrl: "https://ollama.com/library/llama3.3",
     checkedAt: "2026-03-05",
   },
   {
     name: "qwen3-coder:30b",
-    category: "coding",
-    summary: "长上下文代码模型，适合仓库级代码理解和生成。",
+    category: "general",
+    summary: "Long-context coding model for repo-level reasoning.",
     approxSize: "~19GB",
     sourceUrl: "https://ollama.com/library/qwen3-coder",
     checkedAt: "2026-03-05",
   },
   {
     name: "qwen2.5-coder:7b",
-    category: "coding",
-    summary: "速度和效果更平衡的代码模型，适合本地开发辅助。",
+    category: "general",
+    summary: "Balanced coding model for local development.",
     approxSize: "~4.7GB",
     sourceUrl: "https://ollama.com/library/qwen2.5-coder",
     checkedAt: "2026-03-05",
   },
   {
     name: "qwen2.5vl:7b",
-    category: "vision",
-    summary: "视觉语言模型，适合图片理解、表格和图文问答。",
+    category: "general",
+    summary: "Vision-language model for image understanding and VQA.",
     approxSize: "~6GB",
     sourceUrl: "https://ollama.com/library/qwen2.5vl",
     checkedAt: "2026-03-05",
   },
   {
     name: "mistral-small3.1",
-    category: "vision",
-    summary: "支持视觉能力和长上下文，适合复杂文档理解。",
+    category: "general",
+    summary: "Vision-capable model with longer context.",
     approxSize: "~15GB",
     sourceUrl: "https://ollama.com/library/mistral-small3.1",
     checkedAt: "2026-03-05",
   },
   {
     name: "minicpm-v",
-    category: "vision",
-    summary: "轻量视觉模型，常用于 OCR 和图像理解流程。",
+    category: "general",
+    summary: "Lightweight vision model often used for OCR and image QA.",
     approxSize: "~8GB",
     sourceUrl: "https://ollama.com/library/minicpm-v",
     checkedAt: "2026-03-05",
   },
   {
     name: "nomic-embed-text",
-    category: "embedding",
-    summary: "适合本地 RAG 建库和检索的向量模型。",
+    category: "general",
+    summary: "Embedding model for local RAG indexing and search.",
     approxSize: "~274MB",
     sourceUrl: "https://ollama.com/library/nomic-embed-text",
     checkedAt: "2026-03-05",
   },
   {
     name: "mxbai-embed-large",
-    category: "embedding",
-    summary: "效果更强的检索向量模型，适合追求召回质量。",
+    category: "general",
+    summary: "Stronger embedding model for higher recall.",
     approxSize: "~670MB",
     sourceUrl: "https://ollama.com/library/mxbai-embed-large",
     checkedAt: "2026-03-05",
@@ -239,15 +235,9 @@ const isInstalled = (target: string, installed: OllamaModel[]) => {
     return m.name === target || installedBase === targetBase;
   });
 };
-
 const canUseMirror = (target: string) => Boolean(resolveMirrorModel(target));
 
-export const ModelSelector: React.FC<ModelSelectorProps> = ({
-  currentModel,
-  onModelChange,
-  onStatus,
-  variant = "compact",
-}) => {
+export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onModelChange, onStatus, variant = "full" }) => {
   const [models, setModels] = useState<OllamaModel[]>([]);
   const [isOpen, setIsOpen] = useState(false);
   const [newModelName, setNewModelName] = useState("");
@@ -400,6 +390,11 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
     await pullModelByName(newModelName);
   };
 
+  const handlePullSelectedModel = useCallback(async () => {
+    if (!selectedRecommended) return;
+    await pullModelByName(selectedRecommended);
+  }, [pullModelByName, selectedRecommended]);
+
   const focusManualInput = useCallback(() => {
     window.requestAnimationFrame(() => {
       const input = manualInputRef.current;
@@ -454,9 +449,49 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
     return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
   };
 
+    if (variant === "compact") {
+    const isSelectedInstalled = selectedRecommended ? isInstalled(selectedRecommended, models) : false;
+    return (
+      <div className="model-selector-compact">
+        <div className="model-compact-row">
+          <select
+            value={selectedRecommended}
+            onChange={(event) => {
+              const value = event.target.value;
+              setSelectedRecommended(value);
+              if (isInstalled(value, models)) {
+                onModelChange(resolvePulledModelName(value, models));
+              }
+            }}
+          >
+            {groupedRecommended.map((group) => (
+              <optgroup key={group.category} label={CATEGORY_LABELS[group.category]}>
+                {group.items.map((item) => (
+                  <option key={item.name} value={item.name}>
+                    {item.name} {isInstalled(item.name, models) ? "(installed)" : ""}
+                  </option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
+          {!isSelectedInstalled && (
+            <button
+              className="model-compact-download"
+              onClick={() => void handlePullSelectedModel()}
+              disabled={isPulling || !selectedRecommended}
+              title="Download model"
+            >
+              {isPulling ? <RefreshCw size={16} className="spin" /> : <Download size={16} />}
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
-      className={`model-selector-container ${variant === "drawer" ? "drawer-mode" : "compact-mode"}`}
+      className={`model-selector-container ${variant === "drawer" ? "drawer-mode" : "full-mode"}` }
     >
       <div className="model-selector-shell">
         <div className="model-selector-topbar">
@@ -730,3 +765,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
     </div>
   );
 };
+
+
+
+

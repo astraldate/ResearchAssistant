@@ -3,16 +3,16 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
-  Bot,
   BookOpen,
   ChevronDown,
   ChevronUp,
   FilePlus,
   FolderOpen,
-  Inbox,
   LayoutGrid,
   MessageSquareText,
+  Search,
   Settings,
+  StickyNote,
   X,
 } from "lucide-react";
 import {
@@ -24,18 +24,15 @@ import {
 import { FileNode, FileTree } from "./components/FileTree";
 import { ChatInterface } from "./components/ChatInterface";
 import { CardLibrary } from "./components/CardLibrary";
-import { MobileInboxPanel } from "./components/MobileInboxPanel";
-import { ModelSelector } from "./components/ModelSelector";
 import { PdfDock } from "./components/PdfDock";
 import { resolveMirrorModel } from "./utils/modelMirrors";
 import "./App.css";
 
 type InferenceMode = "single_mm" | "dual_pipeline";
 type IngestMode = "overwrite" | "incremental";
-type MainView = "chat" | "cards" | "inbox";
+type SidebarTool = "workspace" | "citations" | "notes" | "knowledge" | "cards";
 type StatusTone = "info" | "error";
 type AiRequirement = "chat" | "index";
-type LeftDrawerView = "workspace" | "models" | null;
 
 interface InferenceSettings {
   mode: InferenceMode;
@@ -136,6 +133,31 @@ interface OllamaRuntimeProgress {
   completed?: number;
 }
 
+interface CitationItem {
+  id: string;
+  path: string;
+  page: number;
+  snippet: string;
+  createdAt: number;
+}
+
+interface NoteItem {
+  id: string;
+  text: string;
+  createdAt: number;
+}
+
+interface ChatSessionSnapshot {
+  citations?: CitationItem[];
+  notes?: NoteItem[];
+}
+
+interface DocumentResult {
+  id: string;
+  path: string;
+  content: string;
+}
+
 const REQUIRED_MODELS = {
   embedding: "nomic-embed-text",
   chat: "qwen2.5:0.5b",
@@ -152,13 +174,11 @@ const STAGE_LABELS: Record<string, string> = {
 };
 
 const OLLAMA_VERSION_PATTERN = /(\d+)\.(\d+)\.(\d+)/;
+const CHAT_SESSION_KEY = "ra_chat_session_v3";
 
 const isPdfFile = (path: string | null | undefined) =>
   Boolean(path && /\.pdf$/i.test(path));
 const DEFAULT_TWO_PANEL_LAYOUT = { main: 55, pdf: 45 };
-const DEFAULT_WORKSPACE_DRAWER_WIDTH = 320;
-const MIN_WORKSPACE_DRAWER_WIDTH = 220;
-const MAX_WORKSPACE_DRAWER_WIDTH = 520;
 const AI_IDLE_CHECK_DELAY_MS = 1200;
 const logTiming = (label: string, startedAt: number) => {
   const duration = Math.round(performance.now() - startedAt);
@@ -239,15 +259,9 @@ function App() {
   const [pdfPage, setPdfPage] = useState(1);
   const [isPdfDockVisible, setIsPdfDockVisible] = useState(false);
   const [isPdfFocusMode, setIsPdfFocusMode] = useState(false);
-  const [activeLeftDrawer, setActiveLeftDrawer] =
-    useState<LeftDrawerView>("workspace");
-  const [workspaceDrawerWidth, setWorkspaceDrawerWidth] = useState(
-    DEFAULT_WORKSPACE_DRAWER_WIDTH,
-  );
-  const [isWorkspaceDrawerResizing, setIsWorkspaceDrawerResizing] =
-    useState(false);
-  const [currentModel, setCurrentModel] = useState("");
-  const [mainView, setMainView] = useState<MainView>("chat");
+        const [currentModel, setCurrentModel] = useState("");
+  const [activeSidebarTool, setActiveSidebarTool] =
+    useState<SidebarTool>("workspace");
   const [ingestMode, setIngestMode] = useState<IngestMode>("overwrite");
   const [ingestProgress, setIngestProgress] = useState<IngestProgress | null>(
     null,
@@ -273,12 +287,21 @@ function App() {
   const [isRefreshingMobilePairCode, setIsRefreshingMobilePairCode] =
     useState(false);
   const [isStatusBannerExpanded, setIsStatusBannerExpanded] = useState(false);
+  const [sidebarCitations, setSidebarCitations] = useState<CitationItem[]>([]);
+  const [sidebarNotes, setSidebarNotes] = useState<NoteItem[]>([]);
+  const [knowledgeQuery, setKnowledgeQuery] = useState("");
+  const [knowledgeResults, setKnowledgeResults] = useState<DocumentResult[]>(
+    [],
+  );
+  const [isKnowledgeSearching, setIsKnowledgeSearching] = useState(false);
+  const [lastKnowledgeQuery, setLastKnowledgeQuery] = useState("");
 
   const statusTimerRef = useRef<number | null>(null);
   const previousPdfPathRef = useRef<string | null>(null);
-  const focusRestoreLayoutRef = useRef(DEFAULT_TWO_PANEL_LAYOUT);
+    const sidebarPanelRef = useRef<PanelImperativeHandle | null>(null);
   const mainPanelRef = useRef<PanelImperativeHandle | null>(null);
-  const pdfPanelRef = useRef<PanelImperativeHandle | null>(null);
+const focusRestoreLayoutRef = useRef(DEFAULT_TWO_PANEL_LAYOUT);
+    const pdfPanelRef = useRef<PanelImperativeHandle | null>(null);
   const aiPreparationPromiseRef = useRef<Promise<string> | null>(null);
   const aiPreparedStateRef = useRef<{ chat: boolean; index: boolean }>({
     chat: false,
@@ -298,65 +321,7 @@ function App() {
   );
 
   const stageLabel = STAGE_LABELS[ingestProgress?.stage || ""] || "处理中";
-  const isWorkspaceDrawerOpen = activeLeftDrawer === "workspace";
-  const isModelDrawerOpen = activeLeftDrawer === "models";
-  const isLeftDrawerOpen = activeLeftDrawer !== null;
 
-  const clampWorkspaceDrawerWidth = useCallback((nextWidth: number) => {
-    const viewportLimit = Math.max(
-      MIN_WORKSPACE_DRAWER_WIDTH,
-      window.innerWidth - 320,
-    );
-    const maxWidth = Math.min(MAX_WORKSPACE_DRAWER_WIDTH, viewportLimit);
-    return Math.min(maxWidth, Math.max(MIN_WORKSPACE_DRAWER_WIDTH, nextWidth));
-  }, []);
-
-  const handleToggleWorkspaceDrawer = useCallback(() => {
-    if (isPdfFocusMode) return;
-    setActiveLeftDrawer((current) =>
-      current === "workspace" ? null : "workspace",
-    );
-  }, [isPdfFocusMode]);
-
-  const handleToggleModelDrawer = useCallback(() => {
-    if (isPdfFocusMode) return;
-    setActiveLeftDrawer((current) => (current === "models" ? null : "models"));
-  }, [isPdfFocusMode]);
-
-  const handleWorkspaceDrawerResizeStart = useCallback(
-    (clientX: number) => {
-      if (!isLeftDrawerOpen || isPdfFocusMode) return;
-
-      const startWidth = workspaceDrawerWidth;
-      setIsWorkspaceDrawerResizing(true);
-      document.body.style.cursor = "col-resize";
-      document.body.style.userSelect = "none";
-
-      const handlePointerMove = (event: PointerEvent) => {
-        const deltaX = event.clientX - clientX;
-        setWorkspaceDrawerWidth(
-          clampWorkspaceDrawerWidth(startWidth + deltaX),
-        );
-      };
-
-      const handlePointerUp = () => {
-        setIsWorkspaceDrawerResizing(false);
-        document.body.style.cursor = "";
-        document.body.style.userSelect = "";
-        window.removeEventListener("pointermove", handlePointerMove);
-        window.removeEventListener("pointerup", handlePointerUp);
-      };
-
-      window.addEventListener("pointermove", handlePointerMove);
-      window.addEventListener("pointerup", handlePointerUp);
-    },
-    [
-      clampWorkspaceDrawerWidth,
-      isPdfFocusMode,
-      isLeftDrawerOpen,
-      workspaceDrawerWidth,
-    ],
-  );
 
   const clearStatusTimer = useCallback(() => {
     if (statusTimerRef.current !== null) {
@@ -446,7 +411,6 @@ function App() {
     },
     [],
   );
-
   const getInstalledModels = useCallback(async () => {
     return await invoke<OllamaModelSummary[]>("get_ollama_models");
   }, []);
@@ -554,7 +518,6 @@ function App() {
     },
     [handleUpgradeOllama, showPersistentStatus],
   );
-
   const ensureAiReady = useCallback(
     async (requirement: AiRequirement = "chat") => {
       const preparedState = aiPreparedStateRef.current;
@@ -732,17 +695,6 @@ function App() {
   useEffect(() => () => clearStatusTimer(), []);
 
   useEffect(() => {
-    const syncDrawerWidth = () => {
-      setWorkspaceDrawerWidth((current) =>
-        clampWorkspaceDrawerWidth(current),
-      );
-    };
-
-    window.addEventListener("resize", syncDrawerWidth);
-    return () => window.removeEventListener("resize", syncDrawerWidth);
-  }, [clampWorkspaceDrawerWidth]);
-
-  useEffect(() => {
     const storedMode = localStorage.getItem("ra_ingest_mode_v1");
     if (storedMode === "overwrite" || storedMode === "incremental") {
       setIngestMode(storedMode);
@@ -886,7 +838,7 @@ function App() {
     };
   }, [showPersistentStatus]);
 
-  useEffect(() => {
+    useEffect(() => {
     let cancelled = false;
     let timerId: number | null = null;
     let cancelIdleCheck: (() => void) | null = null;
@@ -899,23 +851,7 @@ function App() {
         const models = await getInstalledModels();
         if (cancelled || models.length === 0 || currentModel) return;
 
-        const selectedModel =
-          models.find((model) => model.name === REQUIRED_MODELS.chat)?.name ||
-          models.find((model) => model.name.includes(REQUIRED_MODELS.chat))
-            ?.name ||
-          models[0]?.name ||
-          "";
-        if (selectedModel) {
-          setCurrentModel(selectedModel);
-        }
-      } catch (error) {
-        console.warn("Idle Ollama probe skipped:", error);
-      }
-    };
-
-    timerId = window.setTimeout(() => {
-      if ("requestIdleCallback" in window) {
-        const idleApi = window as Window & {
+        const idleApi = window as typeof window & {
           requestIdleCallback: (cb: IdleRequestCallback) => number;
           cancelIdleCallback?: (id: number) => void;
         };
@@ -924,9 +860,16 @@ function App() {
         });
         cancelIdleCheck = () => idleApi.cancelIdleCallback?.(idleId);
         return;
+      } catch (error) {
+        console.warn("Idle check failed:", error);
       }
-      void runIdleCheck();
-    }, AI_IDLE_CHECK_DELAY_MS);
+      if (cancelled) return;
+      timerId = window.setTimeout(() => {
+        void runIdleCheck();
+      }, AI_IDLE_CHECK_DELAY_MS);
+    };
+
+    void runIdleCheck();
 
     return () => {
       cancelled = true;
@@ -1104,7 +1047,6 @@ function App() {
   const handleFileSelect = async (node: FileNode) => {
     if (node.type_name !== "file") return;
     setActiveFilePath(node.path);
-    setMainView("chat");
     if (node.path.toLowerCase().endsWith(".pdf")) {
       setPdfPage(1);
       setIsPdfDockVisible(true);
@@ -1140,6 +1082,31 @@ function App() {
     }
   }, [activePdfPath, isPdfFocusMode]);
 
+  useEffect(() => {
+    const syncSession = () => {
+      try {
+        const raw = localStorage.getItem(CHAT_SESSION_KEY);
+        if (!raw) {
+          setSidebarCitations([]);
+          setSidebarNotes([]);
+          return;
+        }
+        const parsed = JSON.parse(raw) as ChatSessionSnapshot;
+        setSidebarCitations(
+          Array.isArray(parsed.citations) ? parsed.citations : [],
+        );
+        setSidebarNotes(Array.isArray(parsed.notes) ? parsed.notes : []);
+      } catch {
+        setSidebarCitations([]);
+        setSidebarNotes([]);
+      }
+    };
+
+    syncSession();
+    const timer = window.setInterval(syncSession, 900);
+    return () => window.clearInterval(timer);
+  }, []);
+
   const handleTogglePdfFocusMode = useCallback(() => {
     if (!activePdfPath || !isPdfDockVisible) return;
 
@@ -1165,7 +1132,8 @@ function App() {
     setIsPdfFocusMode(true);
     window.requestAnimationFrame(() => {
       mainPanelRef.current?.resize("0%");
-      pdfPanelRef.current?.resize("100%");
+      mainPanelRef.current?.resize("100%");
+      pdfPanelRef.current?.resize("0%");
     });
   }, [activePdfPath, isPdfDockVisible, isPdfFocusMode]);
 
@@ -1177,6 +1145,27 @@ function App() {
       mainPanelRef.current?.resize("100%");
     });
   }, []);
+
+  const handleKnowledgeSearch = useCallback(async () => {
+    const query = knowledgeQuery.trim();
+    if (!query) return;
+    setIsKnowledgeSearching(true);
+    setLastKnowledgeQuery(query);
+    try {
+      const docs = await invoke<DocumentResult[]>("query_knowledge_base", {
+        query,
+      });
+      setKnowledgeResults(docs);
+    } catch (error) {
+      showPersistentStatus(
+        `Knowledge search failed: ${String(error)}`,
+        "error",
+      );
+      setKnowledgeResults([]);
+    } finally {
+      setIsKnowledgeSearching(false);
+    }
+  }, [knowledgeQuery, showPersistentStatus]);
 
   const handleInferenceModeChange = async (nextMode: InferenceMode) => {
     setIsSavingInferenceMode(true);
@@ -1265,28 +1254,125 @@ function App() {
     }
   };
 
-  const mainContent =
-    mainView === "chat" ? (
-      <ChatInterface
-        currentModel={currentModel}
-        ensureAiReady={ensureAiReady}
-        activeFilePath={activeFilePath}
-        pdfPage={pdfPage}
-        onPdfPageChange={setPdfPage}
-        onStatus={handleChildStatus}
-        onCardSaved={handleCardSaved}
-      />
-    ) : mainView === "cards" ? (
-      <CardLibrary
-        refreshToken={cardsRefreshToken}
-        activeRoot={cardSettings?.active_root}
-        onStatus={handleChildStatus}
-      />
+  const sidebarToolBody =
+    activeSidebarTool === "workspace" ? (
+      <>
+        {isIngesting && (
+          <div className="ingest-panel">
+            <div className="ingest-title">{stageLabel}</div>
+            <div className="ingest-subtitle">
+              {ingestProgress?.total ? `${ingestProgress.current}/${ingestProgress.total}` : "Preparing..."}
+            </div>
+            <div className="ingest-progress-track">
+              <div className="ingest-progress-fill" style={{ width: `${progressPercent}%` }} />
+            </div>
+          </div>
+        )}
+        {workspacePath && (
+          <div className="workspace-path" title={workspacePath}>
+            {workspacePath}
+          </div>
+        )}
+        <FileTree
+          data={files.length > 0 ? files : undefined}
+          activePath={activeFilePath}
+          onSelect={handleFileSelect}
+          onLoadChildren={loadDirectoryChildren}
+        />
+      </>
+    ) : activeSidebarTool === "cards" ? (
+      <div className="sidebar-tool-scroll">
+        <div className="sidebar-tool-title">Knowledge Cards</div>
+        <CardLibrary
+          refreshToken={cardsRefreshToken}
+          activeRoot={cardSettings?.active_root}
+          onStatus={handleChildStatus}
+        />
+      </div>
+    ) : activeSidebarTool === "citations" ? (
+      <div className="sidebar-tool-scroll">
+        <div className="sidebar-tool-title">Citations</div>
+        <div className="support-panel-body">
+          {sidebarCitations.length === 0 && (
+            <div className="support-empty">No citations yet.</div>
+          )}
+          {sidebarCitations.slice(0, 24).map((citation) => (
+            <div key={citation.id} className="support-item">
+              <div className="support-item-title">
+                {citation.path.split(/[\/\\]/).pop()} p.{citation.page}
+              </div>
+              <div className="support-item-text">{citation.snippet}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    ) : activeSidebarTool === "notes" ? (
+      <div className="sidebar-tool-scroll">
+        <div className="sidebar-tool-title">Notes</div>
+        <div className="support-panel-body">
+          {sidebarNotes.length === 0 && (
+            <div className="support-empty">No notes yet.</div>
+          )}
+          {sidebarNotes.slice(0, 32).map((note) => (
+            <div key={note.id} className="support-item">
+              <div className="support-item-text">{note.text}</div>
+            </div>
+          ))}
+        </div>
+      </div>
     ) : (
-      <MobileInboxPanel
-        isActive={mainView === "inbox"}
-        onStatus={handleChildStatus}
-      />
+      <div className="sidebar-tool-scroll">
+        <div className="sidebar-tool-title">Knowledge Search</div>
+        <div className="knowledge-search-row">
+          <input
+            className="knowledge-search-input"
+            value={knowledgeQuery}
+            onChange={(event) => setKnowledgeQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                void handleKnowledgeSearch();
+              }
+            }}
+            placeholder="Search imported knowledge"
+          />
+          <button
+            className="action-button"
+            onClick={() => void handleKnowledgeSearch()}
+            disabled={isKnowledgeSearching || !knowledgeQuery.trim()}
+          >
+            {isKnowledgeSearching ? "Searching" : "Search"}
+          </button>
+        </div>
+        <div className="support-panel-body">
+          {!lastKnowledgeQuery && !isKnowledgeSearching && (
+            <div className="support-empty">
+              Enter keywords to search local knowledge base.
+            </div>
+          )}
+          {lastKnowledgeQuery && !isKnowledgeSearching && knowledgeResults.length === 0 && (
+            <div className="support-empty">No related results found.</div>
+          )}
+          {knowledgeResults.map((doc, index) => (
+            <div key={doc.id} className="support-item">
+              <div className="support-item-title">
+                {index + 1}. {doc.path.split(/[\/\\]/).pop()}
+              </div>
+              <div className="support-item-text">
+                {doc.content.replace(/\s+/g, " ").trim().slice(0, 220)}...
+              </div>
+              <div className="support-item-actions">
+                <button
+                  className="action-button"
+                  onClick={() => void invoke("open_file", { path: doc.path })}
+                >
+                  Open file
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
     );
 
   const mobileSettingsSection = (
@@ -1401,100 +1487,6 @@ function App() {
         : statusBanner.message
     : "";
 
-  const leftDrawer = (
-    <aside
-      className={`workspace-drawer ${isLeftDrawerOpen && !isPdfFocusMode ? "open" : ""} ${isWorkspaceDrawerResizing ? "resizing" : ""} ${isModelDrawerOpen ? "model-drawer" : ""}`}
-      style={
-        isLeftDrawerOpen && !isPdfFocusMode
-          ? {
-              width: `${workspaceDrawerWidth}px`,
-              flexBasis: `${workspaceDrawerWidth}px`,
-            }
-          : undefined
-      }
-    >
-      {isWorkspaceDrawerOpen ? (
-        <div className="sidebar">
-          <div className="sidebar-header">
-            <span>工作空间</span>
-            <div className="sidebar-actions">
-              <button
-                className="icon-button"
-                onClick={() => void handleImportZotero()}
-                title="自动导入 Zotero PDF"
-              >
-                <BookOpen size={16} />
-              </button>
-              <button
-                className="icon-button"
-                onClick={() => void handleOpenFiles()}
-                title="导入文件"
-              >
-                <FilePlus size={16} />
-              </button>
-              <button
-                className="icon-button"
-                onClick={() => void handleOpenFolder()}
-                title="导入文件夹"
-              >
-                <FolderOpen size={16} />
-              </button>
-            </div>
-          </div>
-
-          {isIngesting && (
-            <div className="ingest-panel">
-              <div className="ingest-title">{stageLabel}</div>
-              <div className="ingest-subtitle">
-                {ingestProgress?.total
-                  ? `${ingestProgress.current}/${ingestProgress.total}`
-                  : "准备中..."}
-              </div>
-              <div className="ingest-progress-track">
-                <div
-                  className="ingest-progress-fill"
-                  style={{ width: `${progressPercent}%` }}
-                />
-              </div>
-            </div>
-          )}
-
-          {workspacePath && (
-            <div className="workspace-path" title={workspacePath}>
-              {workspacePath}
-            </div>
-          )}
-
-          <FileTree
-            data={files.length > 0 ? files : undefined}
-            activePath={activeFilePath}
-            onSelect={handleFileSelect}
-            onLoadChildren={loadDirectoryChildren}
-          />
-        </div>
-      ) : (
-        <div className="sidebar model-drawer-sidebar">
-          <ModelSelector
-            currentModel={currentModel}
-            onModelChange={setCurrentModel}
-            onStatus={handleChildStatus}
-            variant="drawer"
-          />
-        </div>
-      )}
-      <div
-        className="workspace-drawer-resize-handle"
-        role="separator"
-        aria-label="调整工作空间宽度"
-        aria-orientation="vertical"
-        onPointerDown={(event) => {
-          event.preventDefault();
-          handleWorkspaceDrawerResizeStart(event.clientX);
-        }}
-      />
-    </aside>
-  );
-
   return (
     <div className="app-shell">
       {statusBanner && (
@@ -1555,88 +1547,114 @@ function App() {
       <div
         className={`app-layout-shell ${isPdfFocusMode ? "pdf-focus-mode" : ""}`}
       >
-        <div className="workspace-rail">
-          <button
-            className={`workspace-rail-button ${isWorkspaceDrawerOpen ? "active" : ""}`}
-            onClick={handleToggleWorkspaceDrawer}
-            aria-label={isWorkspaceDrawerOpen ? "收起工作空间" : "展开工作空间"}
-            aria-expanded={isWorkspaceDrawerOpen}
-            title={isWorkspaceDrawerOpen ? "收起工作空间" : "展开工作空间"}
-          >
-            <FolderOpen size={18} />
-          </button>
-          <button
-            className={`workspace-rail-button ${isModelDrawerOpen ? "active" : ""}`}
-            onClick={handleToggleModelDrawer}
-            aria-label={isModelDrawerOpen ? "收起模型选择" : "展开模型选择"}
-            title={isModelDrawerOpen ? "收起模型选择" : "模型选择"}
-          >
-            <Bot size={18} />
-          </button>
-          <button
-            className={`workspace-rail-button ${isSettingsOpen ? "active" : ""}`}
-            onClick={() => setIsSettingsOpen(true)}
-            aria-label="打开设置"
-            title="设置"
-          >
-            <Settings size={18} />
-          </button>
-        </div>
-
-        {leftDrawer}
-
-        <Group
-          orientation="horizontal"
-          className="app-panels"
-          id="app-main-panels"
+        <Group orientation="horizontal">
+          <Panel
+          panelRef={sidebarPanelRef}
+          defaultSize="23%"
+          minSize={isPdfFocusMode ? "0%" : "16%"}
+          maxSize="38%"
+          className={`sidebar-panel ${isPdfFocusMode ? "panel-collapsed" : ""}`}
         >
-        <Panel
-          panelRef={mainPanelRef}
-          defaultSize={activePdfPath && isPdfDockVisible ? "55%" : "100%"}
-          minSize={isPdfFocusMode ? "0%" : "24%"}
-          className={`main-panel ${isPdfFocusMode ? "panel-collapsed" : ""}`}
-        >
-          <div className="main-panel-frame">
-            <div className="main-panel-tabs">
+          <aside className="sidebar sidebar-with-rail">
+            <div className="sidebar-rail">
               <button
-                className={`tab-button ${mainView === "chat" ? "active" : ""}`}
-                onClick={() => setMainView("chat")}
+                className={`rail-button ${activeSidebarTool === "workspace" ? "active" : ""}`}
+                onClick={() => setActiveSidebarTool("workspace")}
+                title="Workspace"
               >
-                <MessageSquareText size={16} />
-                对话
+                <FolderOpen size={18} />
               </button>
               <button
-                className={`tab-button ${mainView === "cards" ? "active" : ""}`}
-                onClick={() => setMainView("cards")}
+                className={`rail-button ${activeSidebarTool === "citations" ? "active" : ""}`}
+                onClick={() => setActiveSidebarTool("citations")}
+                title="Citations"
               >
-                <LayoutGrid size={16} />
-                卡片库
+                <MessageSquareText size={18} />
               </button>
               <button
-                className={`tab-button ${mainView === "inbox" ? "active" : ""}`}
-                onClick={() => setMainView("inbox")}
+                className={`rail-button ${activeSidebarTool === "notes" ? "active" : ""}`}
+                onClick={() => setActiveSidebarTool("notes")}
+                title="Notes"
               >
-                <Inbox size={16} />
-                收件箱
+                <StickyNote size={18} />
+              </button>
+              <button
+                className={`rail-button ${activeSidebarTool === "knowledge" ? "active" : ""}`}
+                onClick={() => setActiveSidebarTool("knowledge")}
+                title="Knowledge Search"
+              >
+                <Search size={18} />
+              </button>
+              <button
+                className={`rail-button ${activeSidebarTool === "cards" ? "active" : ""}`}
+                onClick={() => setActiveSidebarTool("cards")}
+                title="Knowledge Cards"
+              >
+                <LayoutGrid size={18} />
               </button>
             </div>
 
-            {mainContent}
-          </div>
+            <div className="sidebar-content">
+              <div className="sidebar-header">
+                <span>
+                  {activeSidebarTool === "workspace"
+                    ? "Workspace"
+                    : activeSidebarTool === "citations"
+                      ? "Citations"
+                      : activeSidebarTool === "notes"
+                        ? "Notes"
+                        : activeSidebarTool === "knowledge"
+                          ? "Knowledge"
+                          : "Knowledge Cards"}
+                </span>
+                <div className="sidebar-actions">
+                  <button
+                    className="icon-button"
+                    onClick={() => void handleImportZotero()}
+                    title="Auto import Zotero PDFs"
+                  >
+                    <BookOpen size={16} />
+                  </button>
+                  <button
+                    className="icon-button"
+                    onClick={() => void handleOpenFiles()}
+                    title="Import files"
+                  >
+                    <FilePlus size={16} />
+                  </button>
+                  <button
+                    className="icon-button"
+                    onClick={() => void handleOpenFolder()}
+                    title="Import folder"
+                  >
+                    <FolderOpen size={16} />
+                  </button>
+                  <button
+                    className="icon-button"
+                    onClick={() => setIsSettingsOpen(true)}
+                    title="Settings"
+                  >
+                    <Settings size={16} />
+                  </button>
+                </div>
+              </div>
+
+              {sidebarToolBody}
+            </div>
+          </aside>
         </Panel>
 
-        {activePdfPath && isPdfDockVisible && (
-          <>
-            <Separator
-              className={`PanelResizeHandle ${isPdfFocusMode ? "panel-separator-hidden" : ""}`}
-            />
-            <Panel
-              panelRef={pdfPanelRef}
-              defaultSize="45%"
-              minSize="28%"
-              maxSize={isPdfFocusMode ? "100%" : "62%"}
-              className={`pdf-dock-panel ${isPdfFocusMode ? "pdf-focus-active" : ""}`}
-            >
+        <Separator
+          className={`PanelResizeHandle ${isPdfFocusMode ? "panel-separator-hidden" : ""}`}
+        />
+        <Panel
+          panelRef={mainPanelRef}
+          defaultSize="45%"
+          minSize={isPdfFocusMode ? "0%" : "24%"}
+          className="main-panel pdf-center-panel"
+        >
+          <div className="pdf-center-shell">
+            {activePdfPath && isPdfDockVisible ? (
               <PdfDock
                 activePdfPath={activePdfPath}
                 currentModel={currentModel || REQUIRED_MODELS.chat}
@@ -1649,14 +1667,39 @@ function App() {
                 onToggleFocusMode={handleTogglePdfFocusMode}
                 onClose={handleClosePdfDock}
               />
-            </Panel>
-          </>
-        )}
-        </Group>
-      </div>
+            ) : (
+              <div className="pdf-empty-state">
+                <h2>PDF Reader</h2>
+                <p>
+                  Select a PDF file from the left workspace to preview it here.
+                </p>
+              </div>
+            )}
+          </div>
+        </Panel>
 
-      <div className="app-copyright-badge" aria-label="版权声明">
-        版权所有 © 4C 比赛参赛团队，仅限授权使用，未经许可严禁搬运
+        <Separator
+          className={`PanelResizeHandle ${isPdfFocusMode ? "panel-separator-hidden" : ""}`}
+        />
+        <Panel
+          panelRef={pdfPanelRef}
+          defaultSize="32%"
+          minSize={isPdfFocusMode ? "0%" : "22%"}
+          maxSize={isPdfFocusMode ? "0%" : "46%"}
+          className={`pdf-dock-panel ai-right-panel ${isPdfFocusMode ? "panel-collapsed" : ""}`}
+        >
+          <ChatInterface
+            currentModel={currentModel}
+            activeFilePath={activeFilePath}
+            pdfPage={pdfPage}
+            onPdfPageChange={setPdfPage}
+            onStatus={handleChildStatus}
+            onCardSaved={handleCardSaved}
+            onModelChange={setCurrentModel}
+            showSupportPanels={false}
+          />
+        </Panel>
+      </Group>
       </div>
 
       {isSettingsOpen && (
@@ -1764,3 +1807,22 @@ function App() {
 }
 
 export default App;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
