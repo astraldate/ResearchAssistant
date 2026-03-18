@@ -78,7 +78,7 @@ const TreeNode: React.FC<{
         ) : (
           <File size={14} color="#68707f" />
         )}
-        <span className="tree-item-label">{node.name}</span>
+        <span className="tree-item-label" title={node.name}>{node.name}</span>
         {node.type_name === "folder" && !hasChildren && <span className="tree-item-empty">空</span>}
       </div>
 
@@ -162,3 +162,4 @@ export const FileTree: React.FC<FileTreeProps> = ({ data, activePath, onSelect }
     </div>
   );
 };
+
