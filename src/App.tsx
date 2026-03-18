@@ -1358,7 +1358,8 @@ function App() {
           activePath={activeFilePath}
           onSelect={handleFileSelect}
           onLoadChildren={loadDirectoryChildren}
-        />\r\n      </>
+        />
+      </>
     ) : activeSidebarTool === "cards" ? (
       <div className="sidebar-tool-scroll">
         <div className="sidebar-tool-title">Knowledge Cards</div>
@@ -1978,6 +1979,7 @@ function App() {
 }
 
 export default App;
+
 
 
 
