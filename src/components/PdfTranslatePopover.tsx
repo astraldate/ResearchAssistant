@@ -1,4 +1,10 @@
-﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+﻿import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { LoaderCircle, X } from "lucide-react";
 
@@ -16,6 +22,7 @@ interface PdfTranslatePopoverProps {
   pdfPath: string;
   page: number;
   currentModel: string;
+  ensureAiReady?: () => Promise<string>;
   style?: React.CSSProperties;
   onClose: () => void;
   onStatus: (message: string, tone?: StatusTone, persistent?: boolean) => void;
@@ -30,7 +37,8 @@ const buildCacheKey = (pdfPath: string, page: number, text: string) =>
   `ra_pdf_translate_selection_v2:${pdfPath}:${page}:${text}`;
 
 const normalizeSelection = (value: string) => value.replace(/\s+/g, " ").trim();
-const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+const clamp = (value: number, min: number, max: number) =>
+  Math.min(Math.max(value, min), max);
 
 const parseStylePosition = (
   value: React.CSSProperties["left"] | React.CSSProperties["top"],
@@ -49,14 +57,24 @@ export const PdfTranslatePopover: React.FC<PdfTranslatePopoverProps> = ({
   pdfPath,
   page,
   currentModel,
+  ensureAiReady,
   style,
   onClose,
   onStatus,
 }) => {
   const popoverRef = useRef<HTMLDivElement | null>(null);
-  const dragStateRef = useRef<{ startX: number; startY: number; left: number; top: number } | null>(null);
-  const [phase, setPhase] = useState<"loading" | "success" | "error">("loading");
-  const [result, setResult] = useState<TranslatePdfSelectionResult | null>(null);
+  const dragStateRef = useRef<{
+    startX: number;
+    startY: number;
+    left: number;
+    top: number;
+  } | null>(null);
+  const [phase, setPhase] = useState<"loading" | "success" | "error">(
+    "loading",
+  );
+  const [result, setResult] = useState<TranslatePdfSelectionResult | null>(
+    null,
+  );
   const [error, setError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [position, setPosition] = useState(() => ({
@@ -64,15 +82,29 @@ export const PdfTranslatePopover: React.FC<PdfTranslatePopoverProps> = ({
     top: parseStylePosition(style?.top, POPOVER_TOP_SAFE),
   }));
 
-  const normalizedText = useMemo(() => normalizeSelection(selectedText), [selectedText]);
+  const normalizedText = useMemo(
+    () => normalizeSelection(selectedText),
+    [selectedText],
+  );
 
   const clampPosition = useCallback((left: number, top: number) => {
     const rect = popoverRef.current?.getBoundingClientRect();
     const width = rect?.width ?? FALLBACK_POPOVER_WIDTH;
     const height = rect?.height ?? FALLBACK_POPOVER_HEIGHT;
     return {
-      left: clamp(left, POPOVER_MARGIN, Math.max(POPOVER_MARGIN, window.innerWidth - width - POPOVER_MARGIN)),
-      top: clamp(top, POPOVER_TOP_SAFE, Math.max(POPOVER_TOP_SAFE, window.innerHeight - height - POPOVER_MARGIN)),
+      left: clamp(
+        left,
+        POPOVER_MARGIN,
+        Math.max(POPOVER_MARGIN, window.innerWidth - width - POPOVER_MARGIN),
+      ),
+      top: clamp(
+        top,
+        POPOVER_TOP_SAFE,
+        Math.max(
+          POPOVER_TOP_SAFE,
+          window.innerHeight - height - POPOVER_MARGIN,
+        ),
+      ),
     };
   }, []);
 
@@ -145,32 +177,37 @@ export const PdfTranslatePopover: React.FC<PdfTranslatePopoverProps> = ({
     setError(null);
     setResult(null);
 
-    void invoke<TranslatePdfSelectionResult>("translate_pdf_selection", {
-      request: {
-        text: normalizedText,
-        pdf_path: pdfPath,
-        page,
-        model: currentModel,
-      },
-    })
-      .then((payload) => {
+    void (async () => {
+      try {
+        const model = ensureAiReady ? await ensureAiReady() : currentModel;
+        const payload = await invoke<TranslatePdfSelectionResult>(
+          "translate_pdf_selection",
+          {
+            request: {
+              text: normalizedText,
+              pdf_path: pdfPath,
+              page,
+              model,
+            },
+          },
+        );
         if (cancelled) return;
         sessionStorage.setItem(cacheKey, JSON.stringify(payload));
         setResult(payload);
         setPhase("success");
-      })
-      .catch((invokeError) => {
+      } catch (invokeError) {
         if (cancelled) return;
         const message = String(invokeError);
         setError(message);
         setPhase("error");
         onStatus(`划词翻译失败：${message}`, "error", true);
-      });
+      }
+    })();
 
     return () => {
       cancelled = true;
     };
-  }, [currentModel, normalizedText, onStatus, page, pdfPath]);
+  }, [currentModel, ensureAiReady, normalizedText, onStatus, page, pdfPath]);
 
   const handleHeaderMouseDown = (event: React.MouseEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
@@ -203,7 +240,11 @@ export const PdfTranslatePopover: React.FC<PdfTranslatePopoverProps> = ({
           <div className="term-popover-title">翻译</div>
           <div className="term-popover-subtitle">当前页：{page} · 可拖动</div>
         </div>
-        <button className="ghost-icon-button" onClick={onClose} aria-label="关闭翻译浮窗">
+        <button
+          className="ghost-icon-button"
+          onClick={onClose}
+          aria-label="关闭翻译浮窗"
+        >
           <X size={14} />
         </button>
       </div>

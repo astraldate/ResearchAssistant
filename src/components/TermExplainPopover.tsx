@@ -1,4 +1,10 @@
-﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+﻿import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { BookmarkPlus, Download, ExternalLink, X } from "lucide-react";
 import { exportKnowledgeCardMarkdown } from "../utils/exportCard";
@@ -40,6 +46,7 @@ interface TermExplainPopoverProps {
   pdfPath: string;
   page: number;
   currentModel: string;
+  ensureAiReady?: () => Promise<string>;
   lookupMode: LookupMode;
   style?: React.CSSProperties;
   onClose: () => void;
@@ -66,11 +73,17 @@ const SOURCE_STATUS_LABELS: Record<string, string> = {
   source_only: "仅外部资料",
 };
 
-const buildCacheKey = (lookupMode: LookupMode, pdfPath: string, page: number, selectedText: string) =>
+const buildCacheKey = (
+  lookupMode: LookupMode,
+  pdfPath: string,
+  page: number,
+  selectedText: string,
+) =>
   `ra_term_explain_cache_v2:${lookupMode}:${pdfPath}:${page}:${selectedText}`;
 
 const normalizeSelection = (value: string) => value.replace(/\s+/g, " ").trim();
-const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+const clamp = (value: number, min: number, max: number) =>
+  Math.min(Math.max(value, min), max);
 
 const getSourceStatusTone = (sourceStatus: string) => {
   switch (sourceStatus) {
@@ -88,18 +101,28 @@ const getLookupModeTone = (mode: LookupMode) => `mode-${mode}`;
 
 const getSourceProviderTone = (provider?: string | null) => {
   const normalized = provider?.toLowerCase() ?? "";
-  if (!normalized || normalized.includes("模型") || normalized.includes("model") || normalized.includes("ollama")) {
+  if (
+    !normalized ||
+    normalized.includes("模型") ||
+    normalized.includes("model") ||
+    normalized.includes("ollama")
+  ) {
     return "provider-model";
   }
   if (normalized.includes("wiki")) return "provider-wiki";
   if (normalized.includes("baidu")) return "provider-baidu";
-  if (normalized.includes("pubmed") || normalized.includes("ncbi")) return "provider-pubmed";
-  if (normalized.includes("cs") || normalized.includes("encyclopedia")) return "provider-cs";
+  if (normalized.includes("pubmed") || normalized.includes("ncbi"))
+    return "provider-pubmed";
+  if (normalized.includes("cs") || normalized.includes("encyclopedia"))
+    return "provider-cs";
   return "provider-generic";
 };
 
 const LoadingDots: React.FC<{ compact?: boolean }> = ({ compact = false }) => (
-  <span className={`loading-dots ${compact ? "compact" : ""}`} aria-hidden="true">
+  <span
+    className={`loading-dots ${compact ? "compact" : ""}`}
+    aria-hidden="true"
+  >
     <span />
     <span />
     <span />
@@ -123,6 +146,7 @@ export const TermExplainPopover: React.FC<TermExplainPopoverProps> = ({
   pdfPath,
   page,
   currentModel,
+  ensureAiReady,
   lookupMode,
   style,
   onClose,
@@ -130,16 +154,27 @@ export const TermExplainPopover: React.FC<TermExplainPopoverProps> = ({
   onStatus,
 }) => {
   const popoverRef = useRef<HTMLDivElement | null>(null);
-  const dragStateRef = useRef<{ startX: number; startY: number; left: number; top: number } | null>(null);
-  const [phase, setPhase] = useState<"loading" | "success" | "error">("loading");
+  const dragStateRef = useRef<{
+    startX: number;
+    startY: number;
+    left: number;
+    top: number;
+  } | null>(null);
+  const [phase, setPhase] = useState<"loading" | "success" | "error">(
+    "loading",
+  );
   const [result, setResult] = useState<ExplainResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [savedCard, setSavedCard] = useState<KnowledgeCardSummary | null>(null);
-  const [displayPhase, setDisplayPhase] = useState<"loading" | "success" | "error">("loading");
-  const [displayResult, setDisplayResult] = useState<ExplainResult | null>(null);
+  const [displayPhase, setDisplayPhase] = useState<
+    "loading" | "success" | "error"
+  >("loading");
+  const [displayResult, setDisplayResult] = useState<ExplainResult | null>(
+    null,
+  );
   const [displayError, setDisplayError] = useState<string | null>(null);
   const [isPhaseVisible, setIsPhaseVisible] = useState(true);
   const [position, setPosition] = useState(() => ({
@@ -147,10 +182,14 @@ export const TermExplainPopover: React.FC<TermExplainPopoverProps> = ({
     top: parseStylePosition(style?.top, POPOVER_TOP_SAFE),
   }));
 
-  const normalizedText = useMemo(() => normalizeSelection(selectedText), [selectedText]);
+  const normalizedText = useMemo(
+    () => normalizeSelection(selectedText),
+    [selectedText],
+  );
   const validationError = useMemo(() => {
     if (!normalizedText) return "请选择术语或短语。";
-    if (normalizedText.length > MAX_TERM_LENGTH) return "请选择术语或短语，而不是整段句子。";
+    if (normalizedText.length > MAX_TERM_LENGTH)
+      return "请选择术语或短语，而不是整段句子。";
     if (!/[\p{L}\p{N}]/u.test(normalizedText)) return "所选内容缺少有效词语。";
     return null;
   }, [normalizedText]);
@@ -160,8 +199,19 @@ export const TermExplainPopover: React.FC<TermExplainPopoverProps> = ({
     const width = rect?.width ?? FALLBACK_POPOVER_WIDTH;
     const height = rect?.height ?? FALLBACK_POPOVER_HEIGHT;
     return {
-      left: clamp(left, POPOVER_MARGIN, Math.max(POPOVER_MARGIN, window.innerWidth - width - POPOVER_MARGIN)),
-      top: clamp(top, POPOVER_TOP_SAFE, Math.max(POPOVER_TOP_SAFE, window.innerHeight - height - POPOVER_MARGIN)),
+      left: clamp(
+        left,
+        POPOVER_MARGIN,
+        Math.max(POPOVER_MARGIN, window.innerWidth - width - POPOVER_MARGIN),
+      ),
+      top: clamp(
+        top,
+        POPOVER_TOP_SAFE,
+        Math.max(
+          POPOVER_TOP_SAFE,
+          window.innerHeight - height - POPOVER_MARGIN,
+        ),
+      ),
     };
   }, []);
 
@@ -210,7 +260,11 @@ export const TermExplainPopover: React.FC<TermExplainPopoverProps> = ({
   }, [clampPosition]);
 
   useEffect(() => {
-    if (displayPhase === phase && displayResult === result && displayError === error) {
+    if (
+      displayPhase === phase &&
+      displayResult === result &&
+      displayError === error
+    ) {
       return;
     }
 
@@ -251,54 +305,67 @@ export const TermExplainPopover: React.FC<TermExplainPopoverProps> = ({
     setResult(null);
     setSavedCard(null);
 
-    void invoke<ExplainResult>("explain_pdf_selection", {
-      request: {
-        term: normalizedText,
-        pdf_path: pdfPath,
-        page,
-        model: currentModel,
-        mode: lookupMode,
-      },
-    })
-      .then((payload) => {
+    void (async () => {
+      try {
+        const model = ensureAiReady ? await ensureAiReady() : currentModel;
+        const payload = await invoke<ExplainResult>("explain_pdf_selection", {
+          request: {
+            term: normalizedText,
+            pdf_path: pdfPath,
+            page,
+            model,
+            mode: lookupMode,
+          },
+        });
         if (cancelled) return;
         sessionStorage.setItem(cacheKey, JSON.stringify(payload));
         setResult(payload);
         setPhase("success");
-      })
-      .catch((invokeError) => {
+      } catch (invokeError) {
         if (cancelled) return;
         setError(String(invokeError));
         setPhase("error");
-      });
+      }
+    })();
 
     return () => {
       cancelled = true;
     };
-  }, [currentModel, lookupMode, normalizedText, page, pdfPath, validationError]);
+  }, [
+    currentModel,
+    ensureAiReady,
+    lookupMode,
+    normalizedText,
+    page,
+    pdfPath,
+    validationError,
+  ]);
 
   const handleSaveCard = async () => {
     if (!result || isSaving) return;
     setIsSaving(true);
     try {
-      const card = await invoke<KnowledgeCardSummary>("save_knowledge_card_from_explanation", {
-        request: {
-          term: result.term,
-          selected_text: normalizedText,
-          plain_summary: result.plain_summary,
-          source_title: result.source_title ?? null,
-          source_url: result.source_url ?? null,
-          source_provider: result.source_provider ?? null,
-          source_lang: result.source_lang ?? null,
-          source_extract: result.source_extract ?? null,
-          page_context_snippet: result.page_context_snippet ?? null,
-          pdf_path: pdfPath,
-          pdf_page: page,
-          source_status: result.source_status,
-          model: currentModel,
-          lookup_mode: lookupMode,
+      const card = await invoke<KnowledgeCardSummary>(
+        "save_knowledge_card_from_explanation",
+        {
+          request: {
+            term: result.term,
+            selected_text: normalizedText,
+            plain_summary: result.plain_summary,
+            source_title: result.source_title ?? null,
+            source_url: result.source_url ?? null,
+            source_provider: result.source_provider ?? null,
+            source_lang: result.source_lang ?? null,
+            source_extract: result.source_extract ?? null,
+            page_context_snippet: result.page_context_snippet ?? null,
+            pdf_path: pdfPath,
+            pdf_page: page,
+            source_status: result.source_status,
+            model: currentModel,
+            lookup_mode: lookupMode,
+          },
         },
-      });
+      );
       setSavedCard(card);
       onSaveCardSuccess();
       onStatus(`已保存知识卡片：${card.term}`, "info", false);
@@ -345,7 +412,8 @@ export const TermExplainPopover: React.FC<TermExplainPopoverProps> = ({
 
   const activeResult = displayResult ?? result;
   const sourceProviderLabel = activeResult?.source_provider || "模型";
-  const lookupModeLabel = LOOKUP_MODE_LABELS[activeResult?.lookup_mode ?? lookupMode];
+  const lookupModeLabel =
+    LOOKUP_MODE_LABELS[activeResult?.lookup_mode ?? lookupMode];
 
   return (
     <div
@@ -356,15 +424,25 @@ export const TermExplainPopover: React.FC<TermExplainPopoverProps> = ({
     >
       <div className="term-popover-header" onMouseDown={handleHeaderMouseDown}>
         <div>
-          <div className="term-popover-title">{normalizedText || "术语解释"}</div>
-          <div className="term-popover-subtitle">模式：{lookupModeLabel} · 可拖动</div>
+          <div className="term-popover-title">
+            {normalizedText || "术语解释"}
+          </div>
+          <div className="term-popover-subtitle">
+            模式：{lookupModeLabel} · 可拖动
+          </div>
         </div>
-        <button className="ghost-icon-button" onClick={onClose} aria-label="关闭术语解释">
+        <button
+          className="ghost-icon-button"
+          onClick={onClose}
+          aria-label="关闭术语解释"
+        >
           <X size={14} />
         </button>
       </div>
 
-      <div className={`term-popover-stage ${isPhaseVisible ? "is-visible" : "is-hidden"}`}>
+      <div
+        className={`term-popover-stage ${isPhaseVisible ? "is-visible" : "is-hidden"}`}
+      >
         {displayPhase === "loading" && (
           <div className="term-popover-state term-popover-loading">
             <div className="term-loading-head">
@@ -372,8 +450,12 @@ export const TermExplainPopover: React.FC<TermExplainPopoverProps> = ({
                 <LoadingDots />
               </div>
               <div>
-                <div className="term-loading-title">正在理解“{normalizedText}”</div>
-                <div className="term-loading-caption">正在结合页面上下文、外部资料与模型总结生成解释。</div>
+                <div className="term-loading-title">
+                  正在理解“{normalizedText}”
+                </div>
+                <div className="term-loading-caption">
+                  正在结合页面上下文、外部资料与模型总结生成解释。
+                </div>
               </div>
             </div>
             <div className="term-loading-skeleton" aria-hidden="true">
@@ -384,39 +466,74 @@ export const TermExplainPopover: React.FC<TermExplainPopoverProps> = ({
           </div>
         )}
 
-        {displayPhase === "error" && <div className="term-popover-error">{displayError}</div>}
+        {displayPhase === "error" && (
+          <div className="term-popover-error">{displayError}</div>
+        )}
 
         {displayPhase === "success" && activeResult && (
           <div className="term-popover-content">
             <div className="term-badge-row">
-              <div className={`status-chip ${getSourceStatusTone(activeResult.source_status)}`}>
-                {SOURCE_STATUS_LABELS[activeResult.source_status] ?? activeResult.source_status}
+              <div
+                className={`status-chip ${getSourceStatusTone(activeResult.source_status)}`}
+              >
+                {SOURCE_STATUS_LABELS[activeResult.source_status] ??
+                  activeResult.source_status}
               </div>
-              <div className={`status-chip ${getSourceProviderTone(activeResult.source_provider)}`}>{sourceProviderLabel}</div>
-              <div className={`status-chip ${getLookupModeTone(activeResult.lookup_mode ?? lookupMode)}`}>{lookupModeLabel}</div>
-              {activeResult.source_lang && <div className="status-chip lang-badge">{activeResult.source_lang.toUpperCase()}</div>}
+              <div
+                className={`status-chip ${getSourceProviderTone(activeResult.source_provider)}`}
+              >
+                {sourceProviderLabel}
+              </div>
+              <div
+                className={`status-chip ${getLookupModeTone(activeResult.lookup_mode ?? lookupMode)}`}
+              >
+                {lookupModeLabel}
+              </div>
+              {activeResult.source_lang && (
+                <div className="status-chip lang-badge">
+                  {activeResult.source_lang.toUpperCase()}
+                </div>
+              )}
             </div>
 
             <div className="term-section">
               <div className="term-section-label">通俗解释</div>
-              <div className="term-section-body">{activeResult.plain_summary}</div>
+              <div className="term-section-body">
+                {activeResult.plain_summary}
+              </div>
             </div>
 
             <div className="term-section">
               <div className="term-section-label">参考资料摘要</div>
-              <div className="term-section-body">{activeResult.source_extract || "未命中外部资料，已退回模型总结。"}</div>
+              <div className="term-section-body">
+                {activeResult.source_extract ||
+                  "未命中外部资料，已退回模型总结。"}
+              </div>
             </div>
 
-            {activeResult.source_title && <div className="term-source-title">{activeResult.source_title}</div>}
+            {activeResult.source_title && (
+              <div className="term-source-title">
+                {activeResult.source_title}
+              </div>
+            )}
             {activeResult.source_url && (
-              <a className="term-source-link" href={activeResult.source_url} target="_blank" rel="noreferrer">
+              <a
+                className="term-source-link"
+                href={activeResult.source_url}
+                target="_blank"
+                rel="noreferrer"
+              >
                 查看来源
                 <ExternalLink size={12} />
               </a>
             )}
 
             <div className="term-popover-actions">
-              <button className="action-button primary" onClick={() => void handleSaveCard()} disabled={isSaving || !!savedCard}>
+              <button
+                className="action-button primary"
+                onClick={() => void handleSaveCard()}
+                disabled={isSaving || !!savedCard}
+              >
                 {isSaving ? (
                   <>
                     <LoadingDots compact />
@@ -435,7 +552,11 @@ export const TermExplainPopover: React.FC<TermExplainPopoverProps> = ({
                 )}
               </button>
               {savedCard && (
-                <button className="action-button" onClick={() => void handleExportCard()} disabled={isExporting}>
+                <button
+                  className="action-button"
+                  onClick={() => void handleExportCard()}
+                  disabled={isExporting}
+                >
                   {isExporting ? (
                     <>
                       <LoadingDots compact />

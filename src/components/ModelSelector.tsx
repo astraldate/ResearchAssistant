@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { ChevronDown, ChevronUp, Download, RefreshCw } from "lucide-react";
+import { resolveMirrorModel } from "../utils/modelMirrors";
 
 interface OllamaModel {
   name: string;
@@ -20,10 +21,19 @@ interface PullProgress {
 interface ModelSelectorProps {
   currentModel: string;
   onModelChange: (model: string) => void;
-  onStatus?: (message: string, tone?: "info" | "error", persistent?: boolean) => void;
+  onStatus?: (
+    message: string,
+    tone?: "info" | "error",
+    persistent?: boolean,
+  ) => void;
 }
 
-type ModelCategory = "general" | "reasoning" | "coding" | "vision" | "embedding";
+type ModelCategory =
+  | "general"
+  | "reasoning"
+  | "coding"
+  | "vision"
+  | "embedding";
 
 interface RecommendedModel {
   name: string;
@@ -40,15 +50,21 @@ const ZH = {
   selectModel: "\u9009\u62e9\u6a21\u578b",
   noModels: "\u672a\u53d1\u73b0\u6a21\u578b\u3002",
   pullPlaceholder: "\u62c9\u53d6\u6a21\u578b\uff08\u5982 qwen3:8b\uff09",
-  connectFailed: "\u8fde\u63a5 Ollama \u5931\u8d25\u3002\u8bf7\u786e\u8ba4\u670d\u52a1\u5df2\u542f\u52a8\u3002",
+  connectFailed:
+    "\u8fde\u63a5 Ollama \u5931\u8d25\u3002\u8bf7\u786e\u8ba4\u670d\u52a1\u5df2\u542f\u52a8\u3002",
   pullStarted: "\u5f00\u59cb\u62c9\u53d6\u6a21\u578b\uff1a",
   pullFailed: "\u62c9\u53d6\u5931\u8d25\uff1a",
-  recTitle: "\u63a8\u8350\u6a21\u578b\uff08\u5df2\u8054\u7f51\u6574\u7406\uff0c\u53ef\u76f4\u63a5\u9009\u62e9\uff09",
+  pullFailedNetworkHint:
+    "\u8fde\u63a5 Ollama \u5b98\u65b9\u6a21\u578b\u4ed3\u5e93\u5931\u8d25\uff0c\u53ef\u80fd\u662f\u7f51\u7edc\u88ab\u91cd\u7f6e\u6216\u62e6\u622a\u3002\u53ef\u5148\u4f7f\u7528\u5df2\u5b89\u88c5\u6a21\u578b\uff0c\u6216\u7a0d\u540e\u91cd\u8bd5\u3002",
+  recTitle:
+    "\u63a8\u8350\u6a21\u578b\uff08\u5df2\u8054\u7f51\u6574\u7406\uff0c\u53ef\u76f4\u63a5\u9009\u62e9\uff09",
   fill: "\u586b\u5165",
   pullSelected: "\u62c9\u53d6\u6240\u9009",
+  pullMirror: "\u4f18\u5148\u955c\u50cf\u62c9\u53d6",
   source: "\u6765\u6e90\uff1a",
   checkedAt: "\u6700\u8fd1\u68c0\u67e5\uff1a",
   installed: "\uff08\u5df2\u5b89\u88c5\uff09",
+  mirrorAvailable: "\uff08\u53ef\u8d70\u955c\u50cf\uff09",
   general: "\u901a\u7528",
   reasoning: "\u63a8\u7406",
   coding: "\u4ee3\u7801",
@@ -163,9 +179,18 @@ const RECOMMENDED_MODELS: RecommendedModel[] = [
   },
 ];
 
-const CATEGORY_ORDER: ModelCategory[] = ["general", "reasoning", "coding", "vision", "embedding"];
+const CATEGORY_ORDER: ModelCategory[] = [
+  "general",
+  "reasoning",
+  "coding",
+  "vision",
+  "embedding",
+];
 
-const resolvePulledModelName = (requested: string, list: OllamaModel[]): string => {
+const resolvePulledModelName = (
+  requested: string,
+  list: OllamaModel[],
+): string => {
   const exact = list.find((m) => m.name === requested);
   if (exact) return exact.name;
 
@@ -187,11 +212,19 @@ const isInstalled = (target: string, installed: OllamaModel[]) => {
   });
 };
 
-export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onModelChange, onStatus }) => {
+const canUseMirror = (target: string) => Boolean(resolveMirrorModel(target));
+
+export const ModelSelector: React.FC<ModelSelectorProps> = ({
+  currentModel,
+  onModelChange,
+  onStatus,
+}) => {
   const [models, setModels] = useState<OllamaModel[]>([]);
   const [isOpen, setIsOpen] = useState(false);
   const [newModelName, setNewModelName] = useState("");
-  const [selectedRecommended, setSelectedRecommended] = useState<string>(RECOMMENDED_MODELS[0]?.name ?? "");
+  const [selectedRecommended, setSelectedRecommended] = useState<string>(
+    RECOMMENDED_MODELS[0]?.name ?? "",
+  );
   const [isPulling, setIsPulling] = useState(false);
   const [pullProgress, setPullProgress] = useState<PullProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -272,14 +305,30 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
     setError(null);
 
     try {
-      await invoke("pull_ollama_model", { name: requestedName });
+      const mirror = resolveMirrorModel(requestedName);
+      if (mirror) {
+        await invoke("pull_model_from_modelscope", {
+          name: requestedName,
+          url: mirror.url,
+          filename: mirror.filename,
+        });
+      } else {
+        await invoke("pull_ollama_model", { name: requestedName });
+      }
       setNewModelName("");
 
       const latestList = await fetchModels();
       onModelChange(resolvePulledModelName(requestedName, latestList));
     } catch (err) {
       console.error("Pull failed:", err);
-      const message = `${ZH.pullFailed}${String(err)}`;
+      const rawMessage = String(err);
+      const networkHint =
+        rawMessage.includes("registry.ollama.ai") ||
+        rawMessage.includes("wsarecv") ||
+        rawMessage.includes("forcibly closed")
+          ? ` ${ZH.pullFailedNetworkHint}`
+          : "";
+      const message = `${ZH.pullFailed}${rawMessage}${networkHint}`;
       setError(message);
       onStatus?.(message, "error", true);
     } finally {
@@ -320,9 +369,22 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
     >
       <div
         className="model-selector-header"
-        style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: "8px",
+        }}
       >
-        <span style={{ fontSize: "0.85rem", fontWeight: 600, color: "var(--text-secondary)" }}>{ZH.model}</span>
+        <span
+          style={{
+            fontSize: "0.85rem",
+            fontWeight: 600,
+            color: "var(--text-secondary)",
+          }}
+        >
+          {ZH.model}
+        </span>
         <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
           <button
             onClick={() => void fetchModels()}
@@ -340,9 +402,18 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
           </button>
           <button
             onClick={() => setIsOpen(!isOpen)}
-            style={{ background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", gap: "4px" }}
+            style={{
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: "4px",
+            }}
           >
-            <span style={{ fontSize: "0.9rem" }}>{currentModel || ZH.selectModel}</span>
+            <span style={{ fontSize: "0.9rem" }}>
+              {currentModel || ZH.selectModel}
+            </span>
             {isOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
           </button>
         </div>
@@ -369,14 +440,22 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
               style={{
                 padding: "8px",
                 cursor: "pointer",
-                backgroundColor: currentModel === model.name ? "var(--bg-tertiary)" : "transparent",
+                backgroundColor:
+                  currentModel === model.name
+                    ? "var(--bg-tertiary)"
+                    : "transparent",
                 fontSize: "0.9rem",
               }}
             >
-              {model.name} <span style={{ color: "#999", fontSize: "0.8em" }}>({formatBytes(model.size)})</span>
+              {model.name}{" "}
+              <span style={{ color: "#999", fontSize: "0.8em" }}>
+                ({formatBytes(model.size)})
+              </span>
             </div>
           ))}
-          {models.length === 0 && <div style={{ padding: "8px", color: "#999" }}>{ZH.noModels}</div>}
+          {models.length === 0 && (
+            <div style={{ padding: "8px", color: "#999" }}>{ZH.noModels}</div>
+          )}
         </div>
       )}
 
@@ -389,7 +468,15 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
           background: "var(--bg-secondary)",
         }}
       >
-        <div style={{ fontSize: "0.8rem", color: "var(--text-secondary)", marginBottom: "6px" }}>{ZH.recTitle}</div>
+        <div
+          style={{
+            fontSize: "0.8rem",
+            color: "var(--text-secondary)",
+            marginBottom: "6px",
+          }}
+        >
+          {ZH.recTitle}
+        </div>
         <div
           style={{
             display: "grid",
@@ -413,10 +500,17 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
             }}
           >
             {groupedRecommended.map((group) => (
-              <optgroup key={group.category} label={CATEGORY_LABELS[group.category]}>
+              <optgroup
+                key={group.category}
+                label={CATEGORY_LABELS[group.category]}
+              >
                 {group.items.map((item) => (
                   <option key={item.name} value={item.name}>
-                    {item.name} {isInstalled(item.name, models) ? ZH.installed : ""}
+                    {item.name}{" "}
+                    {isInstalled(item.name, models) ? ZH.installed : ""}
+                    {!isInstalled(item.name, models) && canUseMirror(item.name)
+                      ? ` ${ZH.mirrorAvailable}`
+                      : ""}
                   </option>
                 ))}
               </optgroup>
@@ -447,13 +541,23 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
               whiteSpace: "nowrap",
             }}
           >
-            {ZH.pullSelected}
+            {canUseMirror(selectedRecommended)
+              ? ZH.pullMirror
+              : ZH.pullSelected}
           </button>
         </div>
 
         {selectedRecommendedMeta && (
-          <div style={{ marginTop: "6px", fontSize: "0.78rem", color: "var(--text-secondary)", lineHeight: 1.4 }}>
-            {selectedRecommendedMeta.summary} {selectedRecommendedMeta.approxSize}
+          <div
+            style={{
+              marginTop: "6px",
+              fontSize: "0.78rem",
+              color: "var(--text-secondary)",
+              lineHeight: 1.4,
+            }}
+          >
+            {selectedRecommendedMeta.summary}{" "}
+            {selectedRecommendedMeta.approxSize}
             <br />
             {ZH.source}
             <a
@@ -469,7 +573,14 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
         )}
       </div>
 
-      <div className="pull-model-form" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: "8px" }}>
+      <div
+        className="pull-model-form"
+        style={{
+          display: "grid",
+          gridTemplateColumns: "minmax(0, 1fr) auto",
+          gap: "8px",
+        }}
+      >
         <input
           type="text"
           placeholder={ZH.pullPlaceholder}
@@ -495,15 +606,34 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
             cursor: isPulling ? "not-allowed" : "pointer",
           }}
         >
-          {isPulling ? <RefreshCw size={16} className="spin" /> : <Download size={16} />}
+          {isPulling ? (
+            <RefreshCw size={16} className="spin" />
+          ) : (
+            <Download size={16} />
+          )}
         </button>
       </div>
 
       {pullProgress && (
-        <div className="pull-progress" style={{ marginTop: "8px", fontSize: "0.8rem", color: "var(--text-secondary)" }}>
+        <div
+          className="pull-progress"
+          style={{
+            marginTop: "8px",
+            fontSize: "0.8rem",
+            color: "var(--text-secondary)",
+          }}
+        >
           <div>{pullProgress.status}</div>
           {pullProgress.total && pullProgress.completed && (
-            <div style={{ width: "100%", height: "4px", background: "#eee", marginTop: "4px", borderRadius: "2px" }}>
+            <div
+              style={{
+                width: "100%",
+                height: "4px",
+                background: "#eee",
+                marginTop: "4px",
+                borderRadius: "2px",
+              }}
+            >
               <div
                 style={{
                   width: `${(pullProgress.completed / pullProgress.total) * 100}%`,
@@ -518,7 +648,11 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
         </div>
       )}
 
-      {error && <div style={{ marginTop: "8px", fontSize: "0.8rem", color: "#dc3545" }}>{error}</div>}
+      {error && (
+        <div style={{ marginTop: "8px", fontSize: "0.8rem", color: "#dc3545" }}>
+          {error}
+        </div>
+      )}
     </div>
   );
 };
