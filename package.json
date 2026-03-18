@@ -10,7 +10,9 @@
     "build": "tsc && vite build",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "check:conflicts": "node scripts/check-conflict-markers.mjs",
+    "tauri": "tauri",
+    "prepare": "husky"
   },
   "workspaces": [
     "mobile-app",
@@ -38,11 +40,21 @@
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
+    "@commitlint/cli": "^19.8.1",
+    "@commitlint/config-conventional": "^19.8.1",
     "@tauri-apps/cli": "^2",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^15.5.2",
+    "prettier": "^3.6.2",
     "typescript": "~5.8.3",
     "vite": "^7.0.4"
+  },
+  "lint-staged": {
+    "*.{ts,tsx,js,jsx,cjs,mjs,json,md,yml,yaml,css,html}": [
+      "prettier --write"
+    ]
   }
 }
