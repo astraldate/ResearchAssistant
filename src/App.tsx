@@ -2,20 +2,38 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { BookOpen, ChevronDown, ChevronUp, FilePlus, FolderOpen, LayoutGrid, MessageSquareText, Settings, X } from "lucide-react";
-import { Group, Panel, Separator, type PanelImperativeHandle } from "react-resizable-panels";
+import {
+  BookOpen,
+  ChevronDown,
+  ChevronUp,
+  FilePlus,
+  FolderOpen,
+  Inbox,
+  LayoutGrid,
+  MessageSquareText,
+  Settings,
+  X,
+} from "lucide-react";
+import {
+  Group,
+  Panel,
+  Separator,
+  type PanelImperativeHandle,
+} from "react-resizable-panels";
 import { FileNode, FileTree } from "./components/FileTree";
 import { ChatInterface } from "./components/ChatInterface";
 import { CardLibrary } from "./components/CardLibrary";
 import { MobileInboxPanel } from "./components/MobileInboxPanel";
 import { ModelSelector } from "./components/ModelSelector";
 import { PdfDock } from "./components/PdfDock";
+import { resolveMirrorModel } from "./utils/modelMirrors";
 import "./App.css";
 
 type InferenceMode = "single_mm" | "dual_pipeline";
 type IngestMode = "overwrite" | "incremental";
 type MainView = "chat" | "cards" | "inbox";
 type StatusTone = "info" | "error";
+type AiRequirement = "chat" | "index";
 
 interface InferenceSettings {
   mode: InferenceMode;
@@ -99,6 +117,10 @@ interface OllamaVersionInfo {
   version: string;
 }
 
+interface OllamaModelSummary {
+  name: string;
+}
+
 interface PrivateOllamaRuntimeInfo {
   executable_path?: string | null;
   reported_version?: string | null;
@@ -119,13 +141,6 @@ const REQUIRED_MODELS = {
 
 const OLLAMA_MIN_RECOMMENDED_VERSION = "0.17.7";
 
-const MIRROR_MODELS: Record<string, { url: string; filename: string }> = {
-  "nomic-embed-text": {
-    url: "https://modelscope.cn/models/AI-ModelScope/nomic-embed-text-v1.5-GGUF/resolve/master/nomic-embed-text-v1.5.Q4_K_M.gguf",
-    filename: "nomic-embed-text-v1.5.Q4_K_M.gguf",
-  },
-};
-
 const STAGE_LABELS: Record<string, string> = {
   scan: "扫描文件",
   chunk: "切分文本",
@@ -136,9 +151,33 @@ const STAGE_LABELS: Record<string, string> = {
 
 const OLLAMA_VERSION_PATTERN = /(\d+)\.(\d+)\.(\d+)/;
 
-const isPdfFile = (path: string | null | undefined) => Boolean(path && /\.pdf$/i.test(path));
+const isPdfFile = (path: string | null | undefined) =>
+  Boolean(path && /\.pdf$/i.test(path));
 const DEFAULT_TWO_PANEL_LAYOUT = { sidebar: 24, main: 76 };
 const DEFAULT_THREE_PANEL_LAYOUT = { sidebar: 20, main: 35, pdf: 45 };
+const AI_IDLE_CHECK_DELAY_MS = 1200;
+const logTiming = (label: string, startedAt: number) => {
+  const duration = Math.round(performance.now() - startedAt);
+  console.info(`[startup] ${label}: ${duration}ms`);
+};
+
+const attachChildrenToTree = (
+  nodes: FileNode[],
+  targetPath: string,
+  children: FileNode[],
+): FileNode[] =>
+  nodes.map((node) => {
+    if (node.path === targetPath) {
+      return { ...node, children, has_children: children.length > 0 };
+    }
+    if (node.children && node.children.length > 0) {
+      return {
+        ...node,
+        children: attachChildrenToTree(node.children, targetPath, children),
+      };
+    }
+    return node;
+  });
 
 const normalizeOllamaVersion = (value: string | null | undefined) => {
   const normalized = value?.trim();
@@ -153,21 +192,30 @@ const parseOllamaVersionParts = (value: string | null | undefined) => {
   return match.slice(1).map((part) => Number.parseInt(part, 10));
 };
 
-const compareOllamaVersions = (left: string | null | undefined, right: string | null | undefined) => {
+const compareOllamaVersions = (
+  left: string | null | undefined,
+  right: string | null | undefined,
+) => {
   const leftParts = parseOllamaVersionParts(left);
   const rightParts = parseOllamaVersionParts(right);
-  for (let index = 0; index < Math.max(leftParts.length, rightParts.length); index += 1) {
+  for (
+    let index = 0;
+    index < Math.max(leftParts.length, rightParts.length);
+    index += 1
+  ) {
     const delta = (leftParts[index] ?? 0) - (rightParts[index] ?? 0);
     if (delta !== 0) return delta;
   }
   return 0;
 };
 
-const getErrorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
+const getErrorMessage = (error: unknown) =>
+  error instanceof Error ? error.message : String(error);
 
 const isOllamaUpgradeRequiredError = (message: string) => {
   const normalized = message.toLowerCase();
-  const mentionsOllama = normalized.includes("ollama") || message.includes("Ollama");
+  const mentionsOllama =
+    normalized.includes("ollama") || message.includes("Ollama");
   const indicatesUpgrade =
     normalized.includes("too old") ||
     normalized.includes("outdated") ||
@@ -180,6 +228,7 @@ const isOllamaUpgradeRequiredError = (message: string) => {
 };
 
 function App() {
+  const appStartedAtRef = useRef(performance.now());
   const [files, setFiles] = useState<FileNode[]>([]);
   const [workspacePath, setWorkspacePath] = useState<string | null>(null);
   const [activeFilePath, setActiveFilePath] = useState<string | null>(null);
@@ -189,20 +238,29 @@ function App() {
   const [currentModel, setCurrentModel] = useState("");
   const [mainView, setMainView] = useState<MainView>("chat");
   const [ingestMode, setIngestMode] = useState<IngestMode>("overwrite");
-  const [ingestProgress, setIngestProgress] = useState<IngestProgress | null>(null);
+  const [ingestProgress, setIngestProgress] = useState<IngestProgress | null>(
+    null,
+  );
   const [isIngesting, setIsIngesting] = useState(false);
   const [statusBanner, setStatusBanner] = useState<StatusBanner | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [inferenceMode, setInferenceMode] = useState<InferenceMode>("single_mm");
+  const [inferenceMode, setInferenceMode] =
+    useState<InferenceMode>("single_mm");
   const [isSavingInferenceMode, setIsSavingInferenceMode] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [cardSettings, setCardSettings] = useState<CardSettings | null>(null);
-  const [cardSettingsError, setCardSettingsError] = useState<string | null>(null);
+  const [cardSettingsError, setCardSettingsError] = useState<string | null>(
+    null,
+  );
   const [cardsRefreshToken, setCardsRefreshToken] = useState(0);
-  const [mobileStatus, setMobileStatus] = useState<MobileCompanionStatus | null>(null);
-  const [mobileStatusError, setMobileStatusError] = useState<string | null>(null);
+  const [mobileStatus, setMobileStatus] =
+    useState<MobileCompanionStatus | null>(null);
+  const [mobileStatusError, setMobileStatusError] = useState<string | null>(
+    null,
+  );
   const [isLoadingMobileStatus, setIsLoadingMobileStatus] = useState(false);
-  const [isRefreshingMobilePairCode, setIsRefreshingMobilePairCode] = useState(false);
+  const [isRefreshingMobilePairCode, setIsRefreshingMobilePairCode] =
+    useState(false);
   const [isStatusBannerExpanded, setIsStatusBannerExpanded] = useState(false);
 
   const statusTimerRef = useRef<number | null>(null);
@@ -211,12 +269,23 @@ function App() {
   const sidebarPanelRef = useRef<PanelImperativeHandle | null>(null);
   const mainPanelRef = useRef<PanelImperativeHandle | null>(null);
   const pdfPanelRef = useRef<PanelImperativeHandle | null>(null);
+  const aiPreparationPromiseRef = useRef<Promise<string> | null>(null);
+  const aiPreparedStateRef = useRef<{ chat: boolean; index: boolean }>({
+    chat: false,
+    index: false,
+  });
 
   const progressPercent = useMemo(() => {
     if (!ingestProgress || ingestProgress.total <= 0) return 0;
-    return Math.min(100, Math.round((ingestProgress.current / ingestProgress.total) * 100));
+    return Math.min(
+      100,
+      Math.round((ingestProgress.current / ingestProgress.total) * 100),
+    );
   }, [ingestProgress]);
-  const activePdfPath = useMemo(() => (isPdfFile(activeFilePath) ? activeFilePath : null), [activeFilePath]);
+  const activePdfPath = useMemo(
+    () => (isPdfFile(activeFilePath) ? activeFilePath : null),
+    [activeFilePath],
+  );
 
   const stageLabel = STAGE_LABELS[ingestProgress?.stage || ""] || "处理中";
 
@@ -227,47 +296,58 @@ function App() {
     }
   }, []);
 
-  const showStatus = useCallback((
-    message: string,
-    tone: StatusTone = "info",
-    timeoutMs?: number,
-    action?: StatusBannerAction,
-  ) => {
-    clearStatusTimer();
-    const nextBanner: StatusBanner = { message, tone, action };
-    const startsExpanded = Boolean((timeoutMs && timeoutMs > 0) || tone === "error" || action);
-    setIsStatusBannerExpanded((current) => current || startsExpanded);
-    setStatusBanner(nextBanner);
-    if (timeoutMs && timeoutMs > 0) {
-      statusTimerRef.current = window.setTimeout(() => {
-        setStatusBanner((current) => {
-          if (current === nextBanner) {
-            setIsStatusBannerExpanded(false);
-            return null;
-          }
-          return current;
-        });
-        statusTimerRef.current = null;
-      }, timeoutMs);
-    }
-  }, [clearStatusTimer]);
+  const showStatus = useCallback(
+    (
+      message: string,
+      tone: StatusTone = "info",
+      timeoutMs?: number,
+      action?: StatusBannerAction,
+    ) => {
+      clearStatusTimer();
+      const nextBanner: StatusBanner = { message, tone, action };
+      const startsExpanded = Boolean(
+        (timeoutMs && timeoutMs > 0) || tone === "error" || action,
+      );
+      setIsStatusBannerExpanded((current) => current || startsExpanded);
+      setStatusBanner(nextBanner);
+      if (timeoutMs && timeoutMs > 0) {
+        statusTimerRef.current = window.setTimeout(() => {
+          setStatusBanner((current) => {
+            if (current === nextBanner) {
+              setIsStatusBannerExpanded(false);
+              return null;
+            }
+            return current;
+          });
+          statusTimerRef.current = null;
+        }, timeoutMs);
+      }
+    },
+    [clearStatusTimer],
+  );
 
-  const showTemporaryStatus = useCallback((
-    message: string,
-    tone: StatusTone = "info",
-    timeoutMs = 3200,
-    action?: StatusBannerAction,
-  ) => {
-    showStatus(message, tone, timeoutMs, action);
-  }, [showStatus]);
+  const showTemporaryStatus = useCallback(
+    (
+      message: string,
+      tone: StatusTone = "info",
+      timeoutMs = 3200,
+      action?: StatusBannerAction,
+    ) => {
+      showStatus(message, tone, timeoutMs, action);
+    },
+    [showStatus],
+  );
 
-  const showPersistentStatus = useCallback((
-    message: string,
-    tone: StatusTone = "info",
-    action?: StatusBannerAction,
-  ) => {
-    showStatus(message, tone, undefined, action);
-  }, [showStatus]);
+  const showPersistentStatus = useCallback(
+    (
+      message: string,
+      tone: StatusTone = "info",
+      action?: StatusBannerAction,
+    ) => {
+      showStatus(message, tone, undefined, action);
+    },
+    [showStatus],
+  );
 
   const clearStatus = useCallback(() => {
     clearStatusTimer();
@@ -282,81 +362,303 @@ function App() {
 
   const getPrivateOllamaRuntimeInfo = useCallback(async () => {
     try {
-      return await invoke<PrivateOllamaRuntimeInfo>("get_private_ollama_runtime_info");
+      return await invoke<PrivateOllamaRuntimeInfo>(
+        "get_private_ollama_runtime_info",
+      );
     } catch (error) {
       console.warn("Failed to inspect private Ollama runtime:", error);
       return null;
     }
   }, []);
 
-  const getPrivateRuntimeVersion = useCallback((runtime: PrivateOllamaRuntimeInfo | null | undefined) => {
-    return runtime?.client_version || runtime?.reported_version || null;
+  const getPrivateRuntimeVersion = useCallback(
+    (runtime: PrivateOllamaRuntimeInfo | null | undefined) => {
+      return runtime?.client_version || runtime?.reported_version || null;
+    },
+    [],
+  );
+
+  const getInstalledModels = useCallback(async () => {
+    return await invoke<OllamaModelSummary[]>("get_ollama_models");
   }, []);
 
-  const buildOllamaUpgradeMessage = useCallback(async (currentVersion?: string | null) => {
-    const runtime = await getPrivateOllamaRuntimeInfo();
-    const privateVersionRaw = getPrivateRuntimeVersion(runtime);
-    const privateVersion = privateVersionRaw ? normalizeOllamaVersion(privateVersionRaw) : null;
-    if (privateVersion && compareOllamaVersions(privateVersion, OLLAMA_MIN_RECOMMENDED_VERSION) >= 0) {
-      return `当前 Ollama 服务仍然过旧（当前 ${currentVersion ?? "unknown"}），但应用私有引擎已准备到 ${privateVersion}。请点击“更新引擎”切换到应用私有引擎。`;
-    }
-    if (currentVersion && currentVersion.trim()) {
-      return `当前 Ollama 版本过旧（当前 ${currentVersion}，至少需要 ${OLLAMA_MIN_RECOMMENDED_VERSION}）。请点击“更新引擎”，由应用自动下载并切换私有 Ollama 引擎。`;
-    }
-    return `当前 Ollama 引擎尚未准备好（至少需要 ${OLLAMA_MIN_RECOMMENDED_VERSION}）。请点击“更新引擎”，由应用自动下载并切换私有 Ollama 引擎。`;
-  }, [getPrivateOllamaRuntimeInfo, getPrivateRuntimeVersion]);
-
-  const activatePrivateOllama = useCallback(async (forceUpdate: boolean, statusMessage: string) => {
-    try {
-      showPersistentStatus(statusMessage);
-      const runtime = await invoke<PrivateOllamaRuntimeInfo>("activate_private_ollama", { forceUpdate });
-      await new Promise((resolve) => window.setTimeout(resolve, 1600));
-      const privateVersion = getPrivateRuntimeVersion(runtime);
-      if (privateVersion && compareOllamaVersions(privateVersion, OLLAMA_MIN_RECOMMENDED_VERSION) >= 0) {
-        return normalizeOllamaVersion(privateVersion);
+  const waitForOllamaReady = useCallback(
+    async (attempts = 12, delayMs = 500) => {
+      for (let index = 0; index < attempts; index += 1) {
+        try {
+          if (await invoke<boolean>("check_ollama_status")) {
+            return true;
+          }
+        } catch {
+          // Ignore transient readiness checks while booting.
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, delayMs));
       }
-      const currentVersion = await readOllamaVersion();
-      if (compareOllamaVersions(currentVersion, OLLAMA_MIN_RECOMMENDED_VERSION) < 0) {
+      return false;
+    },
+    [],
+  );
+
+  const buildOllamaUpgradeMessage = useCallback(
+    async (currentVersion?: string | null) => {
+      const runtime = await getPrivateOllamaRuntimeInfo();
+      const privateVersionRaw = getPrivateRuntimeVersion(runtime);
+      const privateVersion = privateVersionRaw
+        ? normalizeOllamaVersion(privateVersionRaw)
+        : null;
+      if (
+        privateVersion &&
+        compareOllamaVersions(privateVersion, OLLAMA_MIN_RECOMMENDED_VERSION) >=
+          0
+      ) {
+        return `当前 Ollama 服务仍然过旧（当前 ${currentVersion ?? "unknown"}），但应用私有引擎已准备到 ${privateVersion}。请点击“更新引擎”切换到应用私有引擎。`;
+      }
+      if (currentVersion && currentVersion.trim()) {
+        return `当前 Ollama 版本过旧（当前 ${currentVersion}，至少需要 ${OLLAMA_MIN_RECOMMENDED_VERSION}）。请点击“更新引擎”，由应用自动下载并切换私有 Ollama 引擎。`;
+      }
+      return `当前 Ollama 引擎尚未准备好（至少需要 ${OLLAMA_MIN_RECOMMENDED_VERSION}）。请点击“更新引擎”，由应用自动下载并切换私有 Ollama 引擎。`;
+    },
+    [getPrivateOllamaRuntimeInfo, getPrivateRuntimeVersion],
+  );
+
+  const activatePrivateOllama = useCallback(
+    async (forceUpdate: boolean, statusMessage: string) => {
+      try {
+        showPersistentStatus(statusMessage);
+        const runtime = await invoke<PrivateOllamaRuntimeInfo>(
+          "activate_private_ollama",
+          { forceUpdate },
+        );
+        await new Promise((resolve) => window.setTimeout(resolve, 1600));
+        const privateVersion = getPrivateRuntimeVersion(runtime);
+        if (
+          privateVersion &&
+          compareOllamaVersions(
+            privateVersion,
+            OLLAMA_MIN_RECOMMENDED_VERSION,
+          ) >= 0
+        ) {
+          return normalizeOllamaVersion(privateVersion);
+        }
+        const currentVersion = await readOllamaVersion();
+        if (
+          compareOllamaVersions(
+            currentVersion,
+            OLLAMA_MIN_RECOMMENDED_VERSION,
+          ) < 0
+        ) {
+          return null;
+        }
+        return currentVersion;
+      } catch (error) {
+        console.warn("Failed to activate private Ollama runtime:", error);
         return null;
       }
-      return currentVersion;
-    } catch (error) {
-      console.warn("Failed to activate private Ollama runtime:", error);
-      return null;
-    }
-  }, [getPrivateRuntimeVersion, readOllamaVersion, showPersistentStatus]);
+    },
+    [getPrivateRuntimeVersion, readOllamaVersion, showPersistentStatus],
+  );
 
   const handleUpgradeOllama = useCallback(async () => {
-    const switchedVersion = await activatePrivateOllama(true, "正在更新并切换应用私有 Ollama 引擎...");
+    const switchedVersion = await activatePrivateOllama(
+      true,
+      "正在更新并切换应用私有 Ollama 引擎...",
+    );
     if (switchedVersion) {
-      showTemporaryStatus(`已切换到应用私有 Ollama ${switchedVersion}。`, "info", 3200);
+      showTemporaryStatus(
+        `已切换到应用私有 Ollama ${switchedVersion}。`,
+        "info",
+        3200,
+      );
       return;
     }
     showOllamaUpgradeStatus(await buildOllamaUpgradeMessage());
   }, [activatePrivateOllama, buildOllamaUpgradeMessage, showTemporaryStatus]);
 
-  const showOllamaUpgradeStatus = useCallback((message: string) => {
-    showPersistentStatus(message, "error", {
-      label: "更新引擎",
-      onClick: () => {
-        void handleUpgradeOllama();
-      },
-    });
-  }, [handleUpgradeOllama, showPersistentStatus]);
+  const showOllamaUpgradeStatus = useCallback(
+    (message: string) => {
+      showPersistentStatus(message, "error", {
+        label: "更新引擎",
+        onClick: () => {
+          void handleUpgradeOllama();
+        },
+      });
+    },
+    [handleUpgradeOllama, showPersistentStatus],
+  );
 
-  const handleChildStatus = useCallback((message: string, tone: StatusTone = "info", persistent = false) => {
-    if (tone === "error" && isOllamaUpgradeRequiredError(message)) {
-      void (async () => {
-        showOllamaUpgradeStatus(await buildOllamaUpgradeMessage());
+  const ensureAiReady = useCallback(
+    async (requirement: AiRequirement = "chat") => {
+      const preparedState = aiPreparedStateRef.current;
+      const alreadyPrepared =
+        requirement === "index" ? preparedState.index : preparedState.chat;
+      if (alreadyPrepared && currentModel) {
+        return currentModel;
+      }
+
+      if (aiPreparationPromiseRef.current) {
+        return await aiPreparationPromiseRef.current;
+      }
+
+      const task = (async () => {
+        showPersistentStatus("正在准备 AI 环境...");
+
+        let isRunning = await invoke<boolean>("check_ollama_status");
+        if (!isRunning) {
+          const privateVersion = await activatePrivateOllama(
+            false,
+            "正在准备应用私有 Ollama 引擎...",
+          );
+          if (!privateVersion) {
+            showPersistentStatus("正在启动应用内置 Ollama 引擎...");
+            await invoke("start_ollama");
+          }
+
+          isRunning = await waitForOllamaReady();
+          if (!isRunning) {
+            throw new Error("Ollama 启动超时，请稍后重试。");
+          }
+        }
+
+        try {
+          const currentVersion = await readOllamaVersion();
+          if (
+            compareOllamaVersions(
+              currentVersion,
+              OLLAMA_MIN_RECOMMENDED_VERSION,
+            ) < 0
+          ) {
+            const privateRuntime = await getPrivateOllamaRuntimeInfo();
+            const installedPrivateVersion =
+              getPrivateRuntimeVersion(privateRuntime);
+            const shouldRedownload =
+              !installedPrivateVersion ||
+              compareOllamaVersions(
+                installedPrivateVersion,
+                OLLAMA_MIN_RECOMMENDED_VERSION,
+              ) < 0;
+            const switchedVersion = await activatePrivateOllama(
+              shouldRedownload,
+              shouldRedownload
+                ? `检测到旧版 Ollama（当前 ${currentVersion}），正在更新应用私有引擎...`
+                : `检测到旧版 Ollama（当前 ${currentVersion}），正在切换到已安装的私有引擎...`,
+            );
+            if (!switchedVersion) {
+              showOllamaUpgradeStatus(
+                await buildOllamaUpgradeMessage(currentVersion),
+              );
+            } else {
+              await waitForOllamaReady();
+            }
+          }
+        } catch (error) {
+          console.warn(
+            "Failed to validate Ollama version before AI use:",
+            error,
+          );
+        }
+
+        const pullModel = async (name: string) => {
+          const mirror = resolveMirrorModel(name);
+          if (mirror) {
+            try {
+              showPersistentStatus(`正在通过镜像拉取 ${name}...`);
+              await invoke("pull_model_from_modelscope", {
+                name,
+                url: mirror.url,
+                filename: mirror.filename,
+              });
+              return;
+            } catch (error) {
+              console.error("Mirror pull failed:", error);
+            }
+          }
+          showPersistentStatus(`正在拉取模型 ${name}...`);
+          await invoke("pull_ollama_model", { name });
+        };
+
+        let models = await getInstalledModels();
+        let names = models.map((model) => model.name);
+
+        if (
+          requirement === "index" &&
+          !names.some((name) => name.includes(REQUIRED_MODELS.embedding))
+        ) {
+          await pullModel(REQUIRED_MODELS.embedding);
+        }
+        if (!names.some((name) => name.includes(REQUIRED_MODELS.chat))) {
+          await pullModel(REQUIRED_MODELS.chat);
+        }
+
+        models = await getInstalledModels();
+        names = models.map((model) => model.name);
+        const selectedModel =
+          names.find((name) => name === REQUIRED_MODELS.chat) ||
+          names.find((name) => name.includes(REQUIRED_MODELS.chat)) ||
+          names[0] ||
+          currentModel ||
+          REQUIRED_MODELS.chat;
+
+        setCurrentModel(selectedModel);
+        aiPreparedStateRef.current = {
+          chat: true,
+          index:
+            requirement === "index" ? true : aiPreparedStateRef.current.index,
+        };
+        clearStatus();
+        return selectedModel;
       })();
-      return;
-    }
-    if (persistent || tone === "error") {
-      showPersistentStatus(message, tone);
-      return;
-    }
-    showTemporaryStatus(message, tone);
-  }, [buildOllamaUpgradeMessage, showOllamaUpgradeStatus, showPersistentStatus, showTemporaryStatus]);
+
+      aiPreparationPromiseRef.current = task;
+      try {
+        return await task;
+      } catch (error) {
+        const message = getErrorMessage(error);
+        if (isOllamaUpgradeRequiredError(message)) {
+          showOllamaUpgradeStatus(await buildOllamaUpgradeMessage());
+        } else {
+          showPersistentStatus(`AI 环境准备失败：${message}`, "error");
+        }
+        throw error;
+      } finally {
+        aiPreparationPromiseRef.current = null;
+      }
+    },
+    [
+      activatePrivateOllama,
+      buildOllamaUpgradeMessage,
+      clearStatus,
+      currentModel,
+      getInstalledModels,
+      getPrivateOllamaRuntimeInfo,
+      getPrivateRuntimeVersion,
+      readOllamaVersion,
+      showOllamaUpgradeStatus,
+      showPersistentStatus,
+      waitForOllamaReady,
+    ],
+  );
+
+  const handleChildStatus = useCallback(
+    (message: string, tone: StatusTone = "info", persistent = false) => {
+      if (tone === "error" && isOllamaUpgradeRequiredError(message)) {
+        void (async () => {
+          showOllamaUpgradeStatus(await buildOllamaUpgradeMessage());
+        })();
+        return;
+      }
+      if (persistent || tone === "error") {
+        showPersistentStatus(message, tone);
+        return;
+      }
+      showTemporaryStatus(message, tone);
+    },
+    [
+      buildOllamaUpgradeMessage,
+      showOllamaUpgradeStatus,
+      showPersistentStatus,
+      showTemporaryStatus,
+    ],
+  );
 
   useEffect(() => () => clearStatusTimer(), []);
 
@@ -372,53 +674,93 @@ function App() {
   }, [ingestMode]);
 
   const loadInferenceSettings = async () => {
+    const startedAt = performance.now();
     try {
-      const settings = await invoke<InferenceSettings>("get_inference_settings");
+      const settings = await invoke<InferenceSettings>(
+        "get_inference_settings",
+      );
       setInferenceMode(settings.mode);
       setSettingsError(null);
     } catch (error) {
       setSettingsError(`加载推理模式失败：${String(error)}`);
+    } finally {
+      logTiming("loadInferenceSettings", startedAt);
     }
   };
 
   const loadWorkspaceSnapshot = async () => {
+    const startedAt = performance.now();
     try {
-      const snapshot = await invoke<WorkspaceSnapshot>("get_workspace_snapshot");
+      const snapshot = await invoke<WorkspaceSnapshot>(
+        "get_workspace_snapshot",
+      );
       setWorkspacePath(snapshot.workspace_path);
       setFiles([snapshot.tree]);
     } catch (error) {
       console.error("Failed to load workspace snapshot:", error);
+    } finally {
+      logTiming("loadWorkspaceSnapshot", startedAt);
     }
   };
 
   const loadCardSettings = async () => {
+    const startedAt = performance.now();
     try {
       const settings = await invoke<CardSettings>("get_card_settings");
       setCardSettings(settings);
       setCardSettingsError(null);
     } catch (error) {
       setCardSettingsError(`加载知识卡片路径失败：${String(error)}`);
+    } finally {
+      logTiming("loadCardSettings", startedAt);
     }
   };
 
   const loadMobileCompanionStatus = async () => {
+    const startedAt = performance.now();
     setIsLoadingMobileStatus(true);
     try {
-      const status = await invoke<MobileCompanionStatus>("get_mobile_companion_status");
+      const status = await invoke<MobileCompanionStatus>(
+        "get_mobile_companion_status",
+      );
       setMobileStatus(status);
       setMobileStatusError(null);
     } catch (error) {
       setMobileStatusError(`加载移动端配套状态失败：${String(error)}`);
     } finally {
       setIsLoadingMobileStatus(false);
+      logTiming("loadMobileCompanionStatus", startedAt);
     }
   };
 
+  const loadDirectoryChildren = useCallback(async (path: string) => {
+    const startedAt = performance.now();
+    try {
+      const children = await invoke<FileNode[]>("list_directory_children", {
+        path,
+      });
+      console.info(
+        "[tree] app received children",
+        path,
+        children.length,
+        children.map((child) => `${child.type_name}:${child.name}`),
+      );
+      setFiles((previous) => attachChildrenToTree(previous, path, children));
+      return children;
+    } finally {
+      logTiming(`loadDirectoryChildren ${path}`, startedAt);
+    }
+  }, []);
+
   useEffect(() => {
+    console.info("[startup] App mounted");
     void loadInferenceSettings();
     void loadWorkspaceSnapshot();
     void loadCardSettings();
-    void loadMobileCompanionStatus();
+  }, []);
+
+  useEffect(() => {
+    logTiming("firstAppEffect", appStartedAtRef.current);
   }, []);
 
   useEffect(() => {
@@ -443,8 +785,15 @@ function App() {
     listen<OllamaRuntimeProgress>("ollama-runtime-progress", (event) => {
       const { status, total, completed } = event.payload;
       if (!status) return;
-      if (typeof total === "number" && total > 0 && typeof completed === "number") {
-        const percent = Math.max(0, Math.min(100, Math.round((completed / total) * 100)));
+      if (
+        typeof total === "number" &&
+        total > 0 &&
+        typeof completed === "number"
+      ) {
+        const percent = Math.max(
+          0,
+          Math.min(100, Math.round((completed / total) * 100)),
+        );
         showPersistentStatus(`${status} ${percent}%`);
         return;
       }
@@ -458,111 +807,69 @@ function App() {
   }, [showPersistentStatus]);
 
   useEffect(() => {
-    const initOllama = async () => {
+    let cancelled = false;
+    let timerId: number | null = null;
+    let cancelIdleCheck: (() => void) | null = null;
+
+    const runIdleCheck = async () => {
       try {
-        showPersistentStatus("正在检查本地 AI 环境...");
         const isRunning = await invoke<boolean>("check_ollama_status");
-        if (!isRunning) {
-          const privateVersion = await activatePrivateOllama(false, "正在准备应用私有 Ollama 引擎...");
-          if (!privateVersion) {
-            showPersistentStatus("应用私有 Ollama 引擎暂不可用，正在回退到随应用附带的内置引擎...");
-            await invoke("start_ollama");
-          }
-          await new Promise((resolve) => window.setTimeout(resolve, 3000));
-        }
+        if (!isRunning || cancelled) return;
 
-        let versionWarningMessage: string | null = null;
-        let switchedOllamaVersion: string | null = null;
-        try {
-          const currentVersion = await readOllamaVersion();
-          if (compareOllamaVersions(currentVersion, OLLAMA_MIN_RECOMMENDED_VERSION) < 0) {
-            const privateRuntime = await getPrivateOllamaRuntimeInfo();
-            const installedPrivateVersion = getPrivateRuntimeVersion(privateRuntime);
-            const shouldRedownload =
-              !installedPrivateVersion ||
-              compareOllamaVersions(installedPrivateVersion, OLLAMA_MIN_RECOMMENDED_VERSION) < 0;
-            switchedOllamaVersion = await activatePrivateOllama(
-              shouldRedownload,
-              shouldRedownload
-                ? `检测到旧版 Ollama（当前 ${currentVersion}），正在更新应用私有引擎...`
-                : `检测到旧版 Ollama（当前 ${currentVersion}），正在切换到已安装的私有引擎...`,
-            );
-            if (!switchedOllamaVersion) {
-              versionWarningMessage = await buildOllamaUpgradeMessage(currentVersion);
-            }
-          }
-        } catch (error) {
-          console.warn("Failed to read Ollama version:", error);
-        }
+        const models = await getInstalledModels();
+        if (cancelled || models.length === 0 || currentModel) return;
 
-        const pullModel = async (name: string) => {
-          const mirror = MIRROR_MODELS[name];
-          if (mirror) {
-            try {
-              showPersistentStatus(`正在通过镜像拉取 ${name}...`);
-              await invoke("pull_model_from_modelscope", {
-                name,
-                url: mirror.url,
-                filename: mirror.filename,
-              });
-              return;
-            } catch (error) {
-              console.error("Mirror pull failed:", error);
-            }
-          }
-          showPersistentStatus(`正在拉取模型 ${name}...`);
-          await invoke("pull_ollama_model", { name });
-        };
-
-        let models = await invoke<Array<{ name: string }>>("get_ollama_models");
-        let names = models.map((model) => model.name);
-
-        if (!names.some((name) => name.includes(REQUIRED_MODELS.embedding))) {
-          await pullModel(REQUIRED_MODELS.embedding);
-        }
-        if (!names.some((name) => name.includes(REQUIRED_MODELS.chat))) {
-          await pullModel(REQUIRED_MODELS.chat);
-        }
-
-        models = await invoke<Array<{ name: string }>>("get_ollama_models");
-        names = models.map((model) => model.name);
         const selectedModel =
-          names.find((name) => name === REQUIRED_MODELS.chat) ||
-          names.find((name) => name.includes(REQUIRED_MODELS.chat)) ||
-          names[0] || "";
-        setCurrentModel(selectedModel);
-        if (versionWarningMessage) {
-          showOllamaUpgradeStatus(versionWarningMessage);
-        } else if (switchedOllamaVersion) {
-          showTemporaryStatus(`已切换到应用私有 Ollama ${switchedOllamaVersion}。`, "info", 3200);
-        } else {
-          clearStatus();
+          models.find((model) => model.name === REQUIRED_MODELS.chat)?.name ||
+          models.find((model) => model.name.includes(REQUIRED_MODELS.chat))
+            ?.name ||
+          models[0]?.name ||
+          "";
+        if (selectedModel) {
+          setCurrentModel(selectedModel);
         }
       } catch (error) {
-        const message = getErrorMessage(error);
-        if (isOllamaUpgradeRequiredError(message)) {
-          const switchedVersion = await activatePrivateOllama(true, "检测到模型拉取需要更新 Ollama，正在更新应用私有引擎...");
-          if (switchedVersion) {
-            showTemporaryStatus(`已切换到应用私有 Ollama ${switchedVersion}。`, "info", 3200);
-            return;
-          }
-          showOllamaUpgradeStatus(await buildOllamaUpgradeMessage());
-          return;
-        }
-        showPersistentStatus(`AI 初始化失败：${message}`, "error");
+        console.warn("Idle Ollama probe skipped:", error);
       }
     };
 
-    void initOllama();
-  }, [activatePrivateOllama, buildOllamaUpgradeMessage, clearStatus, getPrivateOllamaRuntimeInfo, getPrivateRuntimeVersion, readOllamaVersion, showOllamaUpgradeStatus, showPersistentStatus, showTemporaryStatus]);
+    timerId = window.setTimeout(() => {
+      if ("requestIdleCallback" in window) {
+        const idleApi = window as Window & {
+          requestIdleCallback: (cb: IdleRequestCallback) => number;
+          cancelIdleCallback?: (id: number) => void;
+        };
+        const idleId = idleApi.requestIdleCallback(() => {
+          void runIdleCheck();
+        });
+        cancelIdleCheck = () => idleApi.cancelIdleCallback?.(idleId);
+        return;
+      }
+      void runIdleCheck();
+    }, AI_IDLE_CHECK_DELAY_MS);
+
+    return () => {
+      cancelled = true;
+      if (timerId != null) {
+        window.clearTimeout(timerId);
+      }
+      cancelIdleCheck?.();
+    };
+  }, [currentModel, getInstalledModels]);
 
   const ingestWorkspacePath = async (path: string) => {
     setIsIngesting(true);
-    setIngestProgress({ stage: "scan", current: 0, total: 0, message: "正在扫描文件..." });
+    setIngestProgress({
+      stage: "scan",
+      current: 0,
+      total: 0,
+      message: "正在扫描文件...",
+    });
     try {
+      const model = await ensureAiReady("index");
       const count = await invoke<number>("ingest_knowledge_base", {
         path,
-        model: currentModel || REQUIRED_MODELS.chat,
+        model,
         mode: ingestMode,
       });
       showTemporaryStatus(`索引完成，已处理 ${count} 个片段。`);
@@ -573,7 +880,10 @@ function App() {
     }
   };
 
-  const applyImportedWorkspace = async (imported: WorkspaceImportResult, successMessage?: string) => {
+  const applyImportedWorkspace = async (
+    imported: WorkspaceImportResult,
+    successMessage?: string,
+  ) => {
     setWorkspacePath(imported.workspace_path);
     setFiles([imported.tree]);
     setActiveFilePath(null);
@@ -588,28 +898,45 @@ function App() {
     setActiveFilePath(null);
     showPersistentStatus("Zotero PDF 已导入工作空间，正在建立索引...");
     await ingestWorkspacePath(imported.ingest_path);
-    showTemporaryStatus(`Zotero 导入完成：复制 ${imported.copied_pdfs} 个 PDF，跳过 ${imported.skipped_existing} 个。`, "info", 4200);
+    showTemporaryStatus(
+      `Zotero 导入完成：复制 ${imported.copied_pdfs} 个 PDF，跳过 ${imported.skipped_existing} 个。`,
+      "info",
+      4200,
+    );
   };
 
   const importAndIngestPath = async (selectedPath: string) => {
-    const imported = await invoke<WorkspaceImportResult>("import_directory_to_workspace", {
-      sourcePath: selectedPath,
-      mode: ingestMode,
-    });
+    const imported = await invoke<WorkspaceImportResult>(
+      "import_directory_to_workspace",
+      {
+        sourcePath: selectedPath,
+        mode: ingestMode,
+      },
+    );
     await applyImportedWorkspace(imported, "文件夹已导入工作空间。");
   };
 
   const importAndIngestFiles = async (selectedPaths: string[]) => {
-    const imported = await invoke<WorkspaceImportResult>("import_paths_to_workspace", {
-      sourcePaths: selectedPaths,
-      mode: ingestMode,
-    });
-    await applyImportedWorkspace(imported, `已导入 ${selectedPaths.length} 个项目到工作空间。`);
+    const imported = await invoke<WorkspaceImportResult>(
+      "import_paths_to_workspace",
+      {
+        sourcePaths: selectedPaths,
+        mode: ingestMode,
+      },
+    );
+    await applyImportedWorkspace(
+      imported,
+      `已导入 ${selectedPaths.length} 个项目到工作空间。`,
+    );
   };
 
   const handleOpenFolder = async () => {
     try {
-      const selected = await open({ directory: true, multiple: false, title: "选择要导入的文件夹" });
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: "选择要导入的文件夹",
+      });
       if (!selected || typeof selected !== "string") return;
       showPersistentStatus("正在导入文件夹...");
       await importAndIngestPath(selected);
@@ -647,34 +974,49 @@ function App() {
       return;
     }
 
-    const imported = await invoke<ZoteroImportResult>("import_zotero_storage_to_workspace", {
-      sourceStorage: selected,
-      sourceStoragePath: selected,
-      mode: ingestMode,
-    });
+    const imported = await invoke<ZoteroImportResult>(
+      "import_zotero_storage_to_workspace",
+      {
+        sourceStorage: selected,
+        sourceStoragePath: selected,
+        mode: ingestMode,
+      },
+    );
     await applyImportedZotero(imported);
   };
 
   const handleImportZotero = async () => {
     try {
       showPersistentStatus("正在自动查找 Zotero 存储目录...");
-      const candidates = await invoke<ZoteroStorageCandidate[]>("detect_zotero_storage");
+      const candidates = await invoke<ZoteroStorageCandidate[]>(
+        "detect_zotero_storage",
+      );
       if (candidates.length === 0) {
-        await pickAndImportZoteroManually("没有自动发现 Zotero 目录，请手动选择。 ");
+        await pickAndImportZoteroManually(
+          "没有自动发现 Zotero 目录，请手动选择。 ",
+        );
         return;
       }
       const best = [...candidates].sort((a, b) => b.pdf_count - a.pdf_count)[0];
-      const imported = await invoke<ZoteroImportResult>("import_zotero_storage_to_workspace", {
-        sourceStorage: best.storage_path,
-        sourceStoragePath: best.storage_path,
-        mode: ingestMode,
-      });
+      const imported = await invoke<ZoteroImportResult>(
+        "import_zotero_storage_to_workspace",
+        {
+          sourceStorage: best.storage_path,
+          sourceStoragePath: best.storage_path,
+          mode: ingestMode,
+        },
+      );
       await applyImportedZotero(imported);
     } catch (error) {
       try {
-        await pickAndImportZoteroManually(`自动导入 Zotero 失败：${String(error)}`);
+        await pickAndImportZoteroManually(
+          `自动导入 Zotero 失败：${String(error)}`,
+        );
       } catch (manualError) {
-        showPersistentStatus(`导入 Zotero 失败：${String(manualError)}`, "error");
+        showPersistentStatus(
+          `导入 Zotero 失败：${String(manualError)}`,
+          "error",
+        );
       }
     }
   };
@@ -699,7 +1041,8 @@ function App() {
     if (!activePdfPath) {
       const restoredSidebarSize = isPdfFocusMode
         ? focusRestoreLayoutRef.current.sidebar
-        : sidebarPanelRef.current?.getSize().asPercentage ?? DEFAULT_TWO_PANEL_LAYOUT.sidebar;
+        : (sidebarPanelRef.current?.getSize().asPercentage ??
+          DEFAULT_TWO_PANEL_LAYOUT.sidebar);
       if (isPdfFocusMode) {
         setIsPdfFocusMode(false);
       }
@@ -733,9 +1076,15 @@ function App() {
     }
 
     focusRestoreLayoutRef.current = {
-      sidebar: sidebarPanelRef.current?.getSize().asPercentage ?? DEFAULT_THREE_PANEL_LAYOUT.sidebar,
-      main: mainPanelRef.current?.getSize().asPercentage ?? DEFAULT_THREE_PANEL_LAYOUT.main,
-      pdf: pdfPanelRef.current?.getSize().asPercentage ?? DEFAULT_THREE_PANEL_LAYOUT.pdf,
+      sidebar:
+        sidebarPanelRef.current?.getSize().asPercentage ??
+        DEFAULT_THREE_PANEL_LAYOUT.sidebar,
+      main:
+        mainPanelRef.current?.getSize().asPercentage ??
+        DEFAULT_THREE_PANEL_LAYOUT.main,
+      pdf:
+        pdfPanelRef.current?.getSize().asPercentage ??
+        DEFAULT_THREE_PANEL_LAYOUT.pdf,
     };
 
     setIsPdfFocusMode(true);
@@ -749,7 +1098,8 @@ function App() {
   const handleClosePdfDock = useCallback(() => {
     const sidebarSize = isPdfFocusMode
       ? focusRestoreLayoutRef.current.sidebar
-      : sidebarPanelRef.current?.getSize().asPercentage ?? DEFAULT_TWO_PANEL_LAYOUT.sidebar;
+      : (sidebarPanelRef.current?.getSize().asPercentage ??
+        DEFAULT_TWO_PANEL_LAYOUT.sidebar);
     setIsPdfFocusMode(false);
     focusRestoreLayoutRef.current = DEFAULT_THREE_PANEL_LAYOUT;
     setIsPdfDockVisible(false);
@@ -762,7 +1112,9 @@ function App() {
   const handleInferenceModeChange = async (nextMode: InferenceMode) => {
     setIsSavingInferenceMode(true);
     try {
-      const updated = await invoke<InferenceSettings>("set_inference_mode", { mode: nextMode });
+      const updated = await invoke<InferenceSettings>("set_inference_mode", {
+        mode: nextMode,
+      });
       setInferenceMode(updated.mode);
       setSettingsError(null);
     } catch (error) {
@@ -775,9 +1127,15 @@ function App() {
 
   const handlePickCardRoot = async () => {
     try {
-      const selected = await open({ directory: true, multiple: false, title: "选择知识卡片存放目录" });
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: "选择知识卡片存放目录",
+      });
       if (!selected || typeof selected !== "string") return;
-      const next = await invoke<CardSettings>("set_card_root_path", { path: selected });
+      const next = await invoke<CardSettings>("set_card_root_path", {
+        path: selected,
+      });
       setCardSettings(next);
       setCardSettingsError(null);
       setCardsRefreshToken((value) => value + 1);
@@ -789,7 +1147,9 @@ function App() {
 
   const handleResetCardRoot = async () => {
     try {
-      const next = await invoke<CardSettings>("set_card_root_path", { path: null });
+      const next = await invoke<CardSettings>("set_card_root_path", {
+        path: null,
+      });
       setCardSettings(next);
       setCardSettingsError(null);
       setCardsRefreshToken((value) => value + 1);
@@ -814,7 +1174,9 @@ function App() {
   const handleRefreshMobilePairCode = async () => {
     setIsRefreshingMobilePairCode(true);
     try {
-      const status = await invoke<MobileCompanionStatus>("refresh_mobile_pair_code");
+      const status = await invoke<MobileCompanionStatus>(
+        "refresh_mobile_pair_code",
+      );
       setMobileStatus(status);
       setMobileStatusError(null);
       showTemporaryStatus(`新的移动端配对码：${status.pairCode}`, "info", 3600);
@@ -838,6 +1200,7 @@ function App() {
     mainView === "chat" ? (
       <ChatInterface
         currentModel={currentModel}
+        ensureAiReady={ensureAiReady}
         activeFilePath={activeFilePath}
         pdfPage={pdfPage}
         onPdfPageChange={setPdfPage}
@@ -845,9 +1208,16 @@ function App() {
         onCardSaved={handleCardSaved}
       />
     ) : mainView === "cards" ? (
-      <CardLibrary refreshToken={cardsRefreshToken} activeRoot={cardSettings?.active_root} onStatus={handleChildStatus} />
+      <CardLibrary
+        refreshToken={cardsRefreshToken}
+        activeRoot={cardSettings?.active_root}
+        onStatus={handleChildStatus}
+      />
     ) : (
-      <MobileInboxPanel isActive={mainView === "inbox"} onStatus={handleChildStatus} />
+      <MobileInboxPanel
+        isActive={mainView === "inbox"}
+        onStatus={handleChildStatus}
+      />
     );
 
   const mobileSettingsSection = (
@@ -856,19 +1226,33 @@ function App() {
       <div className="mobile-settings-panel">
         <div className="mobile-settings-hero">
           <div>
-            <div className="mobile-settings-code">{mobileStatus?.pairCode || "------"}</div>
-            <p className="settings-help-text">在手机 App 的“配对”页输入下面的局域网地址和 6 位配对码。</p>
+            <div className="mobile-settings-code">
+              {mobileStatus?.pairCode || "------"}
+            </div>
+            <p className="settings-help-text">
+              在手机 App 的“配对”页输入下面的局域网地址和 6 位配对码。
+            </p>
           </div>
-          <div className={`status-chip ${mobileStatus?.running ? "" : "muted"}`}>
+          <div
+            className={`status-chip ${mobileStatus?.running ? "" : "muted"}`}
+          >
             {mobileStatus?.running ? "服务运行中" : "服务未就绪"}
           </div>
         </div>
 
         <div className="settings-button-row">
-          <button className="action-button" onClick={() => void loadMobileCompanionStatus()} disabled={isLoadingMobileStatus}>
+          <button
+            className="action-button"
+            onClick={() => void loadMobileCompanionStatus()}
+            disabled={isLoadingMobileStatus}
+          >
             {isLoadingMobileStatus ? "刷新中" : "刷新状态"}
           </button>
-          <button className="action-button" onClick={() => void handleRefreshMobilePairCode()} disabled={isRefreshingMobilePairCode}>
+          <button
+            className="action-button"
+            onClick={() => void handleRefreshMobilePairCode()}
+            disabled={isRefreshingMobilePairCode}
+          >
             {isRefreshingMobilePairCode ? "生成中" : "重生成配对码"}
           </button>
         </div>
@@ -881,14 +1265,21 @@ function App() {
           <div className="mobile-settings-label">已配对设备</div>
           <div>{mobileStatus?.pairedDevices.length ?? 0}</div>
           <div className="mobile-settings-label">卡片 / 复习 / 收件箱</div>
-          <div>{mobileStatus ? `${mobileStatus.cardCount} / ${mobileStatus.reviewRecordCount} / ${mobileStatus.inboxCount}` : "未加载"}</div>
+          <div>
+            {mobileStatus
+              ? `${mobileStatus.cardCount} / ${mobileStatus.reviewRecordCount} / ${mobileStatus.inboxCount}`
+              : "未加载"}
+          </div>
         </div>
 
         <div className="mobile-settings-address-list">
           {(mobileStatus?.baseUrls || []).map((address) => (
             <div key={address} className="mobile-settings-address-item">
               <div className="settings-path-box">{address}</div>
-              <button className="action-button" onClick={() => void handleCopyMobileAddress(address)}>
+              <button
+                className="action-button"
+                onClick={() => void handleCopyMobileAddress(address)}
+              >
                 复制地址
               </button>
             </div>
@@ -897,15 +1288,22 @@ function App() {
 
         <div className="mobile-settings-grid">
           <div className="mobile-settings-label">Inbox 目录</div>
-          <div className="mobile-settings-path">{mobileStatus?.inboxDir || "未加载"}</div>
+          <div className="mobile-settings-path">
+            {mobileStatus?.inboxDir || "未加载"}
+          </div>
           <div className="mobile-settings-label">Review 目录</div>
-          <div className="mobile-settings-path">{mobileStatus?.reviewStateDir || "未加载"}</div>
+          <div className="mobile-settings-path">
+            {mobileStatus?.reviewStateDir || "未加载"}
+          </div>
         </div>
 
         {mobileStatus?.pairedDevices.length ? (
           <div className="mobile-settings-device-list">
             {mobileStatus.pairedDevices.map((device) => (
-              <div key={device.deviceId} className="mobile-settings-device-item">
+              <div
+                key={device.deviceId}
+                className="mobile-settings-device-item"
+              >
                 <strong>{device.deviceName}</strong>
                 <span>
                   配对时间：{device.pairedAt}
@@ -919,7 +1317,9 @@ function App() {
         )}
       </div>
       {(mobileStatusError || mobileStatus?.lastError) && (
-        <p className="settings-error-text">{mobileStatusError || mobileStatus?.lastError}</p>
+        <p className="settings-error-text">
+          {mobileStatusError || mobileStatus?.lastError}
+        </p>
       )}
     </div>
   );
@@ -935,16 +1335,26 @@ function App() {
   return (
     <div className="app-shell">
       {statusBanner && (
-        <div className={`status-banner-shell ${statusBanner.tone} ${isStatusBannerExpanded ? "expanded" : "collapsed"}`}>
+        <div
+          className={`status-banner-shell ${statusBanner.tone} ${isStatusBannerExpanded ? "expanded" : "collapsed"}`}
+        >
           <button
             className={`status-banner-handle ${statusBanner.tone}`}
             onClick={() => setIsStatusBannerExpanded((current) => !current)}
-            aria-label={isStatusBannerExpanded ? "收起状态面板" : "展开状态面板"}
+            aria-label={
+              isStatusBannerExpanded ? "收起状态面板" : "展开状态面板"
+            }
             title={statusBanner.message}
           >
             <span className="status-banner-handle-line" />
-            <span className="status-banner-handle-text">{isStatusBannerExpanded ? "后台状态" : statusBannerSummary}</span>
-            {isStatusBannerExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+            <span className="status-banner-handle-text">
+              {isStatusBannerExpanded ? "后台状态" : statusBannerSummary}
+            </span>
+            {isStatusBannerExpanded ? (
+              <ChevronUp size={14} />
+            ) : (
+              <ChevronDown size={14} />
+            )}
           </button>
 
           {isStatusBannerExpanded && (
@@ -952,7 +1362,10 @@ function App() {
               <div className="status-banner-text">{statusBanner.message}</div>
               <div className="status-banner-controls">
                 {statusBanner.action && (
-                  <button className="status-banner-action" onClick={() => void statusBanner.action?.onClick()}>
+                  <button
+                    className="status-banner-action"
+                    onClick={() => void statusBanner.action?.onClick()}
+                  >
                     {statusBanner.action.label}
                   </button>
                 )}
@@ -963,7 +1376,11 @@ function App() {
                 >
                   <ChevronUp size={16} />
                 </button>
-                <button className="ghost-icon-button light" onClick={clearStatus} aria-label="关闭提示">
+                <button
+                  className="ghost-icon-button light"
+                  onClick={clearStatus}
+                  aria-label="关闭提示"
+                >
                   <X size={16} />
                 </button>
               </div>
@@ -972,7 +1389,11 @@ function App() {
         </div>
       )}
 
-      <Group orientation="horizontal" className="app-panels" id="app-main-panels">
+      <Group
+        orientation="horizontal"
+        className="app-panels"
+        id="app-main-panels"
+      >
         <Panel
           panelRef={sidebarPanelRef}
           defaultSize={activePdfPath && isPdfDockVisible ? "20%" : "24%"}
@@ -984,16 +1405,32 @@ function App() {
             <div className="sidebar-header">
               <span>工作空间</span>
               <div className="sidebar-actions">
-                <button className="icon-button" onClick={() => void handleImportZotero()} title="自动导入 Zotero PDF">
+                <button
+                  className="icon-button"
+                  onClick={() => void handleImportZotero()}
+                  title="自动导入 Zotero PDF"
+                >
                   <BookOpen size={16} />
                 </button>
-                <button className="icon-button" onClick={() => void handleOpenFiles()} title="导入文件">
+                <button
+                  className="icon-button"
+                  onClick={() => void handleOpenFiles()}
+                  title="导入文件"
+                >
                   <FilePlus size={16} />
                 </button>
-                <button className="icon-button" onClick={() => void handleOpenFolder()} title="导入文件夹">
+                <button
+                  className="icon-button"
+                  onClick={() => void handleOpenFolder()}
+                  title="导入文件夹"
+                >
                   <FolderOpen size={16} />
                 </button>
-                <button className="icon-button" onClick={() => setIsSettingsOpen(true)} title="设置">
+                <button
+                  className="icon-button"
+                  onClick={() => setIsSettingsOpen(true)}
+                  title="设置"
+                >
                   <Settings size={16} />
                 </button>
               </div>
@@ -1003,10 +1440,15 @@ function App() {
               <div className="ingest-panel">
                 <div className="ingest-title">{stageLabel}</div>
                 <div className="ingest-subtitle">
-                  {ingestProgress?.total ? `${ingestProgress.current}/${ingestProgress.total}` : "准备中..."}
+                  {ingestProgress?.total
+                    ? `${ingestProgress.current}/${ingestProgress.total}`
+                    : "准备中..."}
                 </div>
                 <div className="ingest-progress-track">
-                  <div className="ingest-progress-fill" style={{ width: `${progressPercent}%` }} />
+                  <div
+                    className="ingest-progress-fill"
+                    style={{ width: `${progressPercent}%` }}
+                  />
                 </div>
               </div>
             )}
@@ -1017,12 +1459,23 @@ function App() {
               </div>
             )}
 
-            <FileTree data={files.length > 0 ? files : undefined} activePath={activeFilePath} onSelect={handleFileSelect} />
-            <ModelSelector currentModel={currentModel} onModelChange={setCurrentModel} onStatus={handleChildStatus} />
+            <FileTree
+              data={files.length > 0 ? files : undefined}
+              activePath={activeFilePath}
+              onSelect={handleFileSelect}
+              onLoadChildren={loadDirectoryChildren}
+            />
+            <ModelSelector
+              currentModel={currentModel}
+              onModelChange={setCurrentModel}
+              onStatus={handleChildStatus}
+            />
           </aside>
         </Panel>
 
-        <Separator className={`PanelResizeHandle ${isPdfFocusMode ? "panel-separator-hidden" : ""}`} />
+        <Separator
+          className={`PanelResizeHandle ${isPdfFocusMode ? "panel-separator-hidden" : ""}`}
+        />
 
         <Panel
           panelRef={mainPanelRef}
@@ -1032,13 +1485,26 @@ function App() {
         >
           <div className="main-panel-frame">
             <div className="main-panel-tabs">
-              <button className={`tab-button ${mainView === "chat" ? "active" : ""}`} onClick={() => setMainView("chat")}>
+              <button
+                className={`tab-button ${mainView === "chat" ? "active" : ""}`}
+                onClick={() => setMainView("chat")}
+              >
                 <MessageSquareText size={16} />
                 对话
               </button>
-              <button className={`tab-button ${mainView === "cards" ? "active" : ""}`} onClick={() => setMainView("cards")}>
+              <button
+                className={`tab-button ${mainView === "cards" ? "active" : ""}`}
+                onClick={() => setMainView("cards")}
+              >
                 <LayoutGrid size={16} />
                 卡片库
+              </button>
+              <button
+                className={`tab-button ${mainView === "inbox" ? "active" : ""}`}
+                onClick={() => setMainView("inbox")}
+              >
+                <Inbox size={16} />
+                收件箱
               </button>
             </div>
 
@@ -1048,7 +1514,9 @@ function App() {
 
         {activePdfPath && isPdfDockVisible && (
           <>
-            <Separator className={`PanelResizeHandle ${isPdfFocusMode ? "panel-separator-hidden" : ""}`} />
+            <Separator
+              className={`PanelResizeHandle ${isPdfFocusMode ? "panel-separator-hidden" : ""}`}
+            />
             <Panel
               panelRef={pdfPanelRef}
               defaultSize="45%"
@@ -1059,6 +1527,7 @@ function App() {
               <PdfDock
                 activePdfPath={activePdfPath}
                 currentModel={currentModel || REQUIRED_MODELS.chat}
+                ensureAiReady={ensureAiReady}
                 currentPage={pdfPage}
                 onPageChange={setPdfPage}
                 onStatus={handleChildStatus}
@@ -1077,11 +1546,21 @@ function App() {
       </div>
 
       {isSettingsOpen && (
-        <div className="settings-overlay" onClick={() => setIsSettingsOpen(false)}>
-          <div className="settings-modal" onClick={(event) => event.stopPropagation()}>
+        <div
+          className="settings-overlay"
+          onClick={() => setIsSettingsOpen(false)}
+        >
+          <div
+            className="settings-modal"
+            onClick={(event) => event.stopPropagation()}
+          >
             <div className="settings-modal-header">
               <h3>设置</h3>
-              <button className="ghost-icon-button" onClick={() => setIsSettingsOpen(false)} aria-label="关闭设置">
+              <button
+                className="ghost-icon-button"
+                onClick={() => setIsSettingsOpen(false)}
+                aria-label="关闭设置"
+              >
                 <X size={16} />
               </button>
             </div>
@@ -1091,43 +1570,75 @@ function App() {
               <select
                 id="inference-mode-select"
                 value={inferenceMode}
-                onChange={(event) => void handleInferenceModeChange(event.target.value as InferenceMode)}
+                onChange={(event) =>
+                  void handleInferenceModeChange(
+                    event.target.value as InferenceMode,
+                  )
+                }
                 disabled={isSavingInferenceMode}
               >
                 <option value="single_mm">单模型原生多模态优先</option>
                 <option value="dual_pipeline">双模型作为性能 / 精度备选</option>
               </select>
-              <p className="settings-help-text">`single_mm` 走单模型图文理解；`dual_pipeline` 目前保留为后续双路由扩展骨架。</p>
-              {settingsError && <p className="settings-error-text">{settingsError}</p>}
+              <p className="settings-help-text">
+                `single_mm` 走单模型图文理解；`dual_pipeline`
+                目前保留为后续双路由扩展骨架。
+              </p>
+              {settingsError && (
+                <p className="settings-error-text">{settingsError}</p>
+              )}
             </div>
 
             <div className="settings-section">
               <label htmlFor="ingest-mode-select">导入索引模式</label>
-              <select id="ingest-mode-select" value={ingestMode} onChange={(event) => setIngestMode(event.target.value as IngestMode)}>
+              <select
+                id="ingest-mode-select"
+                value={ingestMode}
+                onChange={(event) =>
+                  setIngestMode(event.target.value as IngestMode)
+                }
+              >
                 <option value="overwrite">覆盖导入</option>
                 <option value="incremental">增量导入</option>
               </select>
-              <p className="settings-help-text">覆盖导入会重建当前导入目标的索引；增量导入会尽量保留已存在内容。</p>
+              <p className="settings-help-text">
+                覆盖导入会重建当前导入目标的索引；增量导入会尽量保留已存在内容。
+              </p>
             </div>
 
             <div className="settings-section">
               <label>知识卡片路径</label>
-              <div className="settings-path-box">{cardSettings?.active_root || "尚未加载"}</div>
+              <div className="settings-path-box">
+                {cardSettings?.active_root || "尚未加载"}
+              </div>
               <div className="settings-button-row">
-                <button className="action-button" onClick={() => void handlePickCardRoot()}>
+                <button
+                  className="action-button"
+                  onClick={() => void handlePickCardRoot()}
+                >
                   选择路径
                 </button>
-                <button className="action-button" onClick={() => void handleResetCardRoot()}>
+                <button
+                  className="action-button"
+                  onClick={() => void handleResetCardRoot()}
+                >
                   恢复默认
                 </button>
-                <button className="action-button" onClick={() => void handleOpenCardRoot()}>
+                <button
+                  className="action-button"
+                  onClick={() => void handleOpenCardRoot()}
+                >
                   打开目录
                 </button>
               </div>
               <p className="settings-help-text">
-                {cardSettings?.using_custom_root ? "当前使用自定义卡片目录。" : "当前使用应用默认卡片目录。"}
+                {cardSettings?.using_custom_root
+                  ? "当前使用自定义卡片目录。"
+                  : "当前使用应用默认卡片目录。"}
               </p>
-              {cardSettingsError && <p className="settings-error-text">{cardSettingsError}</p>}
+              {cardSettingsError && (
+                <p className="settings-error-text">{cardSettingsError}</p>
+              )}
             </div>
 
             {mobileSettingsSection}
@@ -1139,6 +1650,3 @@ function App() {
 }
 
 export default App;
-
-
-
