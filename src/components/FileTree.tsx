@@ -181,7 +181,7 @@ const TreeNode: React.FC<{
           <File size={14} color="#68707f" />
         )}
         <span className="tree-item-label" title={node.name}>{node.name}</span>
-        {node.type_name === "folder" && !hasChildren && <span className="tree-item-empty">空</span>}
+        {shouldShowEmpty && <span className="tree-item-empty">空</span>}
       </div>
 
       {node.type_name === "folder" && isOpen && hasVisibleChildren && (
@@ -287,4 +287,5 @@ export const FileTree: React.FC<FileTreeProps> = ({
     </div>
   );
 };
+
 

@@ -417,7 +417,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       const response = await invoke<string>("chat_with_llm", {
         query: question,
         context,
-        model: currentModel || "qwen2.5:0.5b",
+        model: activeModel,
         imagePath,
       });
 
@@ -852,6 +852,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     </div>
   );
 };
+
+
 
 
 

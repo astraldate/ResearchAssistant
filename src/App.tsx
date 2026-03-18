@@ -411,6 +411,26 @@ function App() {
     },
     [],
   );
+  const getInstalledModels = useCallback(async () => {
+    return await invoke<OllamaModelSummary[]>("get_ollama_models");
+  }, []);
+
+  const waitForOllamaReady = useCallback(
+    async (attempts = 12, delayMs = 500) => {
+      for (let index = 0; index < attempts; index += 1) {
+        try {
+          if (await invoke<boolean>("check_ollama_status")) {
+            return true;
+          }
+        } catch {
+          // Ignore transient readiness checks while booting.
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+      }
+      return false;
+    },
+    [],
+  );
 
   const buildOllamaUpgradeMessage = useCallback(
     async (currentVersion?: string | null) => {
@@ -497,6 +517,157 @@ function App() {
       });
     },
     [handleUpgradeOllama, showPersistentStatus],
+  );
+  const ensureAiReady = useCallback(
+    async (requirement: AiRequirement = "chat") => {
+      const preparedState = aiPreparedStateRef.current;
+      const alreadyPrepared =
+        requirement === "index" ? preparedState.index : preparedState.chat;
+      if (alreadyPrepared && currentModel) {
+        return currentModel;
+      }
+
+      if (aiPreparationPromiseRef.current) {
+        return await aiPreparationPromiseRef.current;
+      }
+
+      const task = (async () => {
+        showPersistentStatus("正在准备 AI 环境...");
+
+        let isRunning = await invoke<boolean>("check_ollama_status");
+        if (!isRunning) {
+          const privateVersion = await activatePrivateOllama(
+            false,
+            "正在准备应用私有 Ollama 引擎...",
+          );
+          if (!privateVersion) {
+            showPersistentStatus("正在启动应用内置 Ollama 引擎...");
+            await invoke("start_ollama");
+          }
+
+          isRunning = await waitForOllamaReady();
+          if (!isRunning) {
+            throw new Error("Ollama 启动超时，请稍后重试。");
+          }
+        }
+
+        try {
+          const currentVersion = await readOllamaVersion();
+          if (
+            compareOllamaVersions(
+              currentVersion,
+              OLLAMA_MIN_RECOMMENDED_VERSION,
+            ) < 0
+          ) {
+            const privateRuntime = await getPrivateOllamaRuntimeInfo();
+            const installedPrivateVersion =
+              getPrivateRuntimeVersion(privateRuntime);
+            const shouldRedownload =
+              !installedPrivateVersion ||
+              compareOllamaVersions(
+                installedPrivateVersion,
+                OLLAMA_MIN_RECOMMENDED_VERSION,
+              ) < 0;
+            const switchedVersion = await activatePrivateOllama(
+              shouldRedownload,
+              shouldRedownload
+                ? `检测到旧版 Ollama（当前 ${currentVersion}），正在更新应用私有引擎...`
+                : `检测到旧版 Ollama（当前 ${currentVersion}），正在切换到已安装的私有引擎...`,
+            );
+            if (!switchedVersion) {
+              showOllamaUpgradeStatus(
+                await buildOllamaUpgradeMessage(currentVersion),
+              );
+            } else {
+              await waitForOllamaReady();
+            }
+          }
+        } catch (error) {
+          console.warn(
+            "Failed to validate Ollama version before AI use:",
+            error,
+          );
+        }
+
+        const pullModel = async (name: string) => {
+          const mirror = resolveMirrorModel(name);
+          if (mirror) {
+            try {
+              showPersistentStatus(`正在通过镜像拉取 ${name}...`);
+              await invoke("pull_model_from_modelscope", {
+                name,
+                url: mirror.url,
+                filename: mirror.filename,
+              });
+              return;
+            } catch (error) {
+              console.error("Mirror pull failed:", error);
+            }
+          }
+          showPersistentStatus(`正在拉取模型 ${name}...`);
+          await invoke("pull_ollama_model", { name });
+        };
+
+        let models = await getInstalledModels();
+        let names = models.map((model) => model.name);
+
+        if (
+          requirement === "index" &&
+          !names.some((name) => name.includes(REQUIRED_MODELS.embedding))
+        ) {
+          await pullModel(REQUIRED_MODELS.embedding);
+        }
+        if (!names.some((name) => name.includes(REQUIRED_MODELS.chat))) {
+          await pullModel(REQUIRED_MODELS.chat);
+        }
+
+        models = await getInstalledModels();
+        names = models.map((model) => model.name);
+        const selectedModel =
+          names.find((name) => name === REQUIRED_MODELS.chat) ||
+          names.find((name) => name.includes(REQUIRED_MODELS.chat)) ||
+          names[0] ||
+          currentModel ||
+          REQUIRED_MODELS.chat;
+
+        setCurrentModel(selectedModel);
+        aiPreparedStateRef.current = {
+          chat: true,
+          index:
+            requirement === "index" ? true : aiPreparedStateRef.current.index,
+        };
+        clearStatus();
+        return selectedModel;
+      })();
+
+      aiPreparationPromiseRef.current = task;
+      try {
+        return await task;
+      } catch (error) {
+        const message = getErrorMessage(error);
+        if (isOllamaUpgradeRequiredError(message)) {
+          showOllamaUpgradeStatus(await buildOllamaUpgradeMessage());
+        } else {
+          showPersistentStatus(`AI 环境准备失败：${message}`, "error");
+        }
+        throw error;
+      } finally {
+        aiPreparationPromiseRef.current = null;
+      }
+    },
+    [
+      activatePrivateOllama,
+      buildOllamaUpgradeMessage,
+      clearStatus,
+      currentModel,
+      getInstalledModels,
+      getPrivateOllamaRuntimeInfo,
+      getPrivateRuntimeVersion,
+      readOllamaVersion,
+      showOllamaUpgradeStatus,
+      showPersistentStatus,
+      waitForOllamaReady,
+    ],
   );
 
   const handleChildStatus = useCallback(
@@ -667,7 +838,7 @@ function App() {
     };
   }, [showPersistentStatus]);
 
-  useEffect(() => {
+    useEffect(() => {
     let cancelled = false;
     let timerId: number | null = null;
     let cancelIdleCheck: (() => void) | null = null;
@@ -675,105 +846,39 @@ function App() {
     const runIdleCheck = async () => {
       try {
         const isRunning = await invoke<boolean>("check_ollama_status");
-        if (!isRunning) {
-          const privateVersion = await activatePrivateOllama(
-            false,
-            "正在准备应用私有 Ollama 引擎...",
-          );
-          if (!privateVersion) {
-            showPersistentStatus(
-              "应用私有 Ollama 引擎暂不可用，正在回退到随应用附带的内置引擎...",
-            );
-            await invoke("start_ollama");
-          }
-          await new Promise((resolve) => window.setTimeout(resolve, 3000));
-        }
+        if (!isRunning || cancelled) return;
 
-        let versionWarningMessage: string | null = null;
-        let switchedOllamaVersion: string | null = null;
-        try {
-          const currentVersion = await readOllamaVersion();
-          if (
-            compareOllamaVersions(
-              currentVersion,
-              OLLAMA_MIN_RECOMMENDED_VERSION,
-            ) < 0
-          ) {
-            const privateRuntime = await getPrivateOllamaRuntimeInfo();
-            const installedPrivateVersion =
-              getPrivateRuntimeVersion(privateRuntime);
-            const shouldRedownload =
-              !installedPrivateVersion ||
-              compareOllamaVersions(
-                installedPrivateVersion,
-                OLLAMA_MIN_RECOMMENDED_VERSION,
-              ) < 0;
-            switchedOllamaVersion = await activatePrivateOllama(
-              shouldRedownload,
-              shouldRedownload
-                ? `检测到旧版 Ollama（当前 ${currentVersion}），正在更新应用私有引擎...`
-                : `检测到旧版 Ollama（当前 ${currentVersion}），正在切换到已安装的私有引擎...`,
-            );
-            if (!switchedOllamaVersion) {
-              versionWarningMessage =
-                await buildOllamaUpgradeMessage(currentVersion);
-            }
-          }
-        } catch (error) {
-          console.warn("Failed to read Ollama version:", error);
-        }
+        const models = await getInstalledModels();
+        if (cancelled || models.length === 0 || currentModel) return;
 
-        const selectedModel =
-          names.find((name) => name === REQUIRED_MODELS.chat) ||
-          names.find((name) => name.includes(REQUIRED_MODELS.chat)) ||
-          names[0] ||
-          "";
-        setCurrentModel(selectedModel);
-        if (versionWarningMessage) {
-          showOllamaUpgradeStatus(versionWarningMessage);
-        } else if (switchedOllamaVersion) {
-          showTemporaryStatus(
-            `已切换到应用私有 Ollama ${switchedOllamaVersion}。`,
-            "info",
-            3200,
-          );
-        } else {
-          clearStatus();
-        }
+        const idleApi = window as typeof window & {
+          requestIdleCallback: (cb: IdleRequestCallback) => number;
+          cancelIdleCallback?: (id: number) => void;
+        };
+        const idleId = idleApi.requestIdleCallback(() => {
+          void runIdleCheck();
+        });
+        cancelIdleCheck = () => idleApi.cancelIdleCallback?.(idleId);
+        return;
       } catch (error) {
-        const message = getErrorMessage(error);
-        if (isOllamaUpgradeRequiredError(message)) {
-          const switchedVersion = await activatePrivateOllama(
-            true,
-            "检测到模型拉取需要更新 Ollama，正在更新应用私有引擎...",
-          );
-          if (switchedVersion) {
-            showTemporaryStatus(
-              `已切换到应用私有 Ollama ${switchedVersion}。`,
-              "info",
-              3200,
-            );
-            return;
-          }
-          showOllamaUpgradeStatus(await buildOllamaUpgradeMessage());
-          return;
-        }
-        showPersistentStatus(`AI 初始化失败：${message}`, "error");
+        console.warn("Idle check failed:", error);
       }
+      if (cancelled) return;
+      timerId = window.setTimeout(() => {
+        void runIdleCheck();
+      }, AI_IDLE_CHECK_DELAY_MS);
     };
 
-    void initOllama();
-  }, [
-    activatePrivateOllama,
-    buildOllamaUpgradeMessage,
-    clearStatus,
-    getPrivateOllamaRuntimeInfo,
-    getPrivateRuntimeVersion,
-    readOllamaVersion,
-    showOllamaUpgradeStatus,
-    showPersistentStatus,
-    showTemporaryStatus,
-  ]);
+    void runIdleCheck();
+
+    return () => {
+      cancelled = true;
+      if (timerId != null) {
+        window.clearTimeout(timerId);
+      }
+      cancelIdleCheck?.();
+    };
+  }, [currentModel, getInstalledModels]);
 
   const ingestWorkspacePath = async (path: string) => {
     setIsIngesting(true);
@@ -1183,8 +1288,8 @@ function App() {
           data={files.length > 0 ? files : undefined}
           activePath={activeFilePath}
           onSelect={handleFileSelect}
-        />
-      </>
+          onLoadChildren={loadDirectoryChildren}
+        />\r\n      </>
     ) : activeSidebarTool === "cards" ? (
       <div className="sidebar-tool-scroll">
         <div className="sidebar-tool-title">Knowledge Cards</div>
@@ -1712,3 +1817,11 @@ function App() {
 }
 
 export default App;
+
+
+
+
+
+
+
+

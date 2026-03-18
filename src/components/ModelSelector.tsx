@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+﻿import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { ChevronDown, ChevronUp, Download, RefreshCw } from "lucide-react";
@@ -208,6 +208,7 @@ const isInstalled = (target: string, installed: OllamaModel[]) => {
     return m.name === target || installedBase === targetBase;
   });
 };
+const canUseMirror = (target: string) => Boolean(resolveMirrorModel(target));
 
 export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onModelChange, onStatus, variant = "full" }) => {
   const [models, setModels] = useState<OllamaModel[]>([]);
@@ -687,3 +688,4 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
     </div>
   );
 };
+
