@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web-and-mobile:
+    name: Web And Mobile Checks
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck web app
+        run: pnpm typecheck
+
+      - name: Build web app
+        run: pnpm build
+
+      - name: Typecheck mobile app
+        run: pnpm --dir mobile-app typecheck
+
+  tauri-backend:
+    name: Tauri Backend Check
+    runs-on: windows-latest
+    env:
+      OLLAMA_VERSION: v0.17.7
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri -> target
+
+      - name: Cache Ollama sidecar
+        id: cache-ollama-sidecar
+        uses: actions/cache@v4
+        with:
+          path: src-tauri/binaries/ollama-x86_64-pc-windows-msvc.exe
+          key: ollama-sidecar-windows-amd64-${{ env.OLLAMA_VERSION }}
+
+      - name: Download Ollama sidecar
+        if: steps.cache-ollama-sidecar.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $binDir = "src-tauri\binaries"
+          $archivePath = Join-Path $env:RUNNER_TEMP "ollama-windows-amd64.zip"
+          $extractDir = Join-Path $env:RUNNER_TEMP "ollama-extract"
+          $downloadUrl = "https://github.com/ollama/ollama/releases/download/$env:OLLAMA_VERSION/ollama-windows-amd64.zip"
+          New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+          Remove-Item $archivePath -Force -ErrorAction SilentlyContinue
+          Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+          Invoke-WebRequest -Uri $downloadUrl -OutFile $archivePath
+          Expand-Archive -Path $archivePath -DestinationPath $extractDir -Force
+          $sourceExe = Get-ChildItem -Path $extractDir -Recurse -Filter "ollama.exe" | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $sourceExe) {
+            throw "ollama.exe not found in downloaded archive."
+          }
+          Copy-Item $sourceExe "src-tauri\binaries\ollama-x86_64-pc-windows-msvc.exe" -Force
+
+      - name: Cargo check
+        run: cargo check --manifest-path src-tauri/Cargo.toml
