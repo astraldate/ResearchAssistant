@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
+  Bot,
   BookOpen,
   ChevronDown,
   ChevronUp,
@@ -33,6 +34,7 @@ type IngestMode = "overwrite" | "incremental";
 type SidebarTool = "workspace" | "citations" | "notes" | "knowledge" | "cards";
 type StatusTone = "info" | "error";
 type AiRequirement = "chat" | "index";
+type LeftDrawerView = "workspace" | "models" | null;
 
 interface InferenceSettings {
   mode: InferenceMode;
@@ -178,8 +180,10 @@ const CHAT_SESSION_KEY = "ra_chat_session_v3";
 
 const isPdfFile = (path: string | null | undefined) =>
   Boolean(path && /\.pdf$/i.test(path));
-const DEFAULT_TWO_PANEL_LAYOUT = { sidebar: 24, main: 76 };
-const DEFAULT_THREE_PANEL_LAYOUT = { sidebar: 20, main: 35, pdf: 45 };
+const DEFAULT_TWO_PANEL_LAYOUT = { main: 55, pdf: 45 };
+const DEFAULT_WORKSPACE_DRAWER_WIDTH = 320;
+const MIN_WORKSPACE_DRAWER_WIDTH = 220;
+const MAX_WORKSPACE_DRAWER_WIDTH = 520;
 const AI_IDLE_CHECK_DELAY_MS = 1200;
 const logTiming = (label: string, startedAt: number) => {
   const duration = Math.round(performance.now() - startedAt);
@@ -260,6 +264,13 @@ function App() {
   const [pdfPage, setPdfPage] = useState(1);
   const [isPdfDockVisible, setIsPdfDockVisible] = useState(false);
   const [isPdfFocusMode, setIsPdfFocusMode] = useState(false);
+  const [activeLeftDrawer, setActiveLeftDrawer] =
+    useState<LeftDrawerView>("workspace");
+  const [workspaceDrawerWidth, setWorkspaceDrawerWidth] = useState(
+    DEFAULT_WORKSPACE_DRAWER_WIDTH,
+  );
+  const [isWorkspaceDrawerResizing, setIsWorkspaceDrawerResizing] =
+    useState(false);
   const [currentModel, setCurrentModel] = useState("");
   const [activeSidebarTool, setActiveSidebarTool] =
     useState<SidebarTool>("workspace");
@@ -299,8 +310,7 @@ function App() {
 
   const statusTimerRef = useRef<number | null>(null);
   const previousPdfPathRef = useRef<string | null>(null);
-  const focusRestoreLayoutRef = useRef(DEFAULT_THREE_PANEL_LAYOUT);
-  const sidebarPanelRef = useRef<PanelImperativeHandle | null>(null);
+  const focusRestoreLayoutRef = useRef(DEFAULT_TWO_PANEL_LAYOUT);
   const mainPanelRef = useRef<PanelImperativeHandle | null>(null);
   const pdfPanelRef = useRef<PanelImperativeHandle | null>(null);
   const aiPreparationPromiseRef = useRef<Promise<string> | null>(null);
@@ -322,6 +332,65 @@ function App() {
   );
 
   const stageLabel = STAGE_LABELS[ingestProgress?.stage || ""] || "处理中";
+  const isWorkspaceDrawerOpen = activeLeftDrawer === "workspace";
+  const isModelDrawerOpen = activeLeftDrawer === "models";
+  const isLeftDrawerOpen = activeLeftDrawer !== null;
+
+  const clampWorkspaceDrawerWidth = useCallback((nextWidth: number) => {
+    const viewportLimit = Math.max(
+      MIN_WORKSPACE_DRAWER_WIDTH,
+      window.innerWidth - 320,
+    );
+    const maxWidth = Math.min(MAX_WORKSPACE_DRAWER_WIDTH, viewportLimit);
+    return Math.min(maxWidth, Math.max(MIN_WORKSPACE_DRAWER_WIDTH, nextWidth));
+  }, []);
+
+  const handleToggleWorkspaceDrawer = useCallback(() => {
+    if (isPdfFocusMode) return;
+    setActiveLeftDrawer((current) =>
+      current === "workspace" ? null : "workspace",
+    );
+  }, [isPdfFocusMode]);
+
+  const handleToggleModelDrawer = useCallback(() => {
+    if (isPdfFocusMode) return;
+    setActiveLeftDrawer((current) => (current === "models" ? null : "models"));
+  }, [isPdfFocusMode]);
+
+  const handleWorkspaceDrawerResizeStart = useCallback(
+    (clientX: number) => {
+      if (!isLeftDrawerOpen || isPdfFocusMode) return;
+
+      const startWidth = workspaceDrawerWidth;
+      setIsWorkspaceDrawerResizing(true);
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+
+      const handlePointerMove = (event: PointerEvent) => {
+        const deltaX = event.clientX - clientX;
+        setWorkspaceDrawerWidth(
+          clampWorkspaceDrawerWidth(startWidth + deltaX),
+        );
+      };
+
+      const handlePointerUp = () => {
+        setIsWorkspaceDrawerResizing(false);
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+        window.removeEventListener("pointermove", handlePointerMove);
+        window.removeEventListener("pointerup", handlePointerUp);
+      };
+
+      window.addEventListener("pointermove", handlePointerMove);
+      window.addEventListener("pointerup", handlePointerUp);
+    },
+    [
+      clampWorkspaceDrawerWidth,
+      isPdfFocusMode,
+      isLeftDrawerOpen,
+      workspaceDrawerWidth,
+    ],
+  );
 
   const clearStatusTimer = useCallback(() => {
     if (statusTimerRef.current !== null) {
@@ -695,6 +764,17 @@ function App() {
   useEffect(() => () => clearStatusTimer(), []);
 
   useEffect(() => {
+    const syncDrawerWidth = () => {
+      setWorkspaceDrawerWidth((current) =>
+        clampWorkspaceDrawerWidth(current),
+      );
+    };
+
+    window.addEventListener("resize", syncDrawerWidth);
+    return () => window.removeEventListener("resize", syncDrawerWidth);
+  }, [clampWorkspaceDrawerWidth]);
+
+  useEffect(() => {
     const storedMode = localStorage.getItem("ra_ingest_mode_v1");
     if (storedMode === "overwrite" || storedMode === "incremental") {
       setIngestMode(storedMode);
@@ -1061,25 +1141,24 @@ function App() {
 
   useEffect(() => {
     if (!activePdfPath) {
-      const restoredSidebarSize = isPdfFocusMode
-        ? focusRestoreLayoutRef.current.sidebar
-        : (sidebarPanelRef.current?.getSize().asPercentage ??
-          DEFAULT_TWO_PANEL_LAYOUT.sidebar);
       if (isPdfFocusMode) {
         setIsPdfFocusMode(false);
       }
-      focusRestoreLayoutRef.current = DEFAULT_THREE_PANEL_LAYOUT;
+      focusRestoreLayoutRef.current = DEFAULT_TWO_PANEL_LAYOUT;
       previousPdfPathRef.current = null;
       setIsPdfDockVisible(false);
       window.requestAnimationFrame(() => {
-        sidebarPanelRef.current?.resize(`${restoredSidebarSize}%`);
-        mainPanelRef.current?.resize(`${100 - restoredSidebarSize}%`);
+        mainPanelRef.current?.resize("100%");
       });
       return;
     }
     if (previousPdfPathRef.current !== activePdfPath) {
       setIsPdfDockVisible(true);
       previousPdfPathRef.current = activePdfPath;
+      window.requestAnimationFrame(() => {
+        mainPanelRef.current?.resize(`${DEFAULT_TWO_PANEL_LAYOUT.main}%`);
+        pdfPanelRef.current?.resize(`${DEFAULT_TWO_PANEL_LAYOUT.pdf}%`);
+      });
     }
   }, [activePdfPath, isPdfFocusMode]);
 
@@ -1115,7 +1194,6 @@ function App() {
       const restored = focusRestoreLayoutRef.current;
       setIsPdfFocusMode(false);
       window.requestAnimationFrame(() => {
-        sidebarPanelRef.current?.resize(`${restored.sidebar}%`);
         mainPanelRef.current?.resize(`${restored.main}%`);
         pdfPanelRef.current?.resize(`${restored.pdf}%`);
       });
@@ -1123,20 +1201,16 @@ function App() {
     }
 
     focusRestoreLayoutRef.current = {
-      sidebar:
-        sidebarPanelRef.current?.getSize().asPercentage ??
-        DEFAULT_THREE_PANEL_LAYOUT.sidebar,
       main:
         mainPanelRef.current?.getSize().asPercentage ??
-        DEFAULT_THREE_PANEL_LAYOUT.main,
+        DEFAULT_TWO_PANEL_LAYOUT.main,
       pdf:
         pdfPanelRef.current?.getSize().asPercentage ??
-        DEFAULT_THREE_PANEL_LAYOUT.pdf,
+        DEFAULT_TWO_PANEL_LAYOUT.pdf,
     };
 
     setIsPdfFocusMode(true);
     window.requestAnimationFrame(() => {
-      sidebarPanelRef.current?.resize("0%");
       mainPanelRef.current?.resize("0%");
       mainPanelRef.current?.resize("100%");
       pdfPanelRef.current?.resize("0%");
@@ -1144,18 +1218,13 @@ function App() {
   }, [activePdfPath, isPdfDockVisible, isPdfFocusMode]);
 
   const handleClosePdfDock = useCallback(() => {
-    const sidebarSize = isPdfFocusMode
-      ? focusRestoreLayoutRef.current.sidebar
-      : (sidebarPanelRef.current?.getSize().asPercentage ??
-        DEFAULT_TWO_PANEL_LAYOUT.sidebar);
     setIsPdfFocusMode(false);
-    focusRestoreLayoutRef.current = DEFAULT_THREE_PANEL_LAYOUT;
+    focusRestoreLayoutRef.current = DEFAULT_TWO_PANEL_LAYOUT;
     setIsPdfDockVisible(false);
     window.requestAnimationFrame(() => {
-      sidebarPanelRef.current?.resize(`${sidebarSize}%`);
-      mainPanelRef.current?.resize(`${100 - sidebarSize}%`);
+      mainPanelRef.current?.resize("100%");
     });
-  }, [isPdfFocusMode]);
+  }, []);
 
   const handleKnowledgeSearch = useCallback(async () => {
     const query = knowledgeQuery.trim();
@@ -1497,6 +1566,100 @@ function App() {
         : statusBanner.message
     : "";
 
+  const leftDrawer = (
+    <aside
+      className={`workspace-drawer ${isLeftDrawerOpen && !isPdfFocusMode ? "open" : ""} ${isWorkspaceDrawerResizing ? "resizing" : ""} ${isModelDrawerOpen ? "model-drawer" : ""}`}
+      style={
+        isLeftDrawerOpen && !isPdfFocusMode
+          ? {
+              width: `${workspaceDrawerWidth}px`,
+              flexBasis: `${workspaceDrawerWidth}px`,
+            }
+          : undefined
+      }
+    >
+      {isWorkspaceDrawerOpen ? (
+        <div className="sidebar">
+          <div className="sidebar-header">
+            <span>工作空间</span>
+            <div className="sidebar-actions">
+              <button
+                className="icon-button"
+                onClick={() => void handleImportZotero()}
+                title="自动导入 Zotero PDF"
+              >
+                <BookOpen size={16} />
+              </button>
+              <button
+                className="icon-button"
+                onClick={() => void handleOpenFiles()}
+                title="导入文件"
+              >
+                <FilePlus size={16} />
+              </button>
+              <button
+                className="icon-button"
+                onClick={() => void handleOpenFolder()}
+                title="导入文件夹"
+              >
+                <FolderOpen size={16} />
+              </button>
+            </div>
+          </div>
+
+          {isIngesting && (
+            <div className="ingest-panel">
+              <div className="ingest-title">{stageLabel}</div>
+              <div className="ingest-subtitle">
+                {ingestProgress?.total
+                  ? `${ingestProgress.current}/${ingestProgress.total}`
+                  : "准备中..."}
+              </div>
+              <div className="ingest-progress-track">
+                <div
+                  className="ingest-progress-fill"
+                  style={{ width: `${progressPercent}%` }}
+                />
+              </div>
+            </div>
+          )}
+
+          {workspacePath && (
+            <div className="workspace-path" title={workspacePath}>
+              {workspacePath}
+            </div>
+          )}
+
+          <FileTree
+            data={files.length > 0 ? files : undefined}
+            activePath={activeFilePath}
+            onSelect={handleFileSelect}
+            onLoadChildren={loadDirectoryChildren}
+          />
+        </div>
+      ) : (
+        <div className="sidebar model-drawer-sidebar">
+          <ModelSelector
+            currentModel={currentModel}
+            onModelChange={setCurrentModel}
+            onStatus={handleChildStatus}
+            variant="drawer"
+          />
+        </div>
+      )}
+      <div
+        className="workspace-drawer-resize-handle"
+        role="separator"
+        aria-label="调整工作空间宽度"
+        aria-orientation="vertical"
+        onPointerDown={(event) => {
+          event.preventDefault();
+          handleWorkspaceDrawerResizeStart(event.clientX);
+        }}
+      />
+    </aside>
+  );
+
   return (
     <div className="app-shell">
       {statusBanner && (
@@ -1554,10 +1717,8 @@ function App() {
         </div>
       )}
 
-      <Group
-        orientation="horizontal"
-        className="app-panels"
-        id="app-main-panels"
+      <div
+        className={`app-layout-shell ${isPdfFocusMode ? "pdf-focus-mode" : ""}`}
       >
         <Panel
           panelRef={sidebarPanelRef}

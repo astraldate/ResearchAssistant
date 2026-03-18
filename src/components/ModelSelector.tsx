@@ -1,7 +1,18 @@
 ﻿import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { ChevronDown, ChevronUp, Download, RefreshCw } from "lucide-react";
+import {
+  BrainCircuit,
+  ChevronDown,
+  ChevronUp,
+  Code2,
+  Download,
+  ExternalLink,
+  Image,
+  RefreshCw,
+  Sparkles,
+  Waypoints,
+} from "lucide-react";
 import { resolveMirrorModel } from "../utils/modelMirrors";
 
 interface OllamaModel {
@@ -184,6 +195,22 @@ const CATEGORY_ORDER: ModelCategory[] = [
   "embedding",
 ];
 
+const renderCategoryIcon = (category: ModelCategory) => {
+  switch (category) {
+    case "reasoning":
+      return <BrainCircuit size={14} />;
+    case "coding":
+      return <Code2 size={14} />;
+    case "vision":
+      return <Image size={14} />;
+    case "embedding":
+      return <Waypoints size={14} />;
+    case "general":
+    default:
+      return <Sparkles size={14} />;
+  }
+};
+
 const resolvePulledModelName = (
   requested: string,
   list: OllamaModel[],
@@ -217,9 +244,13 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
   const [selectedRecommended, setSelectedRecommended] = useState<string>(
     RECOMMENDED_MODELS[0]?.name ?? "",
   );
+  const [activeCategory, setActiveCategory] = useState<ModelCategory>(
+    RECOMMENDED_MODELS[0]?.category ?? "general",
+  );
   const [isPulling, setIsPulling] = useState(false);
   const [pullProgress, setPullProgress] = useState<PullProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const manualInputRef = useRef<HTMLInputElement | null>(null);
 
   const groupedRecommended = useMemo(() => {
     return CATEGORY_ORDER.map((category) => ({
@@ -232,6 +263,32 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
     () => RECOMMENDED_MODELS.find((item) => item.name === selectedRecommended),
     [selectedRecommended],
   );
+
+  const currentModelSummary = useMemo(() => {
+    if (!currentModel) return null;
+    return (
+      models.find((model) => model.name === currentModel) ||
+      models.find((model) =>
+        model.name.startsWith(`${currentModel.split(":")[0]}:`),
+      ) ||
+      null
+    );
+  }, [currentModel, models]);
+
+  const visibleRecommended = useMemo(
+    () =>
+      groupedRecommended.find((group) => group.category === activeCategory)
+        ?.items ?? [],
+    [activeCategory, groupedRecommended],
+  );
+
+  const pullProgressPercent =
+    pullProgress?.total && pullProgress.completed
+      ? Math.min(
+          100,
+          Math.round((pullProgress.completed / pullProgress.total) * 100),
+        )
+      : 0;
 
   const fetchModels = useCallback(async (): Promise<OllamaModel[]> => {
     try {
@@ -333,11 +390,51 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
     await pullModelByName(newModelName);
   };
 
-  const handlePullSelectedModel = async () => {
-    if (!selectedRecommended) return;
-    setNewModelName(selectedRecommended);
-    await pullModelByName(selectedRecommended);
-  };
+  const focusManualInput = useCallback(() => {
+    window.requestAnimationFrame(() => {
+      const input = manualInputRef.current;
+      if (!input) return;
+      input.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      input.focus();
+      input.select();
+    });
+  }, []);
+
+  const fillManualModelName = useCallback(
+    (value: string | null | undefined) => {
+      const nextValue = value?.trim();
+      if (!nextValue) return;
+      setNewModelName(nextValue);
+      focusManualInput();
+    },
+    [focusManualInput],
+  );
+
+  const handleSelectRecommended = useCallback((model: RecommendedModel) => {
+    setSelectedRecommended(model.name);
+    setActiveCategory(model.category);
+    setNewModelName(model.name);
+  }, []);
+
+  const handleUseInstalledModel = useCallback(
+    (name: string) => {
+      onModelChange(name);
+      setIsOpen(false);
+    },
+    [onModelChange],
+  );
+
+  const handleApplyRecommended = useCallback(
+    async (model: RecommendedModel) => {
+      handleSelectRecommended(model);
+      if (isInstalled(model.name, models)) {
+        onModelChange(resolvePulledModelName(model.name, models));
+        return;
+      }
+      await pullModelByName(model.name);
+    },
+    [handleSelectRecommended, models, onModelChange],
+  );
 
   const formatBytes = (bytes: number) => {
     if (bytes === 0) return "0 B";
@@ -389,302 +486,277 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
 
   return (
     <div
-      className="model-selector-container"
-      style={{
-        padding: "16px",
-        borderTop: "1px solid var(--border-color)",
-        flexShrink: 0,
-        position: "relative",
-        zIndex: 1,
-        overflowX: "hidden",
-      }}
+      className={`model-selector-container ${variant === "drawer" ? "drawer-mode" : "compact-mode"}`}
     >
-      <div
-        className="model-selector-header"
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: "8px",
-        }}
-      >
-        <span
-          style={{
-            fontSize: "0.85rem",
-            fontWeight: 600,
-            color: "var(--text-secondary)",
-          }}
-        >
-          {ZH.model}
-        </span>
-        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+      <div className="model-selector-shell">
+        <div className="model-selector-topbar">
+          <div>
+            <div className="model-selector-eyebrow">模型中心</div>
+            <div className="model-selector-heading">切换与拉取本地模型</div>
+            <div className="model-selector-caption">
+              当前共检测到 {models.length} 个已安装模型
+            </div>
+          </div>
           <button
+            type="button"
+            className="model-toolbar-button"
             onClick={() => void fetchModels()}
-            style={{
-              background: "none",
-              border: "none",
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              padding: "2px",
-            }}
             title={ZH.refresh}
           >
-            <RefreshCw size={14} />
-          </button>
-          <button
-            onClick={() => setIsOpen(!isOpen)}
-            style={{
-              background: "none",
-              border: "none",
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              gap: "4px",
-            }}
-          >
-            <span style={{ fontSize: "0.9rem" }}>
-              {currentModel || ZH.selectModel}
-            </span>
-            {isOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-          </button>
-        </div>
-      </div>
-
-      {isOpen && (
-        <div
-          className="model-list"
-          style={{
-            marginBottom: "12px",
-            maxHeight: "200px",
-            overflowY: "auto",
-            border: "1px solid var(--border-color)",
-            borderRadius: "4px",
-          }}
-        >
-          {models.map((model) => (
-            <div
-              key={model.name}
-              onClick={() => {
-                onModelChange(model.name);
-                setIsOpen(false);
-              }}
-              style={{
-                padding: "8px",
-                cursor: "pointer",
-                backgroundColor:
-                  currentModel === model.name
-                    ? "var(--bg-tertiary)"
-                    : "transparent",
-                fontSize: "0.9rem",
-              }}
-            >
-              {model.name}{" "}
-              <span style={{ color: "#999", fontSize: "0.8em" }}>
-                ({formatBytes(model.size)})
-              </span>
-            </div>
-          ))}
-          {models.length === 0 && (
-            <div style={{ padding: "8px", color: "#999" }}>{ZH.noModels}</div>
-          )}
-        </div>
-      )}
-
-      <div
-        style={{
-          marginBottom: "10px",
-          padding: "8px",
-          border: "1px solid var(--border-color)",
-          borderRadius: "6px",
-          background: "var(--bg-secondary)",
-        }}
-      >
-        <div
-          style={{
-            fontSize: "0.8rem",
-            color: "var(--text-secondary)",
-            marginBottom: "6px",
-          }}
-        >
-          {ZH.recTitle}
-        </div>
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "minmax(0, 1fr) auto auto",
-            gap: "8px",
-            alignItems: "center",
-          }}
-        >
-          <select
-            value={selectedRecommended}
-            onChange={(event) => setSelectedRecommended(event.target.value)}
-            style={{
-              minWidth: 0,
-              width: "100%",
-              padding: "6px",
-              borderRadius: "4px",
-              border: "1px solid var(--border-color)",
-              background: "var(--bg-primary)",
-              color: "var(--text-primary)",
-              fontSize: "0.9rem",
-            }}
-          >
-            {groupedRecommended.map((group) => (
-              <optgroup
-                key={group.category}
-                label={CATEGORY_LABELS[group.category]}
-              >
-                {group.items.map((item) => (
-                  <option key={item.name} value={item.name}>
-                    {item.name}{" "}
-                    {isInstalled(item.name, models) ? ZH.installed : ""}
-                    {!isInstalled(item.name, models) && canUseMirror(item.name)
-                      ? ` ${ZH.mirrorAvailable}`
-                      : ""}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </select>
-          <button
-            onClick={() => setNewModelName(selectedRecommended)}
-            style={{
-              padding: "6px 10px",
-              borderRadius: "4px",
-              border: "1px solid var(--border-color)",
-              background: "var(--bg-primary)",
-              cursor: "pointer",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {ZH.fill}
-          </button>
-          <button
-            onClick={handlePullSelectedModel}
-            disabled={isPulling || !selectedRecommended}
-            style={{
-              padding: "6px 10px",
-              borderRadius: "4px",
-              border: "1px solid var(--border-color)",
-              background: "var(--bg-primary)",
-              cursor: isPulling ? "not-allowed" : "pointer",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {canUseMirror(selectedRecommended)
-              ? ZH.pullMirror
-              : ZH.pullSelected}
+            <RefreshCw size={16} />
           </button>
         </div>
 
-        {selectedRecommendedMeta && (
-          <div
-            style={{
-              marginTop: "6px",
-              fontSize: "0.78rem",
-              color: "var(--text-secondary)",
-              lineHeight: 1.4,
-            }}
-          >
-            {selectedRecommendedMeta.summary}{" "}
-            {selectedRecommendedMeta.approxSize}
-            <br />
-            {ZH.source}
-            <a
-              href={selectedRecommendedMeta.sourceUrl}
-              target="_blank"
-              rel="noreferrer"
-              style={{ color: "var(--text-accent)", textDecoration: "none" }}
-            >
-              Ollama Library
-            </a>
-            {` (${ZH.checkedAt}${selectedRecommendedMeta.checkedAt})`}
+        <section className="model-current-card">
+          <div className="model-card-label">当前模型</div>
+          <div className="model-current-name">
+            {currentModelSummary?.name || currentModel || ZH.selectModel}
           </div>
-        )}
-      </div>
-
-      <div
-        className="pull-model-form"
-        style={{
-          display: "grid",
-          gridTemplateColumns: "minmax(0, 1fr) auto",
-          gap: "8px",
-        }}
-      >
-        <input
-          type="text"
-          placeholder={ZH.pullPlaceholder}
-          value={newModelName}
-          onChange={(e) => setNewModelName(e.target.value)}
-          disabled={isPulling}
-          style={{
-            minWidth: 0,
-            padding: "6px",
-            borderRadius: "4px",
-            border: "1px solid var(--border-color)",
-            fontSize: "0.9rem",
-          }}
-        />
-        <button
-          onClick={handlePullModel}
-          disabled={isPulling || !newModelName.trim()}
-          style={{
-            padding: "6px 10px",
-            borderRadius: "4px",
-            border: "1px solid var(--border-color)",
-            background: "var(--bg-secondary)",
-            cursor: isPulling ? "not-allowed" : "pointer",
-          }}
-        >
-          {isPulling ? (
-            <RefreshCw size={16} className="spin" />
-          ) : (
-            <Download size={16} />
-          )}
-        </button>
-      </div>
-
-      {pullProgress && (
-        <div
-          className="pull-progress"
-          style={{
-            marginTop: "8px",
-            fontSize: "0.8rem",
-            color: "var(--text-secondary)",
-          }}
-        >
-          <div>{pullProgress.status}</div>
-          {pullProgress.total && pullProgress.completed && (
-            <div
-              style={{
-                width: "100%",
-                height: "4px",
-                background: "#eee",
-                marginTop: "4px",
-                borderRadius: "2px",
-              }}
+          <div className="model-current-meta">
+            <span>
+              {currentModelSummary
+                ? formatBytes(currentModelSummary.size)
+                : "尚未加载大小"}
+            </span>
+            <span>{models.length} 个已安装</span>
+            <span
+              className={`model-state-badge ${currentModelSummary ? "installed" : "idle"}`}
             >
-              <div
-                style={{
-                  width: `${(pullProgress.completed / pullProgress.total) * 100}%`,
-                  height: "100%",
-                  background: "var(--text-accent)",
-                  borderRadius: "2px",
-                  transition: "width 0.2s",
-                }}
-              />
+              {currentModelSummary ? "已就绪" : "待选择"}
+            </span>
+          </div>
+          <div className="model-current-actions">
+            <button
+              type="button"
+              className="model-secondary-button"
+              onClick={() => setIsOpen((current) => !current)}
+            >
+              <span>{isOpen ? "收起已安装列表" : "切换已安装模型"}</span>
+              {isOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+            </button>
+            {(currentModelSummary?.name || currentModel) && (
+              <button
+                type="button"
+                className="model-secondary-button"
+                onClick={() =>
+                  fillManualModelName(currentModelSummary?.name || currentModel)
+                }
+              >
+                填入手动框
+              </button>
+            )}
+          </div>
+        </section>
+
+        {isOpen && (
+          <section className="model-section model-installed-section">
+            <div className="model-section-heading-row">
+              <div>
+                <div className="model-section-title">已安装模型</div>
+                <div className="model-section-subtitle">
+                  点击即可切换当前正在使用的模型
+                </div>
+              </div>
+            </div>
+            <div className="model-installed-list">
+              {models.length > 0 ? (
+                models.map((model) => (
+                  <button
+                    key={model.name}
+                    type="button"
+                    className={`model-installed-item ${currentModelSummary?.name === model.name ? "active" : ""}`}
+                    onClick={() => handleUseInstalledModel(model.name)}
+                  >
+                    <span className="model-installed-name">{model.name}</span>
+                    <span className="model-installed-size">
+                      {formatBytes(model.size)}
+                    </span>
+                  </button>
+                ))
+              ) : (
+                <div className="model-empty-state">{ZH.noModels}</div>
+              )}
+            </div>
+          </section>
+        )}
+
+        <section className="model-section">
+          <div className="model-section-heading-row">
+            <div>
+              <div className="model-section-title">推荐模型</div>
+              <div className="model-section-subtitle">
+                先选适合的任务类型，再决定直接使用还是拉取安装
+              </div>
+            </div>
+          </div>
+
+          <div className="model-category-tabs">
+            {CATEGORY_ORDER.map((category) => (
+              <button
+                key={category}
+                type="button"
+                className={`model-category-tab ${activeCategory === category ? "active" : ""}`}
+                onClick={() => setActiveCategory(category)}
+                aria-pressed={activeCategory === category}
+              >
+                {renderCategoryIcon(category)}
+                <span>{CATEGORY_LABELS[category]}</span>
+              </button>
+            ))}
+          </div>
+
+          <div className="model-recommend-grid">
+            {visibleRecommended.map((item) => {
+              const installed = isInstalled(item.name, models);
+              const mirrorReady = !installed && canUseMirror(item.name);
+              const selected = selectedRecommended === item.name;
+
+              return (
+                <article
+                  key={item.name}
+                  className={`model-recommend-card ${selected ? "selected" : ""}`}
+                  onClick={() => handleSelectRecommended(item)}
+                >
+                  <div className="model-recommend-topline">
+                    <span className={`model-category-chip ${item.category}`}>
+                      {renderCategoryIcon(item.category)}
+                      <span>{CATEGORY_LABELS[item.category]}</span>
+                    </span>
+                    <span
+                      className={`model-state-badge ${installed ? "installed" : mirrorReady ? "mirror" : "plain"}`}
+                    >
+                      {installed
+                        ? "已安装"
+                        : mirrorReady
+                          ? "可镜像"
+                          : "可拉取"}
+                    </span>
+                  </div>
+
+                  <div className="model-recommend-name">{item.name}</div>
+                  <p className="model-recommend-summary">{item.summary}</p>
+
+                  <div className="model-recommend-meta">
+                    <span>{item.approxSize}</span>
+                    <span>
+                      {ZH.checkedAt}
+                      {item.checkedAt}
+                    </span>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+
+          {selectedRecommendedMeta && (
+            <div className="model-selected-panel">
+              <div className="model-selected-panel-main">
+                <div className="model-selected-label">已选推荐</div>
+                <div className="model-selected-name">
+                  {selectedRecommendedMeta.name}
+                </div>
+                <div className="model-selected-meta">
+                  <span>{selectedRecommendedMeta.approxSize}</span>
+                  <span>
+                    {ZH.checkedAt}
+                    {selectedRecommendedMeta.checkedAt}
+                  </span>
+                  <a
+                    className="model-source-link"
+                    href={selectedRecommendedMeta.sourceUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    <span>Ollama Library</span>
+                    <ExternalLink size={12} />
+                  </a>
+                </div>
+                <p className="model-recommend-summary">
+                  {selectedRecommendedMeta.summary}
+                </p>
+              </div>
+              <div className="model-selected-actions">
+                <button
+                  type="button"
+                  className="model-secondary-button"
+                  onClick={() => fillManualModelName(selectedRecommendedMeta.name)}
+                >
+                  填入手动框
+                </button>
+                <button
+                  type="button"
+                  className="model-primary-button"
+                  disabled={isPulling}
+                  onClick={() => void handleApplyRecommended(selectedRecommendedMeta)}
+                >
+                  {isInstalled(selectedRecommendedMeta.name, models)
+                    ? "直接使用"
+                    : canUseMirror(selectedRecommendedMeta.name)
+                      ? "镜像拉取"
+                      : "拉取使用"}
+                </button>
+              </div>
             </div>
           )}
-        </div>
-      )}
+        </section>
 
-      {error && (
-        <div style={{ marginTop: "8px", fontSize: "0.8rem", color: "#dc3545" }}>
-          {error}
-        </div>
-      )}
+        <section className="model-section model-manual-section">
+          <div className="model-section-heading-row">
+            <div>
+              <div className="model-section-title">手动拉取</div>
+              <div className="model-section-subtitle">
+                适合输入自定义模型名，比如 `qwen3:8b`
+              </div>
+            </div>
+            {selectedRecommendedMeta && (
+              <span className="model-manual-hint">
+                已带入：{selectedRecommendedMeta.name}
+              </span>
+            )}
+          </div>
+
+          <div className="model-manual-form">
+            <input
+              ref={manualInputRef}
+              className="model-manual-input"
+              type="text"
+              placeholder={ZH.pullPlaceholder}
+              value={newModelName}
+              onChange={(event) => setNewModelName(event.target.value)}
+              disabled={isPulling}
+            />
+            <button
+              type="button"
+              className="model-primary-button model-primary-button-inline"
+              onClick={() => void handlePullModel()}
+              disabled={isPulling || !newModelName.trim()}
+            >
+              {isPulling ? (
+                <RefreshCw size={16} className="spin" />
+              ) : (
+                <Download size={16} />
+              )}
+              <span>{isPulling ? "拉取中" : "开始拉取"}</span>
+            </button>
+          </div>
+        </section>
+
+        {pullProgress && (
+          <section className="model-progress-card">
+            <div className="model-progress-label">{pullProgress.status}</div>
+            {pullProgressPercent > 0 && (
+              <div className="model-progress-track">
+                <div
+                  className="model-progress-fill"
+                  style={{ width: `${pullProgressPercent}%` }}
+                />
+              </div>
+            )}
+          </section>
+        )}
+
+        {error && <div className="model-error-banner">{error}</div>}
+      </div>
     </div>
   );
 };
