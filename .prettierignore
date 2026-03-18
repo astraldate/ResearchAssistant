@@ -1,0 +1,8 @@
+dist
+node_modules
+.pnpm
+.pnpm-store
+src-tauri/target
+mobile-app/android/build
+mobile-app/android/app/build
+mobile-app/dist
