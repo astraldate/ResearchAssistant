@@ -1,4 +1,4 @@
-﻿import React, { useCallback, useEffect, useMemo, useState } from "react";
+﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -33,7 +33,7 @@ interface ModelSelectorProps {
   currentModel: string;
   onModelChange: (model: string) => void;
   onStatus?: (message: string, tone?: "info" | "error", persistent?: boolean) => void;
-  variant?: "full" | "compact";
+  variant?: "full" | "compact" | "drawer";
 }
 
 type ModelCategory =
@@ -390,6 +390,11 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
     await pullModelByName(newModelName);
   };
 
+  const handlePullSelectedModel = useCallback(async () => {
+    if (!selectedRecommended) return;
+    await pullModelByName(selectedRecommended);
+  }, [pullModelByName, selectedRecommended]);
+
   const focusManualInput = useCallback(() => {
     window.requestAnimationFrame(() => {
       const input = manualInputRef.current;
@@ -486,7 +491,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
 
   return (
     <div
-      className={`model-selector-container ${variant === "drawer" ? "drawer-mode" : "compact-mode"}`}
+      className={`model-selector-container ${variant === "drawer" ? "drawer-mode" : "full-mode"}` }
     >
       <div className="model-selector-shell">
         <div className="model-selector-topbar">
@@ -760,4 +765,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
     </div>
   );
 };
+
+
+
 
