@@ -16,6 +16,8 @@ jobs:
   windows-tauri-release:
     name: Build And Release Windows Desktop
     runs-on: windows-latest
+    env:
+      OLLAMA_VERSION: v0.17.7
 
     steps:
       - name: Checkout
@@ -40,6 +42,33 @@ jobs:
         with:
           workspaces: |
             src-tauri -> target
+
+      - name: Cache Ollama sidecar
+        id: cache-ollama-sidecar
+        uses: actions/cache@v4
+        with:
+          path: src-tauri/binaries/ollama-x86_64-pc-windows-msvc.exe
+          key: ollama-sidecar-windows-amd64-${{ env.OLLAMA_VERSION }}
+
+      - name: Download Ollama sidecar
+        if: steps.cache-ollama-sidecar.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $binDir = "src-tauri\binaries"
+          $archivePath = Join-Path $env:RUNNER_TEMP "ollama-windows-amd64.zip"
+          $extractDir = Join-Path $env:RUNNER_TEMP "ollama-extract"
+          $downloadUrl = "https://github.com/ollama/ollama/releases/download/$env:OLLAMA_VERSION/ollama-windows-amd64.zip"
+          New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+          Remove-Item $archivePath -Force -ErrorAction SilentlyContinue
+          Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+          Invoke-WebRequest -Uri $downloadUrl -OutFile $archivePath
+          Expand-Archive -Path $archivePath -DestinationPath $extractDir -Force
+          $sourceExe = Get-ChildItem -Path $extractDir -Recurse -Filter "ollama.exe" | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $sourceExe) {
+            throw "ollama.exe not found in downloaded archive."
+          }
+          Copy-Item $sourceExe "src-tauri\binaries\ollama-x86_64-pc-windows-msvc.exe" -Force
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
