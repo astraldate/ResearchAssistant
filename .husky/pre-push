@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+pnpm typecheck
+pnpm --dir mobile-app typecheck
+cargo check --manifest-path src-tauri/Cargo.toml

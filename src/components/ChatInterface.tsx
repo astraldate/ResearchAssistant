@@ -1,4 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { ImagePlus, Send, X } from "lucide-react";
@@ -52,6 +58,7 @@ interface SelectionMenuState {
 
 interface ChatInterfaceProps {
   currentModel?: string;
+  ensureAiReady?: () => Promise<string>;
   activeFilePath?: string | null;
   pdfPage?: number;
   onPdfPageChange?: (page: number) => void;
@@ -85,7 +92,9 @@ const getFileName = (path: string) => path.split(/[\\/]/).pop() || path;
 const isPdfFile = (path: string) => /\.pdf$/i.test(path);
 const buildDocSnippet = (content: string, limit = 220) => {
   const normalized = content.replace(/\s+/g, " ").trim();
-  return normalized.length > limit ? `${normalized.slice(0, limit)}...` : normalized;
+  return normalized.length > limit
+    ? `${normalized.slice(0, limit)}...`
+    : normalized;
 };
 
 const readSession = (): SessionPayload | null => {
@@ -100,6 +109,7 @@ const readSession = (): SessionPayload | null => {
 
 export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   currentModel,
+  ensureAiReady,
   activeFilePath,
   pdfPage = 1,
   onPdfPageChange,
@@ -113,28 +123,32 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   const [citations, setCitations] = useState<CitationItem[]>([]);
   const [notes, setNotes] = useState<NoteItem[]>([]);
   const [knowledgeQuery, setKnowledgeQuery] = useState("");
-  const [knowledgeResults, setKnowledgeResults] = useState<DocumentResult[]>([]);
+  const [knowledgeResults, setKnowledgeResults] = useState<DocumentResult[]>(
+    [],
+  );
   const [lastKnowledgeQuery, setLastKnowledgeQuery] = useState("");
   const [isKnowledgeSearching, setIsKnowledgeSearching] = useState(false);
-  const [selectionMenu, setSelectionMenu] = useState<SelectionMenuState | null>(null);
+  const [selectionMenu, setSelectionMenu] = useState<SelectionMenuState | null>(
+    null,
+  );
   const [isSessionHydrated, setIsSessionHydrated] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const selectionMenuRef = useRef<HTMLDivElement>(null);
-  const activePdfPath = activeFilePath && isPdfFile(activeFilePath) ? activeFilePath : null;
+  const activePdfPath =
+    activeFilePath && isPdfFile(activeFilePath) ? activeFilePath : null;
 
   const persistSession = useCallback(
     (payload?: SessionPayload) => {
-      const nextPayload: SessionPayload =
-        payload ?? {
-          messages,
-          inputValue,
-          imagePath,
-          pdfPage,
-          citationDraft,
-          citations,
-          notes,
-        };
+      const nextPayload: SessionPayload = payload ?? {
+        messages,
+        inputValue,
+        imagePath,
+        pdfPage,
+        citationDraft,
+        citations,
+        notes,
+      };
       localStorage.setItem(SESSION_KEY, JSON.stringify(nextPayload));
     },
     [citationDraft, citations, imagePath, inputValue, messages, notes, pdfPage],
@@ -149,7 +163,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       setCitationDraft(stored.citationDraft || "");
       setCitations(Array.isArray(stored.citations) ? stored.citations : []);
       setNotes(Array.isArray(stored.notes) ? stored.notes : []);
-      const restoredPage = stored.pdfPage && stored.pdfPage > 0 ? stored.pdfPage : 1;
+      const restoredPage =
+        stored.pdfPage && stored.pdfPage > 0 ? stored.pdfPage : 1;
       onPdfPageChange?.(restoredPage);
     }
     setIsSessionHydrated(true);
@@ -179,7 +194,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     try {
       const selected = await open({
         multiple: false,
-        filters: [{ name: "图片", extensions: ["png", "jpg", "jpeg", "webp", "bmp"] }],
+        filters: [
+          { name: "图片", extensions: ["png", "jpg", "jpeg", "webp", "bmp"] },
+        ],
       });
       if (selected && typeof selected === "string") {
         setImagePath(selected);
@@ -223,7 +240,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   const handleExplainSelection = () => {
     if (!selectionMenu) return;
     const prompt = `请用中文解释下面这个概念，并结合我的研究语境说明它可能表示什么：\n${selectionMenu.text}`;
-    setInputValue((previous) => (previous.trim() ? `${previous}\n\n${prompt}` : prompt));
+    setInputValue((previous) =>
+      previous.trim() ? `${previous}\n\n${prompt}` : prompt,
+    );
     closeSelectionMenu();
   };
 
@@ -233,7 +252,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     closeSelectionMenu();
 
     try {
-      const docs = await invoke<DocumentResult[]>("query_knowledge_base", { query });
+      const docs = await invoke<DocumentResult[]>("query_knowledge_base", {
+        query,
+      });
       const summary =
         docs.length === 0
           ? "未检索到更多相关内容。"
@@ -307,7 +328,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       setIsKnowledgeSearching(true);
       setLastKnowledgeQuery(query);
       try {
-        const docs = await invoke<DocumentResult[]>("query_knowledge_base", { query });
+        const docs = await invoke<DocumentResult[]>("query_knowledge_base", {
+          query,
+        });
         setKnowledgeResults(docs);
       } catch (error) {
         onStatus(`知识库搜索失败：${String(error)}`, "error", true);
@@ -318,7 +341,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     [knowledgeQuery, onStatus],
   );
 
-  const handleKnowledgeSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+  const handleKnowledgeSearchKeyDown = (
+    event: React.KeyboardEvent<HTMLInputElement>,
+  ) => {
     if (event.nativeEvent.isComposing) return;
     if (event.key === "Enter") {
       event.preventDefault();
@@ -328,7 +353,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
   const handleInsertKnowledgeResult = (doc: DocumentResult) => {
     const line = `[知识库:${getFileName(doc.path)}] ${buildDocSnippet(doc.content, 180)}`;
-    setInputValue((previous) => (previous.trim() ? `${previous}\n${line}` : line));
+    setInputValue((previous) =>
+      previous.trim() ? `${previous}\n${line}` : line,
+    );
   };
 
   const handleSendMessage = async () => {
@@ -340,7 +367,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       {
         id: `${Date.now()}-user`,
         role: "user",
-        content: imagePath ? `${question}\n\n[图片: ${getFileName(imagePath)}]` : question,
+        content: imagePath
+          ? `${question}\n\n[图片: ${getFileName(imagePath)}]`
+          : question,
         timestamp: Date.now(),
       },
     ]);
@@ -348,9 +377,14 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     setIsLoading(true);
 
     try {
+      const activeModel = ensureAiReady
+        ? await ensureAiReady()
+        : currentModel || "qwen2.5:0.5b";
       let context = "";
       try {
-        const docs = await invoke<DocumentResult[]>("query_knowledge_base", { query: question });
+        const docs = await invoke<DocumentResult[]>("query_knowledge_base", {
+          query: question,
+        });
         context = docs.map((doc) => doc.content).join("\n\n");
       } catch {
         context = "";
@@ -359,7 +393,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       const response = await invoke<string>("chat_with_llm", {
         query: question,
         context,
-        model: currentModel || "qwen2.5:0.5b",
+        model: activeModel,
         imagePath: imagePath,
       });
 
@@ -405,7 +439,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     setCitationDraft(stored.citationDraft || "");
     setCitations(Array.isArray(stored.citations) ? stored.citations : []);
     setNotes(Array.isArray(stored.notes) ? stored.notes : []);
-    onPdfPageChange?.(stored.pdfPage && stored.pdfPage > 0 ? stored.pdfPage : 1);
+    onPdfPageChange?.(
+      stored.pdfPage && stored.pdfPage > 0 ? stored.pdfPage : 1,
+    );
     onStatus("已恢复会话。", "info", false);
   };
 
@@ -429,10 +465,15 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     });
 
     const citationSection = citations.length
-      ? citations.map((citation, index) => `- [${index + 1}] ${getFileName(citation.path)} p.${citation.page}\n  ${citation.snippet}`)
+      ? citations.map(
+          (citation, index) =>
+            `- [${index + 1}] ${getFileName(citation.path)} p.${citation.page}\n  ${citation.snippet}`,
+        )
       : ["- 无"];
 
-    const noteSection = notes.length ? notes.map((note, index) => `- [${index + 1}] ${note.text}`) : ["- 无"];
+    const noteSection = notes.length
+      ? notes.map((note, index) => `- [${index + 1}] ${note.text}`)
+      : ["- 无"];
 
     return [
       "# 综述草稿",
@@ -463,7 +504,10 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         filters: [{ name: "Markdown", extensions: ["md"] }],
       });
       if (!destination || typeof destination !== "string") return;
-      await invoke("write_text_file", { path: destination, content: buildMarkdownDraft() });
+      await invoke("write_text_file", {
+        path: destination,
+        content: buildMarkdownDraft(),
+      });
       onStatus(`Markdown 已导出到：${destination}`, "info", false);
     } catch (error) {
       onStatus(`导出 Markdown 失败：${String(error)}`, "error", true);
@@ -479,14 +523,19 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   };
 
   const handleInsertNote = (note: NoteItem) => {
-    setInputValue((previous) => (previous.trim() ? `${previous}\n${note.text}` : note.text));
+    setInputValue((previous) =>
+      previous.trim() ? `${previous}\n${note.text}` : note.text,
+    );
   };
 
   const handleDeleteNote = (noteId: string) => {
     setNotes((previous) => previous.filter((note) => note.id !== noteId));
   };
 
-  const activeFileLabel = useMemo(() => (activeFilePath ? getFileName(activeFilePath) : "未选中文件"), [activeFilePath]);
+  const activeFileLabel = useMemo(
+    () => (activeFilePath ? getFileName(activeFilePath) : "未选中文件"),
+    [activeFilePath],
+  );
 
   return (
     <div className="chat-container">
@@ -505,7 +554,10 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
           <button style={TOOL_BUTTON_STYLE} onClick={handleClearSession}>
             清空会话
           </button>
-          <button style={TOOL_BUTTON_STYLE} onClick={() => void handleExportMarkdown()}>
+          <button
+            style={TOOL_BUTTON_STYLE}
+            onClick={() => void handleExportMarkdown()}
+          >
             导出 Markdown
           </button>
         </div>
@@ -514,10 +566,19 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       <div className="chat-body">
         <Group orientation="vertical" className="chat-content-panels">
           <Panel defaultSize="60%" minSize="20%">
-            <div className="messages-list" onMouseUp={handleScopedTextSelection}>
+            <div
+              className="messages-list"
+              onMouseUp={handleScopedTextSelection}
+            >
               {messages.map((message) => (
                 <div key={message.id} className={`message ${message.role}`}>
-                  {message.role === "ai" ? <MarkdownRenderer content={message.content} /> : <div style={{ whiteSpace: "pre-wrap" }}>{message.content}</div>}
+                  {message.role === "ai" ? (
+                    <MarkdownRenderer content={message.content} />
+                  ) : (
+                    <div style={{ whiteSpace: "pre-wrap" }}>
+                      {message.content}
+                    </div>
+                  )}
                 </div>
               ))}
               {isLoading && (
@@ -536,25 +597,42 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
               {imagePath && (
                 <div className="image-chip">
                   <span>图片：{getFileName(imagePath)}</span>
-                  <button className="ghost-icon-button" onClick={() => setImagePath(null)} title="移除图片">
+                  <button
+                    className="ghost-icon-button"
+                    onClick={() => setImagePath(null)}
+                    title="移除图片"
+                  >
                     <X size={14} />
                   </button>
                 </div>
               )}
 
               <div className="chat-input-wrapper">
-                <button className="send-button" onClick={() => void handlePickImage()} disabled={isLoading} title="添加图片">
+                <button
+                  className="send-button"
+                  onClick={() => void handlePickImage()}
+                  disabled={isLoading}
+                  title="添加图片"
+                >
                   <ImagePlus size={18} />
                 </button>
                 <textarea
                   className="chat-input"
-                  placeholder={activePdfPath ? "输入消息，或在右侧独立 PDF 页面中选词解释。" : "输入消息，开始和科研助手对话。"}
+                  placeholder={
+                    activePdfPath
+                      ? "输入消息，或在右侧独立 PDF 页面中选词解释。"
+                      : "输入消息，开始和科研助手对话。"
+                  }
                   value={inputValue}
                   onChange={(event) => setInputValue(event.target.value)}
                   onKeyDown={handleKeyDown}
                   rows={1}
                 />
-                <button className="send-button" onClick={() => void handleSendMessage()} disabled={!inputValue.trim() || isLoading}>
+                <button
+                  className="send-button"
+                  onClick={() => void handleSendMessage()}
+                  disabled={!inputValue.trim() || isLoading}
+                >
                   <Send size={18} />
                 </button>
               </div>
@@ -567,40 +645,62 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                     placeholder="如果要保留原文引用，可把当前选中的 PDF 片段粘贴到这里，再加入会话输入框。"
                     rows={2}
                   />
-                  <button className="action-button primary" onClick={handleAddCitation} disabled={!citationDraft.trim()}>
+                  <button
+                    className="action-button primary"
+                    onClick={handleAddCitation}
+                    disabled={!citationDraft.trim()}
+                  >
                     加入引用
                   </button>
                 </div>
               )}
 
               <div className="support-grid">
-                <section className="support-panel" onMouseUp={handleScopedTextSelection}>
+                <section
+                  className="support-panel"
+                  onMouseUp={handleScopedTextSelection}
+                >
                   <div className="support-panel-title">引用片段</div>
                   <div className="support-panel-body">
-                    {citations.length === 0 && <div className="support-empty">暂无引用。</div>}
+                    {citations.length === 0 && (
+                      <div className="support-empty">暂无引用。</div>
+                    )}
                     {citations.slice(0, 8).map((citation) => (
                       <div key={citation.id} className="support-item">
                         <div className="support-item-title">
                           {getFileName(citation.path)} p.{citation.page}
                         </div>
-                        <div className="support-item-text">{citation.snippet}</div>
+                        <div className="support-item-text">
+                          {citation.snippet}
+                        </div>
                       </div>
                     ))}
                   </div>
                 </section>
 
-                <section className="support-panel" onMouseUp={handleScopedTextSelection}>
+                <section
+                  className="support-panel"
+                  onMouseUp={handleScopedTextSelection}
+                >
                   <div className="support-panel-title">笔记</div>
                   <div className="support-panel-body">
-                    {notes.length === 0 && <div className="support-empty">暂无笔记。</div>}
+                    {notes.length === 0 && (
+                      <div className="support-empty">暂无笔记。</div>
+                    )}
                     {notes.slice(0, 8).map((note) => (
                       <div key={note.id} className="support-item">
                         <div className="support-item-text">{note.text}</div>
                         <div className="support-item-actions">
-                          <button style={TOOL_BUTTON_STYLE} onClick={() => handleInsertNote(note)}>
+                          <button
+                            style={TOOL_BUTTON_STYLE}
+                            onClick={() => handleInsertNote(note)}
+                          >
                             插入输入框
                           </button>
-                          <button style={TOOL_BUTTON_STYLE} onClick={() => handleDeleteNote(note.id)}>
+                          <button
+                            style={TOOL_BUTTON_STYLE}
+                            onClick={() => handleDeleteNote(note.id)}
+                          >
                             删除
                           </button>
                         </div>
@@ -609,13 +709,18 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                   </div>
                 </section>
 
-                <section className="support-panel" onMouseUp={handleScopedTextSelection}>
+                <section
+                  className="support-panel"
+                  onMouseUp={handleScopedTextSelection}
+                >
                   <div className="support-panel-title">知识库搜索</div>
                   <div className="knowledge-search-row">
                     <input
                       className="knowledge-search-input"
                       value={knowledgeQuery}
-                      onChange={(event) => setKnowledgeQuery(event.target.value)}
+                      onChange={(event) =>
+                        setKnowledgeQuery(event.target.value)
+                      }
                       onKeyDown={handleKnowledgeSearchKeyDown}
                       placeholder="输入关键词检索已导入知识库，例如 LoRA、adapter、thyroid cancer"
                     />
@@ -628,21 +733,39 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                     </button>
                   </div>
                   <div className="support-panel-body">
-                    {!lastKnowledgeQuery && !isKnowledgeSearching && <div className="support-empty">输入关键词后检索本地知识库摘要片段。</div>}
-                    {lastKnowledgeQuery && !isKnowledgeSearching && knowledgeResults.length === 0 && (
-                      <div className="support-empty">没有找到与“{lastKnowledgeQuery}”相关的知识库片段。</div>
+                    {!lastKnowledgeQuery && !isKnowledgeSearching && (
+                      <div className="support-empty">
+                        输入关键词后检索本地知识库摘要片段。
+                      </div>
                     )}
+                    {lastKnowledgeQuery &&
+                      !isKnowledgeSearching &&
+                      knowledgeResults.length === 0 && (
+                        <div className="support-empty">
+                          没有找到与“{lastKnowledgeQuery}”相关的知识库片段。
+                        </div>
+                      )}
                     {knowledgeResults.map((doc, index) => (
                       <div key={doc.id} className="support-item">
                         <div className="support-item-title">
                           {index + 1}. {getFileName(doc.path)}
                         </div>
-                        <div className="support-item-text">{buildDocSnippet(doc.content)}</div>
+                        <div className="support-item-text">
+                          {buildDocSnippet(doc.content)}
+                        </div>
                         <div className="support-item-actions">
-                          <button style={TOOL_BUTTON_STYLE} onClick={() => handleInsertKnowledgeResult(doc)}>
+                          <button
+                            style={TOOL_BUTTON_STYLE}
+                            onClick={() => handleInsertKnowledgeResult(doc)}
+                          >
                             插入输入框
                           </button>
-                          <button style={TOOL_BUTTON_STYLE} onClick={() => void invoke("open_file", { path: doc.path })}>
+                          <button
+                            style={TOOL_BUTTON_STYLE}
+                            onClick={() =>
+                              void invoke("open_file", { path: doc.path })
+                            }
+                          >
                             打开文件
                           </button>
                         </div>
@@ -666,14 +789,23 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
           <button style={TOOL_BUTTON_STYLE} onClick={handleExplainSelection}>
             解释
           </button>
-          <button style={TOOL_BUTTON_STYLE} onClick={() => void handleExpandRetrievalSelection()}>
+          <button
+            style={TOOL_BUTTON_STYLE}
+            onClick={() => void handleExpandRetrievalSelection()}
+          >
             扩展检索
           </button>
-          <button style={TOOL_BUTTON_STYLE} onClick={handleAddNoteFromSelection}>
+          <button
+            style={TOOL_BUTTON_STYLE}
+            onClick={handleAddNoteFromSelection}
+          >
             加入笔记
           </button>
           {activePdfPath && (
-            <button style={TOOL_BUTTON_STYLE} onClick={handleUseSelectionAsCitation}>
+            <button
+              style={TOOL_BUTTON_STYLE}
+              onClick={handleUseSelectionAsCitation}
+            >
               设为引用
             </button>
           )}

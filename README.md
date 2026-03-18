@@ -98,6 +98,43 @@ Gradle 原始产物路径：
 - `mobile-app/android/settings.gradle`
 - `mobile-app/android/app/build.gradle`
 
+## GitHub CI/CD
+
+仓库当前包含两条 GitHub Actions 流水线：
+- `CI`：在推送到 `main` / `master` 和发起 PR 时运行，负责 Web、Mobile、Rust/Tauri 的常规检查。
+- `Release Desktop`：只在推送 `v*` tag 时运行，负责构建 Windows 桌面版并把产物上传到 GitHub Release。
+
+`Release Desktop` 不重复跑常规检查，它只保留 Windows 发布必需步骤：
+- 安装 Node.js、pnpm、Rust
+- 恢复 pnpm 与 Rust 缓存
+- 安装依赖
+- 调用 Tauri Action 构建并发布 Windows 安装包
+
+### 发布桌面版
+
+推荐流程：
+1. 先把要发布的代码合并到 `main` 或 `master`。
+2. 确认 GitHub 上最近一次 `CI` 已通过。
+3. 更新版本号：
+   - 根目录 [package.json](e:\Projects\4C\ResearchAssistant\package.json)
+   - [src-tauri/tauri.conf.json](e:\Projects\4C\ResearchAssistant\src-tauri\tauri.conf.json)
+   - 如果移动端也要同步发版，再更新 [mobile-app/package.json](e:\Projects\4C\ResearchAssistant\mobile-app\package.json)
+4. 创建并推送 tag，例如：
+
+```bash
+git tag v0.1.1
+git push origin v0.1.1
+```
+
+5. GitHub 会自动触发 `Release Desktop`，生成一个 draft release。
+6. 在 GitHub Releases 页面检查安装包、版本号和发布说明，确认后再手动发布 draft。
+
+### 回滚或重发
+
+- 如果 tag 打错了，不要强推覆盖旧 tag。
+- 更稳妥的做法是删除错误 tag 后重新打一个新版本 tag，例如 `v0.1.2`。
+- 如果只是 release 文案要改，直接在 GitHub 的 draft release 页面编辑即可，不需要重新构建。
+
 ## 相关文档
 
 - [Design Specification](./Design%20Specification.md)

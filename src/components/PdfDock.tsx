@@ -8,6 +8,7 @@ type StatusTone = "info" | "error";
 interface PdfDockProps {
   activePdfPath: string;
   currentModel: string;
+  ensureAiReady?: () => Promise<string>;
   currentPage: number;
   onPageChange: (page: number) => void;
   onStatus: (message: string, tone?: StatusTone, persistent?: boolean) => void;
@@ -22,6 +23,7 @@ const LOOKUP_MODE_KEY = "ra_term_lookup_mode_v1";
 export const PdfDock: React.FC<PdfDockProps> = ({
   activePdfPath,
   currentModel,
+  ensureAiReady,
   currentPage,
   onPageChange,
   onStatus,
@@ -32,7 +34,11 @@ export const PdfDock: React.FC<PdfDockProps> = ({
 }) => {
   const [lookupMode, setLookupMode] = useState<LookupMode>(() => {
     const stored = localStorage.getItem(LOOKUP_MODE_KEY);
-    if (stored === "popular_cn" || stored === "cs_encyclopedia" || stored === "bioinformatics") {
+    if (
+      stored === "popular_cn" ||
+      stored === "cs_encyclopedia" ||
+      stored === "bioinformatics"
+    ) {
       return stored;
     }
     return "popular_cn";
@@ -49,10 +55,16 @@ export const PdfDock: React.FC<PdfDockProps> = ({
         <button
           className="ghost-icon-button pdf-dock-topbar-button"
           onClick={() => setIsToolbarCollapsed((value) => !value)}
-          aria-label={isToolbarCollapsed ? "Expand PDF toolbar" : "Collapse PDF toolbar"}
+          aria-label={
+            isToolbarCollapsed ? "Expand PDF toolbar" : "Collapse PDF toolbar"
+          }
           title={isToolbarCollapsed ? "Expand toolbar" : "Collapse toolbar"}
         >
-          {isToolbarCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+          {isToolbarCollapsed ? (
+            <ChevronDown size={16} />
+          ) : (
+            <ChevronUp size={16} />
+          )}
         </button>
         <button
           className="ghost-icon-button pdf-dock-topbar-button"
@@ -68,6 +80,7 @@ export const PdfDock: React.FC<PdfDockProps> = ({
         <PdfReader
           activePdfPath={activePdfPath}
           currentModel={currentModel}
+          ensureAiReady={ensureAiReady}
           isFocused
           lookupMode={lookupMode}
           onLookupModeChange={setLookupMode}
@@ -81,10 +94,16 @@ export const PdfDock: React.FC<PdfDockProps> = ({
               <button
                 className="action-button pdf-toolbar-icon-button"
                 onClick={onToggleFocusMode}
-                aria-label={isFocusMode ? "Exit focus mode" : "Enter focus mode"}
+                aria-label={
+                  isFocusMode ? "Exit focus mode" : "Enter focus mode"
+                }
                 title={isFocusMode ? "Exit focus mode" : "Enter focus mode"}
               >
-                {isFocusMode ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+                {isFocusMode ? (
+                  <Minimize2 size={14} />
+                ) : (
+                  <Maximize2 size={14} />
+                )}
               </button>
             </div>
           }
