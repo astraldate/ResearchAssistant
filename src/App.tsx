@@ -259,7 +259,7 @@ function App() {
   const [pdfPage, setPdfPage] = useState(1);
   const [isPdfDockVisible, setIsPdfDockVisible] = useState(false);
   const [isPdfFocusMode, setIsPdfFocusMode] = useState(false);
-        const [currentModel, setCurrentModel] = useState("");
+  const [currentModel, setCurrentModel] = useState("");
   const [activeSidebarTool, setActiveSidebarTool] =
     useState<SidebarTool>("workspace");
   const [ingestMode, setIngestMode] = useState<IngestMode>("overwrite");
@@ -298,10 +298,10 @@ function App() {
 
   const statusTimerRef = useRef<number | null>(null);
   const previousPdfPathRef = useRef<string | null>(null);
-    const sidebarPanelRef = useRef<PanelImperativeHandle | null>(null);
+  const sidebarPanelRef = useRef<PanelImperativeHandle | null>(null);
   const mainPanelRef = useRef<PanelImperativeHandle | null>(null);
-const focusRestoreLayoutRef = useRef(DEFAULT_TWO_PANEL_LAYOUT);
-    const pdfPanelRef = useRef<PanelImperativeHandle | null>(null);
+  const focusRestoreLayoutRef = useRef(DEFAULT_TWO_PANEL_LAYOUT);
+  const pdfPanelRef = useRef<PanelImperativeHandle | null>(null);
   const aiPreparationPromiseRef = useRef<Promise<string> | null>(null);
   const aiPreparedStateRef = useRef<{ chat: boolean; index: boolean }>({
     chat: false,
@@ -321,7 +321,6 @@ const focusRestoreLayoutRef = useRef(DEFAULT_TWO_PANEL_LAYOUT);
   );
 
   const stageLabel = STAGE_LABELS[ingestProgress?.stage || ""] || "处理中";
-
 
   const clearStatusTimer = useCallback(() => {
     if (statusTimerRef.current !== null) {
@@ -838,7 +837,7 @@ const focusRestoreLayoutRef = useRef(DEFAULT_TWO_PANEL_LAYOUT);
     };
   }, [showPersistentStatus]);
 
-    useEffect(() => {
+  useEffect(() => {
     let cancelled = false;
     let timerId: number | null = null;
     let cancelIdleCheck: (() => void) | null = null;
@@ -1072,15 +1071,18 @@ const focusRestoreLayoutRef = useRef(DEFAULT_TWO_PANEL_LAYOUT);
       });
       return;
     }
+    const isOpeningPdfDock = !isPdfDockVisible;
     if (previousPdfPathRef.current !== activePdfPath) {
       setIsPdfDockVisible(true);
       previousPdfPathRef.current = activePdfPath;
-      window.requestAnimationFrame(() => {
-        mainPanelRef.current?.resize(`${DEFAULT_TWO_PANEL_LAYOUT.main}%`);
-        pdfPanelRef.current?.resize(`${DEFAULT_TWO_PANEL_LAYOUT.pdf}%`);
-      });
+      if (isOpeningPdfDock) {
+        window.requestAnimationFrame(() => {
+          mainPanelRef.current?.resize(`${DEFAULT_TWO_PANEL_LAYOUT.main}%`);
+          pdfPanelRef.current?.resize(`${DEFAULT_TWO_PANEL_LAYOUT.pdf}%`);
+        });
+      }
     }
-  }, [activePdfPath, isPdfFocusMode]);
+  }, [activePdfPath, isPdfDockVisible, isPdfFocusMode]);
 
   useEffect(() => {
     const syncSession = () => {
@@ -1261,10 +1263,15 @@ const focusRestoreLayoutRef = useRef(DEFAULT_TWO_PANEL_LAYOUT);
           <div className="ingest-panel">
             <div className="ingest-title">{stageLabel}</div>
             <div className="ingest-subtitle">
-              {ingestProgress?.total ? `${ingestProgress.current}/${ingestProgress.total}` : "Preparing..."}
+              {ingestProgress?.total
+                ? `${ingestProgress.current}/${ingestProgress.total}`
+                : "Preparing..."}
             </div>
             <div className="ingest-progress-track">
-              <div className="ingest-progress-fill" style={{ width: `${progressPercent}%` }} />
+              <div
+                className="ingest-progress-fill"
+                style={{ width: `${progressPercent}%` }}
+              />
             </div>
           </div>
         )}
@@ -1350,9 +1357,11 @@ const focusRestoreLayoutRef = useRef(DEFAULT_TWO_PANEL_LAYOUT);
               Enter keywords to search local knowledge base.
             </div>
           )}
-          {lastKnowledgeQuery && !isKnowledgeSearching && knowledgeResults.length === 0 && (
-            <div className="support-empty">No related results found.</div>
-          )}
+          {lastKnowledgeQuery &&
+            !isKnowledgeSearching &&
+            knowledgeResults.length === 0 && (
+              <div className="support-empty">No related results found.</div>
+            )}
           {knowledgeResults.map((doc, index) => (
             <div key={doc.id} className="support-item">
               <div className="support-item-title">
@@ -1549,157 +1558,158 @@ const focusRestoreLayoutRef = useRef(DEFAULT_TWO_PANEL_LAYOUT);
       >
         <Group orientation="horizontal">
           <Panel
-          panelRef={sidebarPanelRef}
-          defaultSize="23%"
-          minSize={isPdfFocusMode ? "0%" : "16%"}
-          maxSize="38%"
-          className={`sidebar-panel ${isPdfFocusMode ? "panel-collapsed" : ""}`}
-        >
-          <aside className="sidebar sidebar-with-rail">
-            <div className="sidebar-rail">
-              <button
-                className={`rail-button ${activeSidebarTool === "workspace" ? "active" : ""}`}
-                onClick={() => setActiveSidebarTool("workspace")}
-                title="Workspace"
-              >
-                <FolderOpen size={18} />
-              </button>
-              <button
-                className={`rail-button ${activeSidebarTool === "citations" ? "active" : ""}`}
-                onClick={() => setActiveSidebarTool("citations")}
-                title="Citations"
-              >
-                <MessageSquareText size={18} />
-              </button>
-              <button
-                className={`rail-button ${activeSidebarTool === "notes" ? "active" : ""}`}
-                onClick={() => setActiveSidebarTool("notes")}
-                title="Notes"
-              >
-                <StickyNote size={18} />
-              </button>
-              <button
-                className={`rail-button ${activeSidebarTool === "knowledge" ? "active" : ""}`}
-                onClick={() => setActiveSidebarTool("knowledge")}
-                title="Knowledge Search"
-              >
-                <Search size={18} />
-              </button>
-              <button
-                className={`rail-button ${activeSidebarTool === "cards" ? "active" : ""}`}
-                onClick={() => setActiveSidebarTool("cards")}
-                title="Knowledge Cards"
-              >
-                <LayoutGrid size={18} />
-              </button>
-            </div>
+            panelRef={sidebarPanelRef}
+            defaultSize="23%"
+            minSize={isPdfFocusMode ? "0%" : "16%"}
+            maxSize="38%"
+            className={`sidebar-panel ${isPdfFocusMode ? "panel-collapsed" : ""}`}
+          >
+            <aside className="sidebar sidebar-with-rail">
+              <div className="sidebar-rail">
+                <button
+                  className={`rail-button ${activeSidebarTool === "workspace" ? "active" : ""}`}
+                  onClick={() => setActiveSidebarTool("workspace")}
+                  title="Workspace"
+                >
+                  <FolderOpen size={18} />
+                </button>
+                <button
+                  className={`rail-button ${activeSidebarTool === "citations" ? "active" : ""}`}
+                  onClick={() => setActiveSidebarTool("citations")}
+                  title="Citations"
+                >
+                  <MessageSquareText size={18} />
+                </button>
+                <button
+                  className={`rail-button ${activeSidebarTool === "notes" ? "active" : ""}`}
+                  onClick={() => setActiveSidebarTool("notes")}
+                  title="Notes"
+                >
+                  <StickyNote size={18} />
+                </button>
+                <button
+                  className={`rail-button ${activeSidebarTool === "knowledge" ? "active" : ""}`}
+                  onClick={() => setActiveSidebarTool("knowledge")}
+                  title="Knowledge Search"
+                >
+                  <Search size={18} />
+                </button>
+                <button
+                  className={`rail-button ${activeSidebarTool === "cards" ? "active" : ""}`}
+                  onClick={() => setActiveSidebarTool("cards")}
+                  title="Knowledge Cards"
+                >
+                  <LayoutGrid size={18} />
+                </button>
+              </div>
 
-            <div className="sidebar-content">
-              <div className="sidebar-header">
-                <span>
-                  {activeSidebarTool === "workspace"
-                    ? "Workspace"
-                    : activeSidebarTool === "citations"
-                      ? "Citations"
-                      : activeSidebarTool === "notes"
-                        ? "Notes"
-                        : activeSidebarTool === "knowledge"
-                          ? "Knowledge"
-                          : "Knowledge Cards"}
-                </span>
-                <div className="sidebar-actions">
-                  <button
-                    className="icon-button"
-                    onClick={() => void handleImportZotero()}
-                    title="Auto import Zotero PDFs"
-                  >
-                    <BookOpen size={16} />
-                  </button>
-                  <button
-                    className="icon-button"
-                    onClick={() => void handleOpenFiles()}
-                    title="Import files"
-                  >
-                    <FilePlus size={16} />
-                  </button>
-                  <button
-                    className="icon-button"
-                    onClick={() => void handleOpenFolder()}
-                    title="Import folder"
-                  >
-                    <FolderOpen size={16} />
-                  </button>
-                  <button
-                    className="icon-button"
-                    onClick={() => setIsSettingsOpen(true)}
-                    title="Settings"
-                  >
-                    <Settings size={16} />
-                  </button>
+              <div className="sidebar-content">
+                <div className="sidebar-header">
+                  <span>
+                    {activeSidebarTool === "workspace"
+                      ? "Workspace"
+                      : activeSidebarTool === "citations"
+                        ? "Citations"
+                        : activeSidebarTool === "notes"
+                          ? "Notes"
+                          : activeSidebarTool === "knowledge"
+                            ? "Knowledge"
+                            : "Knowledge Cards"}
+                  </span>
+                  <div className="sidebar-actions">
+                    <button
+                      className="icon-button"
+                      onClick={() => void handleImportZotero()}
+                      title="Auto import Zotero PDFs"
+                    >
+                      <BookOpen size={16} />
+                    </button>
+                    <button
+                      className="icon-button"
+                      onClick={() => void handleOpenFiles()}
+                      title="Import files"
+                    >
+                      <FilePlus size={16} />
+                    </button>
+                    <button
+                      className="icon-button"
+                      onClick={() => void handleOpenFolder()}
+                      title="Import folder"
+                    >
+                      <FolderOpen size={16} />
+                    </button>
+                    <button
+                      className="icon-button"
+                      onClick={() => setIsSettingsOpen(true)}
+                      title="Settings"
+                    >
+                      <Settings size={16} />
+                    </button>
+                  </div>
                 </div>
+
+                {sidebarToolBody}
               </div>
+            </aside>
+          </Panel>
 
-              {sidebarToolBody}
-            </div>
-          </aside>
-        </Panel>
-
-        <Separator
-          className={`PanelResizeHandle ${isPdfFocusMode ? "panel-separator-hidden" : ""}`}
-        />
-        <Panel
-          panelRef={mainPanelRef}
-          defaultSize="45%"
-          minSize={isPdfFocusMode ? "0%" : "24%"}
-          className="main-panel pdf-center-panel"
-        >
-          <div className="pdf-center-shell">
-            {activePdfPath && isPdfDockVisible ? (
-              <PdfDock
-                activePdfPath={activePdfPath}
-                currentModel={currentModel || REQUIRED_MODELS.chat}
-                ensureAiReady={ensureAiReady}
-                currentPage={pdfPage}
-                onPageChange={setPdfPage}
-                onStatus={handleChildStatus}
-                onCardSaved={handleCardSaved}
-                isFocusMode={isPdfFocusMode}
-                onToggleFocusMode={handleTogglePdfFocusMode}
-                onClose={handleClosePdfDock}
-              />
-            ) : (
-              <div className="pdf-empty-state">
-                <h2>PDF Reader</h2>
-                <p>
-                  Select a PDF file from the left workspace to preview it here.
-                </p>
-              </div>
-            )}
-          </div>
-        </Panel>
-
-        <Separator
-          className={`PanelResizeHandle ${isPdfFocusMode ? "panel-separator-hidden" : ""}`}
-        />
-        <Panel
-          panelRef={pdfPanelRef}
-          defaultSize="32%"
-          minSize={isPdfFocusMode ? "0%" : "22%"}
-          maxSize={isPdfFocusMode ? "0%" : "46%"}
-          className={`pdf-dock-panel ai-right-panel ${isPdfFocusMode ? "panel-collapsed" : ""}`}
-        >
-          <ChatInterface
-            currentModel={currentModel}
-            activeFilePath={activeFilePath}
-            pdfPage={pdfPage}
-            onPdfPageChange={setPdfPage}
-            onStatus={handleChildStatus}
-            onCardSaved={handleCardSaved}
-            onModelChange={setCurrentModel}
-            showSupportPanels={false}
+          <Separator
+            className={`PanelResizeHandle ${isPdfFocusMode ? "panel-separator-hidden" : ""}`}
           />
-        </Panel>
-      </Group>
+          <Panel
+            panelRef={mainPanelRef}
+            defaultSize="45%"
+            minSize={isPdfFocusMode ? "0%" : "24%"}
+            className="main-panel pdf-center-panel"
+          >
+            <div className="pdf-center-shell">
+              {activePdfPath && isPdfDockVisible ? (
+                <PdfDock
+                  activePdfPath={activePdfPath}
+                  currentModel={currentModel || REQUIRED_MODELS.chat}
+                  ensureAiReady={ensureAiReady}
+                  currentPage={pdfPage}
+                  onPageChange={setPdfPage}
+                  onStatus={handleChildStatus}
+                  onCardSaved={handleCardSaved}
+                  isFocusMode={isPdfFocusMode}
+                  onToggleFocusMode={handleTogglePdfFocusMode}
+                  onClose={handleClosePdfDock}
+                />
+              ) : (
+                <div className="pdf-empty-state">
+                  <h2>PDF Reader</h2>
+                  <p>
+                    Select a PDF file from the left workspace to preview it
+                    here.
+                  </p>
+                </div>
+              )}
+            </div>
+          </Panel>
+
+          <Separator
+            className={`PanelResizeHandle ${isPdfFocusMode ? "panel-separator-hidden" : ""}`}
+          />
+          <Panel
+            panelRef={pdfPanelRef}
+            defaultSize="32%"
+            minSize={isPdfFocusMode ? "0%" : "22%"}
+            maxSize={isPdfFocusMode ? "0%" : "46%"}
+            className={`pdf-dock-panel ai-right-panel ${isPdfFocusMode ? "panel-collapsed" : ""}`}
+          >
+            <ChatInterface
+              currentModel={currentModel}
+              activeFilePath={activeFilePath}
+              pdfPage={pdfPage}
+              onPdfPageChange={setPdfPage}
+              onStatus={handleChildStatus}
+              onCardSaved={handleCardSaved}
+              onModelChange={setCurrentModel}
+              showSupportPanels={false}
+            />
+          </Panel>
+        </Group>
       </div>
 
       {isSettingsOpen && (
@@ -1807,22 +1817,3 @@ const focusRestoreLayoutRef = useRef(DEFAULT_TWO_PANEL_LAYOUT);
 }
 
 export default App;
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
