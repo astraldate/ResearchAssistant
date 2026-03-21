@@ -37,6 +37,8 @@ interface PdfReaderProps {
   activePdfPath: string;
   currentModel: string;
   ensureAiReady?: () => Promise<string>;
+  translationModel: string;
+  ensureTranslationReady?: () => Promise<string>;
   isFocused?: boolean;
   requestedPage?: number;
   toolbarActions?: React.ReactNode;
@@ -63,6 +65,7 @@ interface TranslatePdfPageResult {
   translated_markdown: string;
   source_text_length: number;
   generated_at: string;
+  model_used: string;
 }
 
 interface PageTranslationState {
@@ -569,6 +572,8 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
   activePdfPath,
   currentModel,
   ensureAiReady,
+  translationModel,
+  ensureTranslationReady,
   isFocused = false,
   requestedPage,
   toolbarActions,
@@ -1467,7 +1472,9 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
 
   const handleTranslateCurrentPage = useCallback(async () => {
     if (viewerMode !== "pdfjs") return;
-    const model = ensureAiReady ? await ensureAiReady() : currentModel;
+    const model = ensureTranslationReady
+      ? await ensureTranslationReady()
+      : translationModel;
     if (!model) {
       onStatusRef.current(
         "当前没有可用模型，暂时无法执行整页翻译。",
@@ -1540,9 +1547,9 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
     }
   }, [
     activePdfPath,
-    currentModel,
-    ensureAiReady,
+    ensureTranslationReady,
     normalizePageNumber,
+    translationModel,
     viewerMode,
   ]);
 
@@ -2095,6 +2102,9 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
                       <MarkdownRenderer
                         content={pageTranslation.result.translated_markdown}
                       />
+                      <div className="term-popover-subtitle">
+                        翻译模型：{pageTranslation.result.model_used}
+                      </div>
                     </div>
                   )}
               </aside>
@@ -2150,8 +2160,8 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
                 selectedText={selection.text}
                 pdfPath={activePdfPath}
                 page={selection.page}
-                currentModel={currentModel}
-                ensureAiReady={ensureAiReady}
+                translationModel={translationModel}
+                ensureTranslationReady={ensureTranslationReady}
                 onClose={handleClosePopover}
                 onStatus={onStatus}
                 style={popoverStyle}
