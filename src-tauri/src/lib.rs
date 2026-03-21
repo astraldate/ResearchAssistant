@@ -183,6 +183,7 @@ pub struct TranslatePdfSelectionResult {
     pub translated_text: String,
     pub page: u32,
     pub generated_at: String,
+    pub model_used: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -198,6 +199,7 @@ pub struct TranslatePdfPageResult {
     pub translated_markdown: String,
     pub source_text_length: usize,
     pub generated_at: String,
+    pub model_used: String,
 }
 
 impl Default for InferenceSettings {
@@ -2453,7 +2455,8 @@ fn validate_translation_output(
     original_text: &str,
     translated_text: String,
 ) -> Result<String, String> {
-    let trimmed = trim_non_empty_model_output(translated_text, "模型返回了空翻译。")?;
+    let trimmed = sanitize_translation_output(original_text, &translated_text)
+        .ok_or_else(|| "模型返回了空翻译。".to_string())?;
     if looks_like_untranslated_output(original_text, &trimmed) {
         return Err(
             "当前模型未生成有效中文译文，请切换到更强模型后重试，例如 qwen3.5:9b 或 qwen3:8b。"
@@ -2461,6 +2464,94 @@ fn validate_translation_output(
         );
     }
     Ok(trimmed)
+}
+
+fn validate_selection_translation_output(
+    original_text: &str,
+    translated_text: String,
+) -> Result<String, String> {
+    let trimmed = validate_translation_output(original_text, translated_text)?;
+    let original_len = original_text.trim().chars().count();
+    let translated_len = trimmed.chars().count();
+
+    if original_len <= 24 && translated_len > 80 {
+        return Err("模型输出超出选中文本范围，疑似混入了上下文内容。".to_string());
+    }
+
+    if original_len <= 80 && translated_len > original_len * 6 {
+        return Err("模型输出明显长于原文，疑似把上下文一起翻译了。".to_string());
+    }
+
+    Ok(trimmed)
+}
+
+fn sanitize_translation_output(original_text: &str, translated_text: &str) -> Option<String> {
+    let mut cleaned = translated_text.replace("\r\n", "\n").trim().to_string();
+    if cleaned.is_empty() {
+        return None;
+    }
+
+    let leak_markers = [
+        "\n页面上下文：",
+        "\nPage context:",
+        "\n原文：",
+        "\nSource text:",
+        "\n待翻译原文：",
+        "\nPage text:",
+    ];
+    for marker in leak_markers {
+        if let Some(index) = cleaned.find(marker) {
+            cleaned.truncate(index);
+        }
+    }
+
+    let prefix_markers = [
+        "规则：",
+        "Rules:",
+        "要求：",
+        "Instruction:",
+        "Instructions:",
+    ];
+    if prefix_markers.iter().any(|marker| cleaned.starts_with(marker)) {
+        let split_markers = ["\n\n译文：", "\n\nTranslation:", "\n\n虽然", "\n\n当", "\n\n本", "\n\n该"];
+        for marker in split_markers {
+            if let Some(index) = cleaned.find(marker) {
+                cleaned = cleaned[index + 2..].to_string();
+                break;
+            }
+        }
+    }
+
+    if let Some(index) = cleaned.find("译文：") {
+        cleaned = cleaned[index + "译文：".len()..].trim().to_string();
+    }
+    if let Some(index) = cleaned.find("Translation:") {
+        cleaned = cleaned[index + "Translation:".len()..].trim().to_string();
+    }
+
+    let original_text_trimmed = original_text.trim();
+    if !original_text_trimmed.is_empty() {
+        let original_with_label = format!("原文：\n{original_text_trimmed}");
+        cleaned = cleaned.replace(&original_with_label, "");
+        if cleaned.trim_start().starts_with(original_text_trimmed) {
+            cleaned = cleaned
+                .trim_start()
+                .trim_start_matches(original_text_trimmed)
+                .trim_start()
+                .to_string();
+        }
+    }
+
+    let cleaned = cleaned
+        .trim_matches(|ch: char| ch.is_whitespace() || ch == '"' || ch == '\'' || ch == '`')
+        .trim()
+        .to_string();
+
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned)
+    }
 }
 
 async fn run_ollama_chat(model: &str, messages: Vec<serde_json::Value>) -> Result<String, String> {
@@ -2489,6 +2580,66 @@ async fn run_ollama_chat(model: &str, messages: Vec<serde_json::Value>) -> Resul
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .ok_or_else(|| "LLM response did not include content".to_string())
+}
+
+fn is_translation_generate_model(model: &str) -> bool {
+    let normalized = model.trim().to_lowercase();
+    normalized.contains("tencent-hy-mt")
+        || normalized.contains("hunyuan-translation")
+        || normalized.contains("hy-mt")
+}
+
+async fn run_ollama_generate(model: &str, prompt: &str) -> Result<String, String> {
+    let client = reqwest::Client::new();
+    let body = serde_json::json!({
+        "model": model,
+        "prompt": prompt,
+        "stream": false
+    });
+
+    let url = "http://localhost:11434/api/generate";
+    let res = client
+        .post(url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to connect to LLM at {}: {}", url, e))?;
+
+    if !res.status().is_success() {
+        return Err(format!("LLM API error: {}", res.status()));
+    }
+
+    let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+    json.get("response")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "LLM response did not include generated text".to_string())
+}
+
+async fn run_translation_model(
+    model: &str,
+    system_prompt: &str,
+    user_prompt: &str,
+) -> Result<String, String> {
+    if is_translation_generate_model(model) {
+        let prompt = format!("{system_prompt}\n\n{user_prompt}");
+        return run_ollama_generate(model, &prompt).await;
+    }
+
+    run_ollama_chat(
+        model,
+        vec![
+            serde_json::json!({
+                "role": "system",
+                "content": system_prompt
+            }),
+            serde_json::json!({
+                "role": "user",
+                "content": user_prompt
+            }),
+        ],
+    )
+    .await
 }
 
 async fn chat_via_ollama(
@@ -2593,48 +2744,32 @@ async fn translate_pdf_selection_text_v2(
         .filter(|text| !text.trim().is_empty())
         .unwrap_or_else(|| "No page context is available.".to_string());
     let primary_prompt = format!(
-        "Translate the following academic PDF selection into Simplified Chinese.\n\nRules:\n1. Output Chinese translation only.\n2. Do not copy the English source unless it is a formula, variable name, URL, DOI, or code fragment.\n3. Keep proper nouns in Chinese and preserve the original English in parentheses when helpful.\n4. Use the page context only for disambiguation.\n5. Do not explain, summarize, or add notes.\n\nPage context:\n{context_block}\n\nSource text:\n{selected_text}"
+        "Translate only the source text below into Simplified Chinese.\n\nRules:\n1. Output only the translation of the source text.\n2. Do not translate, repeat, or summarize the page context.\n3. Use the page context only to disambiguate terms.\n4. Do not copy the English source unless it is a formula, variable name, URL, DOI, or code fragment.\n5. No explanation, no notes, no preface.\n6. The output must stay proportional to the source text length.\n\nPage context (reference only, never translate it):\n{context_block}\n\nSource text (translate this part only):\n{selected_text}"
     );
 
-    let primary_result = run_ollama_chat(
+    let primary_result = run_translation_model(
         model,
-        vec![
-            serde_json::json!({
-                "role": "system",
-                "content": "You are a precise academic translator. Always translate the source text into Simplified Chinese. Never return the original English sentence unchanged."
-            }),
-            serde_json::json!({
-                "role": "user",
-                "content": primary_prompt
-            }),
-        ],
+        "You are a precise academic translator. Translate only the user-selected source text into Simplified Chinese. Never translate the page context. Never return the original English sentence unchanged.",
+        &primary_prompt,
     )
     .await
-    .and_then(|text| validate_translation_output(selected_text, text));
+    .and_then(|text| validate_selection_translation_output(selected_text, text));
 
     if let Ok(validated) = primary_result {
         return Ok(validated);
     }
 
     let retry_prompt = format!(
-        "The previous attempt failed because it kept too much English. Try again.\n\nTranslate the source text into natural Simplified Chinese.\n\nStrict rules:\n1. Your answer must be Chinese translation, not the original English.\n2. Replace full English clauses with Chinese.\n3. Keep formulas, tensor names, URLs, DOI, and code identifiers as-is.\n4. If a proper noun must stay in English, keep a short Chinese translation and put the English in parentheses.\n5. No explanation. No bullet points. No preface.\n\nPage context:\n{context_block}\n\nSource text:\n{selected_text}"
+        "The previous attempt failed because it included too much non-source content.\n\nTry again and translate only the selected source text into natural Simplified Chinese.\n\nStrict rules:\n1. Translate only the source text.\n2. Do not translate or paraphrase the page context.\n3. Keep formulas, tensor names, URLs, DOI, and code identifiers as-is.\n4. If a proper noun must stay in English, keep a short Chinese translation and put the English in parentheses.\n5. No explanation. No bullet points. No preface.\n6. Keep the output length close to the source text length.\n\nPage context (reference only):\n{context_block}\n\nSource text:\n{selected_text}"
     );
 
-    run_ollama_chat(
+    run_translation_model(
         model,
-        vec![
-            serde_json::json!({
-                "role": "system",
-                "content": "You are an academic English-to-Chinese translator. You must return a valid Simplified Chinese translation, not a paraphrase and not a copy of the source."
-            }),
-            serde_json::json!({
-                "role": "user",
-                "content": retry_prompt
-            }),
-        ],
+        "You are an academic English-to-Chinese translator. You must return a valid Simplified Chinese translation of only the selected source text, not the page context.",
+        &retry_prompt,
     )
     .await
-    .and_then(|text| validate_translation_output(selected_text, text))
+    .and_then(|text| validate_selection_translation_output(selected_text, text))
 }
 
 async fn translate_pdf_page_markdown_v2(page_text: &str, model: &str) -> Result<String, String> {
@@ -2642,18 +2777,10 @@ async fn translate_pdf_page_markdown_v2(page_text: &str, model: &str) -> Result<
         "Translate the following full PDF page into Simplified Chinese Markdown.\n\nRules:\n1. Output Markdown only.\n2. Preserve headings, paragraph structure, and list structure whenever present.\n3. Do not summarize or omit the main content.\n4. Keep formulas, variable names, URLs, DOI, and code snippets unchanged.\n5. Translate normal English prose into Chinese rather than copying it.\n\nPage text:\n{page_text}"
     );
 
-    let primary_result = run_ollama_chat(
+    let primary_result = run_translation_model(
         model,
-        vec![
-            serde_json::json!({
-                "role": "system",
-                "content": "You are an academic PDF page translator. Return Simplified Chinese Markdown and do not leave normal English prose untranslated."
-            }),
-            serde_json::json!({
-                "role": "user",
-                "content": primary_prompt
-            }),
-        ],
+        "You are an academic PDF page translator. Return Simplified Chinese Markdown and do not leave normal English prose untranslated.",
+        &primary_prompt,
     )
     .await
     .and_then(|text| validate_translation_output(page_text, text));
@@ -2666,18 +2793,10 @@ async fn translate_pdf_page_markdown_v2(page_text: &str, model: &str) -> Result<
         "The previous attempt copied too much English. Retry and translate the page into Simplified Chinese Markdown.\n\nStrict rules:\n1. Translate all normal English prose into Chinese.\n2. Keep formulas, variable names, URLs, DOI, and code snippets unchanged.\n3. Preserve section structure and paragraph breaks.\n4. Do not summarize.\n\nPage text:\n{page_text}"
     );
 
-    run_ollama_chat(
+    run_translation_model(
         model,
-        vec![
-            serde_json::json!({
-                "role": "system",
-                "content": "You must produce a valid Simplified Chinese Markdown translation of the source page."
-            }),
-            serde_json::json!({
-                "role": "user",
-                "content": retry_prompt
-            }),
-        ],
+        "You must produce a valid Simplified Chinese Markdown translation of the source page.",
+        &retry_prompt,
     )
     .await
     .and_then(|text| validate_translation_output(page_text, text))
@@ -2927,6 +3046,7 @@ async fn translate_pdf_selection(
         translated_text,
         page: request.page,
         generated_at: cards::current_timestamp_iso_utc(),
+        model_used: request.model,
     })
 }
 
@@ -2943,6 +3063,7 @@ async fn translate_pdf_page(
             translated_markdown: "当前页没有可翻译文本，OCR 后可重试。".to_string(),
             source_text_length: 0,
             generated_at: cards::current_timestamp_iso_utc(),
+            model_used: request.model,
         });
     }
 
@@ -2952,6 +3073,7 @@ async fn translate_pdf_page(
         translated_markdown,
         source_text_length,
         generated_at: cards::current_timestamp_iso_utc(),
+        model_used: request.model,
     })
 }
 

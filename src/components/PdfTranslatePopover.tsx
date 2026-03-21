@@ -15,14 +15,15 @@ interface TranslatePdfSelectionResult {
   translated_text: string;
   page: number;
   generated_at: string;
+  model_used: string;
 }
 
 interface PdfTranslatePopoverProps {
   selectedText: string;
   pdfPath: string;
   page: number;
-  currentModel: string;
-  ensureAiReady?: () => Promise<string>;
+  translationModel: string;
+  ensureTranslationReady?: () => Promise<string>;
   style?: React.CSSProperties;
   onClose: () => void;
   onStatus: (message: string, tone?: StatusTone, persistent?: boolean) => void;
@@ -56,8 +57,8 @@ export const PdfTranslatePopover: React.FC<PdfTranslatePopoverProps> = ({
   selectedText,
   pdfPath,
   page,
-  currentModel,
-  ensureAiReady,
+  translationModel,
+  ensureTranslationReady,
   style,
   onClose,
   onStatus,
@@ -179,7 +180,9 @@ export const PdfTranslatePopover: React.FC<PdfTranslatePopoverProps> = ({
 
     void (async () => {
       try {
-        const model = ensureAiReady ? await ensureAiReady() : currentModel;
+        const model = ensureTranslationReady
+          ? await ensureTranslationReady()
+          : translationModel;
         const payload = await invoke<TranslatePdfSelectionResult>(
           "translate_pdf_selection",
           {
@@ -207,7 +210,14 @@ export const PdfTranslatePopover: React.FC<PdfTranslatePopoverProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [currentModel, ensureAiReady, normalizedText, onStatus, page, pdfPath]);
+  }, [
+    ensureTranslationReady,
+    normalizedText,
+    onStatus,
+    page,
+    pdfPath,
+    translationModel,
+  ]);
 
   const handleHeaderMouseDown = (event: React.MouseEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
@@ -267,6 +277,9 @@ export const PdfTranslatePopover: React.FC<PdfTranslatePopoverProps> = ({
           <div className="term-section">
             <div className="term-section-label">译文</div>
             <div className="term-section-body">{result.translated_text}</div>
+          </div>
+          <div className="term-popover-subtitle">
+            翻译模型：{result.model_used || translationModel}
           </div>
           <div className="term-popover-actions">
             <button className="action-button" onClick={onClose}>

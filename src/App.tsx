@@ -32,7 +32,7 @@ type InferenceMode = "single_mm" | "dual_pipeline";
 type IngestMode = "overwrite" | "incremental";
 type SidebarTool = "workspace" | "citations" | "notes" | "knowledge" | "cards";
 type StatusTone = "info" | "error";
-type AiRequirement = "chat" | "index";
+type AiRequirement = "chat" | "index" | "translate";
 
 interface InferenceSettings {
   mode: InferenceMode;
@@ -48,6 +48,7 @@ interface IngestProgress {
 interface StatusBanner {
   message: string;
   tone: StatusTone;
+  progress?: number;
   action?: StatusBannerAction;
 }
 
@@ -133,6 +134,13 @@ interface OllamaRuntimeProgress {
   completed?: number;
 }
 
+interface PullProgress {
+  status: string;
+  digest?: string;
+  total?: number;
+  completed?: number;
+}
+
 interface CitationItem {
   id: string;
   path: string;
@@ -161,6 +169,7 @@ interface DocumentResult {
 const REQUIRED_MODELS = {
   embedding: "nomic-embed-text",
   chat: "qwen2.5:0.5b",
+  translation: "MedAIBase/Tencent-HY-MT1.5:1.8b-q4_K_M",
 };
 
 const OLLAMA_MIN_RECOMMENDED_VERSION = "0.17.7";
@@ -259,7 +268,8 @@ function App() {
   const [pdfPage, setPdfPage] = useState(1);
   const [isPdfDockVisible, setIsPdfDockVisible] = useState(false);
   const [isPdfFocusMode, setIsPdfFocusMode] = useState(false);
-        const [currentModel, setCurrentModel] = useState("");
+  const [currentModel, setCurrentModel] = useState("");
+  const [translationModel, setTranslationModel] = useState("");
   const [activeSidebarTool, setActiveSidebarTool] =
     useState<SidebarTool>("workspace");
   const [ingestMode, setIngestMode] = useState<IngestMode>("overwrite");
@@ -298,14 +308,19 @@ function App() {
 
   const statusTimerRef = useRef<number | null>(null);
   const previousPdfPathRef = useRef<string | null>(null);
-    const sidebarPanelRef = useRef<PanelImperativeHandle | null>(null);
+  const sidebarPanelRef = useRef<PanelImperativeHandle | null>(null);
   const mainPanelRef = useRef<PanelImperativeHandle | null>(null);
-const focusRestoreLayoutRef = useRef(DEFAULT_TWO_PANEL_LAYOUT);
-    const pdfPanelRef = useRef<PanelImperativeHandle | null>(null);
+  const focusRestoreLayoutRef = useRef(DEFAULT_TWO_PANEL_LAYOUT);
+  const pdfPanelRef = useRef<PanelImperativeHandle | null>(null);
   const aiPreparationPromiseRef = useRef<Promise<string> | null>(null);
-  const aiPreparedStateRef = useRef<{ chat: boolean; index: boolean }>({
+  const aiPreparedStateRef = useRef<{
+    chat: boolean;
+    index: boolean;
+    translate: boolean;
+  }>({
     chat: false,
     index: false,
+    translate: false,
   });
 
   const progressPercent = useMemo(() => {
@@ -322,7 +337,6 @@ const focusRestoreLayoutRef = useRef(DEFAULT_TWO_PANEL_LAYOUT);
 
   const stageLabel = STAGE_LABELS[ingestProgress?.stage || ""] || "处理中";
 
-
   const clearStatusTimer = useCallback(() => {
     if (statusTimerRef.current !== null) {
       window.clearTimeout(statusTimerRef.current);
@@ -335,10 +349,11 @@ const focusRestoreLayoutRef = useRef(DEFAULT_TWO_PANEL_LAYOUT);
       message: string,
       tone: StatusTone = "info",
       timeoutMs?: number,
+      progress?: number,
       action?: StatusBannerAction,
     ) => {
       clearStatusTimer();
-      const nextBanner: StatusBanner = { message, tone, action };
+      const nextBanner: StatusBanner = { message, tone, progress, action };
       const startsExpanded = Boolean(
         (timeoutMs && timeoutMs > 0) || tone === "error" || action,
       );
@@ -365,9 +380,14 @@ const focusRestoreLayoutRef = useRef(DEFAULT_TWO_PANEL_LAYOUT);
       message: string,
       tone: StatusTone = "info",
       timeoutMs = 3200,
+      progressOrAction?: number | StatusBannerAction,
       action?: StatusBannerAction,
     ) => {
-      showStatus(message, tone, timeoutMs, action);
+      const progress =
+        typeof progressOrAction === "number" ? progressOrAction : undefined;
+      const resolvedAction =
+        typeof progressOrAction === "number" ? action : progressOrAction;
+      showStatus(message, tone, timeoutMs, progress, resolvedAction);
     },
     [showStatus],
   );
@@ -376,9 +396,14 @@ const focusRestoreLayoutRef = useRef(DEFAULT_TWO_PANEL_LAYOUT);
     (
       message: string,
       tone: StatusTone = "info",
+      progressOrAction?: number | StatusBannerAction,
       action?: StatusBannerAction,
     ) => {
-      showStatus(message, tone, undefined, action);
+      const progress =
+        typeof progressOrAction === "number" ? progressOrAction : undefined;
+      const resolvedAction =
+        typeof progressOrAction === "number" ? action : progressOrAction;
+      showStatus(message, tone, undefined, progress, resolvedAction);
     },
     [showStatus],
   );
@@ -522,9 +547,15 @@ const focusRestoreLayoutRef = useRef(DEFAULT_TWO_PANEL_LAYOUT);
     async (requirement: AiRequirement = "chat") => {
       const preparedState = aiPreparedStateRef.current;
       const alreadyPrepared =
-        requirement === "index" ? preparedState.index : preparedState.chat;
-      if (alreadyPrepared && currentModel) {
-        return currentModel;
+        requirement === "index"
+          ? preparedState.index
+          : requirement === "translate"
+            ? preparedState.translate
+            : preparedState.chat;
+      const activeModelForRequirement =
+        requirement === "translate" ? translationModel : currentModel;
+      if (alreadyPrepared && activeModelForRequirement) {
+        return activeModelForRequirement;
       }
 
       if (aiPreparationPromiseRef.current) {
@@ -617,24 +648,51 @@ const focusRestoreLayoutRef = useRef(DEFAULT_TWO_PANEL_LAYOUT);
         ) {
           await pullModel(REQUIRED_MODELS.embedding);
         }
-        if (!names.some((name) => name.includes(REQUIRED_MODELS.chat))) {
+        if (
+          requirement === "translate" &&
+          !names.some((name) => name.includes(REQUIRED_MODELS.translation))
+        ) {
+          await pullModel(REQUIRED_MODELS.translation);
+        }
+        if (
+          requirement !== "translate" &&
+          !names.some((name) => name.includes(REQUIRED_MODELS.chat))
+        ) {
           await pullModel(REQUIRED_MODELS.chat);
         }
 
         models = await getInstalledModels();
         names = models.map((model) => model.name);
         const selectedModel =
-          names.find((name) => name === REQUIRED_MODELS.chat) ||
-          names.find((name) => name.includes(REQUIRED_MODELS.chat)) ||
-          names[0] ||
-          currentModel ||
-          REQUIRED_MODELS.chat;
+          requirement === "translate"
+            ? names.find((name) => name === REQUIRED_MODELS.translation) ||
+              names.find((name) =>
+                name.includes(REQUIRED_MODELS.translation),
+              ) ||
+              translationModel ||
+              REQUIRED_MODELS.translation
+            : names.find((name) => name === REQUIRED_MODELS.chat) ||
+              names.find((name) => name.includes(REQUIRED_MODELS.chat)) ||
+              names[0] ||
+              currentModel ||
+              REQUIRED_MODELS.chat;
 
-        setCurrentModel(selectedModel);
+        if (requirement === "translate") {
+          setTranslationModel(selectedModel);
+        } else {
+          setCurrentModel(selectedModel);
+        }
         aiPreparedStateRef.current = {
-          chat: true,
+          chat:
+            requirement === "translate"
+              ? aiPreparedStateRef.current.chat
+              : true,
           index:
             requirement === "index" ? true : aiPreparedStateRef.current.index,
+          translate:
+            requirement === "translate"
+              ? true
+              : aiPreparedStateRef.current.translate,
         };
         clearStatus();
         return selectedModel;
@@ -666,8 +724,14 @@ const focusRestoreLayoutRef = useRef(DEFAULT_TWO_PANEL_LAYOUT);
       readOllamaVersion,
       showOllamaUpgradeStatus,
       showPersistentStatus,
+      translationModel,
       waitForOllamaReady,
     ],
+  );
+
+  const ensureTranslationReady = useCallback(
+    () => ensureAiReady("translate"),
+    [ensureAiReady],
   );
 
   const handleChildStatus = useCallback(
@@ -826,7 +890,7 @@ const focusRestoreLayoutRef = useRef(DEFAULT_TWO_PANEL_LAYOUT);
           0,
           Math.min(100, Math.round((completed / total) * 100)),
         );
-        showPersistentStatus(`${status} ${percent}%`);
+        showPersistentStatus(`${status} ${percent}%`, "info", percent);
         return;
       }
       showPersistentStatus(status);
@@ -838,7 +902,41 @@ const focusRestoreLayoutRef = useRef(DEFAULT_TWO_PANEL_LAYOUT);
     };
   }, [showPersistentStatus]);
 
-    useEffect(() => {
+  useEffect(() => {
+    let unlistenFn: (() => void) | null = null;
+    listen<PullProgress>("pull-progress", (event) => {
+      const { status, total, completed } = event.payload;
+      if (!status) return;
+
+      const normalizedStatus = status.trim().toLowerCase();
+      if (normalizedStatus === "success") {
+        showTemporaryStatus("模型拉取完成。", "info", 2600, 100);
+        return;
+      }
+
+      if (
+        typeof total === "number" &&
+        total > 0 &&
+        typeof completed === "number"
+      ) {
+        const percent = Math.max(
+          0,
+          Math.min(100, Math.round((completed / total) * 100)),
+        );
+        showPersistentStatus(status, "info", percent);
+        return;
+      }
+
+      showPersistentStatus(status);
+    }).then((unlisten) => {
+      unlistenFn = unlisten;
+    });
+    return () => {
+      if (unlistenFn) unlistenFn();
+    };
+  }, [showPersistentStatus, showTemporaryStatus]);
+
+  useEffect(() => {
     let cancelled = false;
     let timerId: number | null = null;
     let cancelIdleCheck: (() => void) | null = null;
@@ -1261,10 +1359,15 @@ const focusRestoreLayoutRef = useRef(DEFAULT_TWO_PANEL_LAYOUT);
           <div className="ingest-panel">
             <div className="ingest-title">{stageLabel}</div>
             <div className="ingest-subtitle">
-              {ingestProgress?.total ? `${ingestProgress.current}/${ingestProgress.total}` : "Preparing..."}
+              {ingestProgress?.total
+                ? `${ingestProgress.current}/${ingestProgress.total}`
+                : "Preparing..."}
             </div>
             <div className="ingest-progress-track">
-              <div className="ingest-progress-fill" style={{ width: `${progressPercent}%` }} />
+              <div
+                className="ingest-progress-fill"
+                style={{ width: `${progressPercent}%` }}
+              />
             </div>
           </div>
         )}
@@ -1350,9 +1453,11 @@ const focusRestoreLayoutRef = useRef(DEFAULT_TWO_PANEL_LAYOUT);
               Enter keywords to search local knowledge base.
             </div>
           )}
-          {lastKnowledgeQuery && !isKnowledgeSearching && knowledgeResults.length === 0 && (
-            <div className="support-empty">No related results found.</div>
-          )}
+          {lastKnowledgeQuery &&
+            !isKnowledgeSearching &&
+            knowledgeResults.length === 0 && (
+              <div className="support-empty">No related results found.</div>
+            )}
           {knowledgeResults.map((doc, index) => (
             <div key={doc.id} className="support-item">
               <div className="support-item-title">
@@ -1515,6 +1620,14 @@ const focusRestoreLayoutRef = useRef(DEFAULT_TWO_PANEL_LAYOUT);
           {isStatusBannerExpanded && (
             <div className={`status-banner ${statusBanner.tone}`}>
               <div className="status-banner-text">{statusBanner.message}</div>
+              {typeof statusBanner.progress === "number" && (
+                <div className="status-banner-progress-track">
+                  <div
+                    className="status-banner-progress-fill"
+                    style={{ width: `${statusBanner.progress}%` }}
+                  />
+                </div>
+              )}
               <div className="status-banner-controls">
                 {statusBanner.action && (
                   <button
@@ -1549,157 +1662,162 @@ const focusRestoreLayoutRef = useRef(DEFAULT_TWO_PANEL_LAYOUT);
       >
         <Group orientation="horizontal">
           <Panel
-          panelRef={sidebarPanelRef}
-          defaultSize="23%"
-          minSize={isPdfFocusMode ? "0%" : "16%"}
-          maxSize="38%"
-          className={`sidebar-panel ${isPdfFocusMode ? "panel-collapsed" : ""}`}
-        >
-          <aside className="sidebar sidebar-with-rail">
-            <div className="sidebar-rail">
-              <button
-                className={`rail-button ${activeSidebarTool === "workspace" ? "active" : ""}`}
-                onClick={() => setActiveSidebarTool("workspace")}
-                title="Workspace"
-              >
-                <FolderOpen size={18} />
-              </button>
-              <button
-                className={`rail-button ${activeSidebarTool === "citations" ? "active" : ""}`}
-                onClick={() => setActiveSidebarTool("citations")}
-                title="Citations"
-              >
-                <MessageSquareText size={18} />
-              </button>
-              <button
-                className={`rail-button ${activeSidebarTool === "notes" ? "active" : ""}`}
-                onClick={() => setActiveSidebarTool("notes")}
-                title="Notes"
-              >
-                <StickyNote size={18} />
-              </button>
-              <button
-                className={`rail-button ${activeSidebarTool === "knowledge" ? "active" : ""}`}
-                onClick={() => setActiveSidebarTool("knowledge")}
-                title="Knowledge Search"
-              >
-                <Search size={18} />
-              </button>
-              <button
-                className={`rail-button ${activeSidebarTool === "cards" ? "active" : ""}`}
-                onClick={() => setActiveSidebarTool("cards")}
-                title="Knowledge Cards"
-              >
-                <LayoutGrid size={18} />
-              </button>
-            </div>
+            panelRef={sidebarPanelRef}
+            defaultSize="23%"
+            minSize={isPdfFocusMode ? "0%" : "16%"}
+            maxSize="38%"
+            className={`sidebar-panel ${isPdfFocusMode ? "panel-collapsed" : ""}`}
+          >
+            <aside className="sidebar sidebar-with-rail">
+              <div className="sidebar-rail">
+                <button
+                  className={`rail-button ${activeSidebarTool === "workspace" ? "active" : ""}`}
+                  onClick={() => setActiveSidebarTool("workspace")}
+                  title="Workspace"
+                >
+                  <FolderOpen size={18} />
+                </button>
+                <button
+                  className={`rail-button ${activeSidebarTool === "citations" ? "active" : ""}`}
+                  onClick={() => setActiveSidebarTool("citations")}
+                  title="Citations"
+                >
+                  <MessageSquareText size={18} />
+                </button>
+                <button
+                  className={`rail-button ${activeSidebarTool === "notes" ? "active" : ""}`}
+                  onClick={() => setActiveSidebarTool("notes")}
+                  title="Notes"
+                >
+                  <StickyNote size={18} />
+                </button>
+                <button
+                  className={`rail-button ${activeSidebarTool === "knowledge" ? "active" : ""}`}
+                  onClick={() => setActiveSidebarTool("knowledge")}
+                  title="Knowledge Search"
+                >
+                  <Search size={18} />
+                </button>
+                <button
+                  className={`rail-button ${activeSidebarTool === "cards" ? "active" : ""}`}
+                  onClick={() => setActiveSidebarTool("cards")}
+                  title="Knowledge Cards"
+                >
+                  <LayoutGrid size={18} />
+                </button>
+              </div>
 
-            <div className="sidebar-content">
-              <div className="sidebar-header">
-                <span>
-                  {activeSidebarTool === "workspace"
-                    ? "Workspace"
-                    : activeSidebarTool === "citations"
-                      ? "Citations"
-                      : activeSidebarTool === "notes"
-                        ? "Notes"
-                        : activeSidebarTool === "knowledge"
-                          ? "Knowledge"
-                          : "Knowledge Cards"}
-                </span>
-                <div className="sidebar-actions">
-                  <button
-                    className="icon-button"
-                    onClick={() => void handleImportZotero()}
-                    title="Auto import Zotero PDFs"
-                  >
-                    <BookOpen size={16} />
-                  </button>
-                  <button
-                    className="icon-button"
-                    onClick={() => void handleOpenFiles()}
-                    title="Import files"
-                  >
-                    <FilePlus size={16} />
-                  </button>
-                  <button
-                    className="icon-button"
-                    onClick={() => void handleOpenFolder()}
-                    title="Import folder"
-                  >
-                    <FolderOpen size={16} />
-                  </button>
-                  <button
-                    className="icon-button"
-                    onClick={() => setIsSettingsOpen(true)}
-                    title="Settings"
-                  >
-                    <Settings size={16} />
-                  </button>
+              <div className="sidebar-content">
+                <div className="sidebar-header">
+                  <span>
+                    {activeSidebarTool === "workspace"
+                      ? "Workspace"
+                      : activeSidebarTool === "citations"
+                        ? "Citations"
+                        : activeSidebarTool === "notes"
+                          ? "Notes"
+                          : activeSidebarTool === "knowledge"
+                            ? "Knowledge"
+                            : "Knowledge Cards"}
+                  </span>
+                  <div className="sidebar-actions">
+                    <button
+                      className="icon-button"
+                      onClick={() => void handleImportZotero()}
+                      title="Auto import Zotero PDFs"
+                    >
+                      <BookOpen size={16} />
+                    </button>
+                    <button
+                      className="icon-button"
+                      onClick={() => void handleOpenFiles()}
+                      title="Import files"
+                    >
+                      <FilePlus size={16} />
+                    </button>
+                    <button
+                      className="icon-button"
+                      onClick={() => void handleOpenFolder()}
+                      title="Import folder"
+                    >
+                      <FolderOpen size={16} />
+                    </button>
+                    <button
+                      className="icon-button"
+                      onClick={() => setIsSettingsOpen(true)}
+                      title="Settings"
+                    >
+                      <Settings size={16} />
+                    </button>
+                  </div>
                 </div>
+
+                {sidebarToolBody}
               </div>
+            </aside>
+          </Panel>
 
-              {sidebarToolBody}
-            </div>
-          </aside>
-        </Panel>
-
-        <Separator
-          className={`PanelResizeHandle ${isPdfFocusMode ? "panel-separator-hidden" : ""}`}
-        />
-        <Panel
-          panelRef={mainPanelRef}
-          defaultSize="45%"
-          minSize={isPdfFocusMode ? "0%" : "24%"}
-          className="main-panel pdf-center-panel"
-        >
-          <div className="pdf-center-shell">
-            {activePdfPath && isPdfDockVisible ? (
-              <PdfDock
-                activePdfPath={activePdfPath}
-                currentModel={currentModel || REQUIRED_MODELS.chat}
-                ensureAiReady={ensureAiReady}
-                currentPage={pdfPage}
-                onPageChange={setPdfPage}
-                onStatus={handleChildStatus}
-                onCardSaved={handleCardSaved}
-                isFocusMode={isPdfFocusMode}
-                onToggleFocusMode={handleTogglePdfFocusMode}
-                onClose={handleClosePdfDock}
-              />
-            ) : (
-              <div className="pdf-empty-state">
-                <h2>PDF Reader</h2>
-                <p>
-                  Select a PDF file from the left workspace to preview it here.
-                </p>
-              </div>
-            )}
-          </div>
-        </Panel>
-
-        <Separator
-          className={`PanelResizeHandle ${isPdfFocusMode ? "panel-separator-hidden" : ""}`}
-        />
-        <Panel
-          panelRef={pdfPanelRef}
-          defaultSize="32%"
-          minSize={isPdfFocusMode ? "0%" : "22%"}
-          maxSize={isPdfFocusMode ? "0%" : "46%"}
-          className={`pdf-dock-panel ai-right-panel ${isPdfFocusMode ? "panel-collapsed" : ""}`}
-        >
-          <ChatInterface
-            currentModel={currentModel}
-            activeFilePath={activeFilePath}
-            pdfPage={pdfPage}
-            onPdfPageChange={setPdfPage}
-            onStatus={handleChildStatus}
-            onCardSaved={handleCardSaved}
-            onModelChange={setCurrentModel}
-            showSupportPanels={false}
+          <Separator
+            className={`PanelResizeHandle ${isPdfFocusMode ? "panel-separator-hidden" : ""}`}
           />
-        </Panel>
-      </Group>
+          <Panel
+            panelRef={mainPanelRef}
+            defaultSize="45%"
+            minSize={isPdfFocusMode ? "0%" : "24%"}
+            className="main-panel pdf-center-panel"
+          >
+            <div className="pdf-center-shell">
+              {activePdfPath && isPdfDockVisible ? (
+                <PdfDock
+                  activePdfPath={activePdfPath}
+                  currentModel={currentModel || REQUIRED_MODELS.chat}
+                  ensureAiReady={ensureAiReady}
+                  translationModel={
+                    translationModel || REQUIRED_MODELS.translation
+                  }
+                  ensureTranslationReady={ensureTranslationReady}
+                  currentPage={pdfPage}
+                  onPageChange={setPdfPage}
+                  onStatus={handleChildStatus}
+                  onCardSaved={handleCardSaved}
+                  isFocusMode={isPdfFocusMode}
+                  onToggleFocusMode={handleTogglePdfFocusMode}
+                  onClose={handleClosePdfDock}
+                />
+              ) : (
+                <div className="pdf-empty-state">
+                  <h2>PDF Reader</h2>
+                  <p>
+                    Select a PDF file from the left workspace to preview it
+                    here.
+                  </p>
+                </div>
+              )}
+            </div>
+          </Panel>
+
+          <Separator
+            className={`PanelResizeHandle ${isPdfFocusMode ? "panel-separator-hidden" : ""}`}
+          />
+          <Panel
+            panelRef={pdfPanelRef}
+            defaultSize="32%"
+            minSize={isPdfFocusMode ? "0%" : "22%"}
+            maxSize={isPdfFocusMode ? "0%" : "46%"}
+            className={`pdf-dock-panel ai-right-panel ${isPdfFocusMode ? "panel-collapsed" : ""}`}
+          >
+            <ChatInterface
+              currentModel={currentModel}
+              activeFilePath={activeFilePath}
+              pdfPage={pdfPage}
+              onPdfPageChange={setPdfPage}
+              onStatus={handleChildStatus}
+              onCardSaved={handleCardSaved}
+              onModelChange={setCurrentModel}
+              showSupportPanels={false}
+            />
+          </Panel>
+        </Group>
       </div>
 
       {isSettingsOpen && (
@@ -1807,22 +1925,3 @@ const focusRestoreLayoutRef = useRef(DEFAULT_TWO_PANEL_LAYOUT);
 }
 
 export default App;
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
