@@ -21,7 +21,11 @@ import {
   Separator,
   type PanelImperativeHandle,
 } from "react-resizable-panels";
-import { FileNode, FileTree } from "./components/FileTree";
+import {
+  FileNode,
+  FileTree,
+  type TreeMutationPayload,
+} from "./components/FileTree";
 import { ChatInterface } from "./components/ChatInterface";
 import { CardLibrary } from "./components/CardLibrary";
 import { PdfDock } from "./components/PdfDock";
@@ -173,6 +177,8 @@ const REQUIRED_MODELS = {
 };
 
 const OLLAMA_MIN_RECOMMENDED_VERSION = "0.17.7";
+const CHAT_MODEL_KEY = "ra_chat_model_v1";
+const TRANSLATION_MODEL_KEY = "ra_translation_model_v1";
 
 const STAGE_LABELS: Record<string, string> = {
   scan: "扫描文件",
@@ -268,8 +274,14 @@ function App() {
   const [pdfPage, setPdfPage] = useState(1);
   const [isPdfDockVisible, setIsPdfDockVisible] = useState(false);
   const [isPdfFocusMode, setIsPdfFocusMode] = useState(false);
-  const [currentModel, setCurrentModel] = useState("");
-  const [translationModel, setTranslationModel] = useState("");
+  const [currentModel, setCurrentModel] = useState(() => {
+    const stored = localStorage.getItem(CHAT_MODEL_KEY)?.trim();
+    return stored || REQUIRED_MODELS.chat;
+  });
+  const [translationModel, setTranslationModel] = useState(() => {
+    const stored = localStorage.getItem(TRANSLATION_MODEL_KEY)?.trim();
+    return stored || REQUIRED_MODELS.translation;
+  });
   const [activeSidebarTool, setActiveSidebarTool] =
     useState<SidebarTool>("workspace");
   const [ingestMode, setIngestMode] = useState<IngestMode>("overwrite");
@@ -663,18 +675,46 @@ function App() {
 
         models = await getInstalledModels();
         names = models.map((model) => model.name);
+        const preferredChatModel =
+          currentModel &&
+          names.some(
+            (name) =>
+              name === currentModel ||
+              name.startsWith(`${currentModel.split(":")[0]}:`),
+          )
+            ? names.find((name) => name === currentModel) ||
+              names.find((name) =>
+                name.startsWith(`${currentModel.split(":")[0]}:`),
+              ) ||
+              currentModel
+            : "";
+        const preferredTranslationModel =
+          translationModel &&
+          names.some(
+            (name) =>
+              name === translationModel ||
+              name.startsWith(`${translationModel.split(":")[0]}:`),
+          )
+            ? names.find((name) => name === translationModel) ||
+              names.find((name) =>
+                name.startsWith(`${translationModel.split(":")[0]}:`),
+              ) ||
+              translationModel
+            : "";
         const selectedModel =
           requirement === "translate"
-            ? names.find((name) => name === REQUIRED_MODELS.translation) ||
+            ? preferredTranslationModel ||
+              names.find((name) => name === REQUIRED_MODELS.translation) ||
               names.find((name) =>
                 name.includes(REQUIRED_MODELS.translation),
               ) ||
               translationModel ||
               REQUIRED_MODELS.translation
-            : names.find((name) => name === REQUIRED_MODELS.chat) ||
+            : preferredChatModel ||
+              names.find((name) => name === REQUIRED_MODELS.chat) ||
               names.find((name) => name.includes(REQUIRED_MODELS.chat)) ||
-              names[0] ||
               currentModel ||
+              names[0] ||
               REQUIRED_MODELS.chat;
 
         if (requirement === "translate") {
@@ -769,6 +809,22 @@ function App() {
     localStorage.setItem("ra_ingest_mode_v1", ingestMode);
   }, [ingestMode]);
 
+  useEffect(() => {
+    if (currentModel.trim()) {
+      localStorage.setItem(CHAT_MODEL_KEY, currentModel.trim());
+    } else {
+      localStorage.removeItem(CHAT_MODEL_KEY);
+    }
+  }, [currentModel]);
+
+  useEffect(() => {
+    if (translationModel.trim()) {
+      localStorage.setItem(TRANSLATION_MODEL_KEY, translationModel.trim());
+    } else {
+      localStorage.removeItem(TRANSLATION_MODEL_KEY);
+    }
+  }, [translationModel]);
+
   const loadInferenceSettings = async () => {
     const startedAt = performance.now();
     try {
@@ -847,6 +903,39 @@ function App() {
       logTiming(`loadDirectoryChildren ${path}`, startedAt);
     }
   }, []);
+
+  const handleTreeChanged = useCallback(
+    async (payload: TreeMutationPayload) => {
+      for (const path of payload.refreshPaths) {
+        await loadDirectoryChildren(path);
+      }
+
+      if (payload.rebasedPath && activeFilePath) {
+        const { from, to } = payload.rebasedPath;
+        if (
+          activeFilePath === from ||
+          activeFilePath.startsWith(`${from}\\`) ||
+          activeFilePath.startsWith(`${from}/`)
+        ) {
+          setActiveFilePath(activeFilePath.replace(from, to));
+        }
+        return;
+      }
+
+      if (payload.removedPath && activeFilePath) {
+        const removedPath = payload.removedPath;
+        if (
+          activeFilePath === removedPath ||
+          activeFilePath.startsWith(`${removedPath}\\`) ||
+          activeFilePath.startsWith(`${removedPath}/`)
+        ) {
+          setActiveFilePath(null);
+          setIsPdfDockVisible(false);
+        }
+      }
+    },
+    [activeFilePath, loadDirectoryChildren],
+  );
 
   useEffect(() => {
     console.info("[startup] App mounted");
@@ -1379,8 +1468,11 @@ function App() {
         <FileTree
           data={files.length > 0 ? files : undefined}
           activePath={activeFilePath}
+          workspacePath={workspacePath}
           onSelect={handleFileSelect}
           onLoadChildren={loadDirectoryChildren}
+          onTreeChanged={handleTreeChanged}
+          onStatus={handleChildStatus}
         />
       </>
     ) : activeSidebarTool === "cards" ? (

@@ -79,6 +79,14 @@ pub struct PullProgress {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ChatStreamEvent {
+    pub request_id: String,
+    pub phase: String,
+    pub reasoning: String,
+    pub answer: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct HfResolveResult {
     pub url: String,
     pub filename: String,
@@ -486,6 +494,284 @@ fn workspace_root_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(workspace_root)
 }
 
+fn zotero_import_manifest_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    if !app_data_dir.exists() {
+        std::fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
+    }
+    Ok(app_data_dir.join("zotero_import_manifest.json"))
+}
+
+fn load_zotero_import_manifest(app: &AppHandle) -> Result<Vec<String>, String> {
+    let manifest_path = zotero_import_manifest_path(app)?;
+    if !manifest_path.exists() {
+        return Ok(Vec::new());
+    }
+    let content = std::fs::read_to_string(&manifest_path).map_err(|e| e.to_string())?;
+    serde_json::from_str::<Vec<String>>(&content).map_err(|e| e.to_string())
+}
+
+fn save_zotero_import_manifest(app: &AppHandle, entries: &[String]) -> Result<(), String> {
+    let manifest_path = zotero_import_manifest_path(app)?;
+    let payload = serde_json::to_string_pretty(entries).map_err(|e| e.to_string())?;
+    std::fs::write(manifest_path, payload).map_err(|e| e.to_string())
+}
+
+fn normalize_existing_path(path: &Path) -> Result<PathBuf, String> {
+    std::fs::canonicalize(path)
+        .map_err(|e| format!("Failed to resolve path '{}': {}", path.display(), e))
+}
+
+fn ensure_path_within_workspace(path: &Path, workspace_root: &Path) -> Result<PathBuf, String> {
+    let normalized_root = normalize_existing_path(workspace_root)?;
+    let normalized_path = normalize_existing_path(path)?;
+    if !normalized_path.starts_with(&normalized_root) {
+        return Err("Path is outside the workspace.".to_string());
+    }
+    Ok(normalized_path)
+}
+
+fn ensure_non_root_workspace_path(path: &Path, workspace_root: &Path) -> Result<PathBuf, String> {
+    let normalized_path = ensure_path_within_workspace(path, workspace_root)?;
+    let normalized_root = normalize_existing_path(workspace_root)?;
+    if normalized_path == normalized_root {
+        return Err("Workspace root cannot be modified by this action.".to_string());
+    }
+    Ok(normalized_path)
+}
+
+#[cfg(target_os = "windows")]
+fn to_windows_shell_path(path: &Path) -> String {
+    let raw = path.to_string_lossy().to_string();
+    if let Some(stripped) = raw.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{}", stripped);
+    }
+    if let Some(stripped) = raw.strip_prefix(r"\\?\") {
+        return stripped.to_string();
+    }
+    raw
+}
+
+fn validate_entry_name(name: &str) -> Result<String, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("Name cannot be empty.".to_string());
+    }
+    let invalid_chars = ['<', '>', ':', '"', '/', '\\', '|', '?', '*'];
+    if trimmed.chars().any(|ch| invalid_chars.contains(&ch)) {
+        return Err("Name contains invalid path characters.".to_string());
+    }
+    if trimmed == "." || trimmed == ".." {
+        return Err("Reserved path names are not allowed.".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+fn move_to_trash(path: &Path) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        let shell_path = to_windows_shell_path(path);
+        let escaped = shell_path.replace('\'', "''");
+        let script = format!(
+            "$ErrorActionPreference='Stop'; Add-Type -AssemblyName Microsoft.VisualBasic; if (Test-Path -LiteralPath '{escaped}' -PathType Container) {{ [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory('{escaped}', 'OnlyErrorDialogs', 'SendToRecycleBin') }} elseif (Test-Path -LiteralPath '{escaped}') {{ [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile('{escaped}', 'OnlyErrorDialogs', 'SendToRecycleBin') }} else {{ throw 'Path does not exist.' }}"
+        );
+        let output = Command::new("powershell")
+            .args(["-NoProfile", "-Command", &script])
+            .output()
+            .map_err(|e| format!("Failed to start recycle bin command: {}", e))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let detail = if !stderr.is_empty() { stderr } else { stdout };
+            return Err(format!("Failed to move item to recycle bin: {}", detail));
+        }
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        let escaped = path.to_string_lossy().replace('"', "\\\"");
+        let script = format!("tell application \"Finder\" to delete POSIX file \"{}\"", escaped);
+        Command::new("osascript")
+            .args(["-e", &script])
+            .output()
+            .map_err(|e| format!("Failed to move item to trash: {}", e))
+            .and_then(|output| {
+                if output.status.success() {
+                    Ok(())
+                } else {
+                    Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+                }
+            })?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        use std::process::Command;
+        let output = Command::new("gio")
+            .args(["trash", &path.to_string_lossy()])
+            .output()
+            .map_err(|e| format!("Failed to move item to trash: {}", e))?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+        }
+        return Ok(());
+    }
+
+    #[allow(unreachable_code)]
+    Err("Trash is not implemented on this platform.".to_string())
+}
+
+fn copy_workspace_entry_internal(source_path: &Path, target_dir_path: &Path) -> Result<FileNode, String> {
+    let destination = unique_destination_path(target_dir_path, source_path);
+    if source_path.is_dir() {
+        std::fs::create_dir_all(&destination).map_err(|e| e.to_string())?;
+        copy_directory_recursive(source_path, &destination)?;
+    } else {
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::copy(source_path, &destination).map_err(|e| {
+            format!(
+                "Failed to copy '{}' -> '{}': {}",
+                source_path.display(),
+                destination.display(),
+                e
+            )
+        })?;
+    }
+
+    Ok(build_tree_with_depth(&destination, 1))
+}
+
+#[tauri::command]
+async fn create_workspace_folder(
+    parent_path: String,
+    name: String,
+    app: AppHandle,
+) -> Result<FileNode, String> {
+    let workspace_root = workspace_root_dir(&app)?;
+    let parent = ensure_path_within_workspace(Path::new(&parent_path), &workspace_root)?;
+    if !parent.is_dir() {
+        return Err("Parent path is not a directory.".to_string());
+    }
+    let validated_name = validate_entry_name(&name)?;
+    let destination = parent.join(validated_name);
+    if destination.exists() {
+        return Err("A file or folder with the same name already exists.".to_string());
+    }
+    std::fs::create_dir_all(&destination).map_err(|e| {
+        format!("Failed to create folder '{}': {}", destination.display(), e)
+    })?;
+    Ok(build_tree_with_depth(&destination, 1))
+}
+
+#[tauri::command]
+async fn rename_workspace_entry(
+    path: String,
+    new_name: String,
+    app: AppHandle,
+) -> Result<FileNode, String> {
+    let workspace_root = workspace_root_dir(&app)?;
+    let source = ensure_non_root_workspace_path(Path::new(&path), &workspace_root)?;
+    let validated_name = validate_entry_name(&new_name)?;
+    let parent = source
+        .parent()
+        .ok_or_else(|| "Target does not have a parent directory.".to_string())?;
+    let destination = parent.join(validated_name);
+    if destination.exists() && destination != source {
+        return Err("A file or folder with the same name already exists.".to_string());
+    }
+    std::fs::rename(&source, &destination).map_err(|e| {
+        format!(
+            "Failed to rename '{}' -> '{}': {}",
+            source.display(),
+            destination.display(),
+            e
+        )
+    })?;
+    Ok(build_tree_with_depth(&destination, 1))
+}
+
+#[tauri::command]
+async fn trash_workspace_entry(path: String, app: AppHandle) -> Result<(), String> {
+    let workspace_root = workspace_root_dir(&app)?;
+    let target = ensure_non_root_workspace_path(Path::new(&path), &workspace_root)?;
+    move_to_trash(&target)
+}
+
+#[tauri::command]
+async fn copy_workspace_entry(
+    source_path: String,
+    target_dir_path: String,
+    app: AppHandle,
+) -> Result<FileNode, String> {
+    let workspace_root = workspace_root_dir(&app)?;
+    let source = ensure_non_root_workspace_path(Path::new(&source_path), &workspace_root)?;
+    let target_dir = ensure_path_within_workspace(Path::new(&target_dir_path), &workspace_root)?;
+    if !target_dir.is_dir() {
+        return Err("Target path is not a directory.".to_string());
+    }
+    if source.is_dir() && target_dir.starts_with(&source) {
+        return Err("Cannot copy a folder into itself.".to_string());
+    }
+    copy_workspace_entry_internal(&source, &target_dir)
+}
+
+#[tauri::command]
+async fn move_workspace_entry(
+    source_path: String,
+    target_dir_path: String,
+    app: AppHandle,
+) -> Result<FileNode, String> {
+    let workspace_root = workspace_root_dir(&app)?;
+    let source = ensure_non_root_workspace_path(Path::new(&source_path), &workspace_root)?;
+    let target_dir = ensure_path_within_workspace(Path::new(&target_dir_path), &workspace_root)?;
+    if !target_dir.is_dir() {
+        return Err("Target path is not a directory.".to_string());
+    }
+    if source.is_dir() && target_dir.starts_with(&source) {
+        return Err("Cannot move a folder into itself.".to_string());
+    }
+
+    let destination = unique_destination_path(&target_dir, &source);
+    match std::fs::rename(&source, &destination) {
+        Ok(_) => Ok(build_tree_with_depth(&destination, 1)),
+        Err(_) => {
+            let copied = copy_workspace_entry_internal(&source, &target_dir)?;
+            if source.is_dir() {
+                std::fs::remove_dir_all(&source).map_err(|e| {
+                    format!("Failed to remove moved source '{}': {}", source.display(), e)
+                })?;
+            } else {
+                std::fs::remove_file(&source).map_err(|e| {
+                    format!("Failed to remove moved source '{}': {}", source.display(), e)
+                })?;
+            }
+            Ok(copied)
+        }
+    }
+}
+
+#[tauri::command]
+async fn get_workspace_relative_path(path: String, app: AppHandle) -> Result<String, String> {
+    let workspace_root = workspace_root_dir(&app)?;
+    let normalized_root = normalize_existing_path(&workspace_root)?;
+    let normalized_path = ensure_path_within_workspace(Path::new(&path), &workspace_root)?;
+    let relative = normalized_path
+        .strip_prefix(&normalized_root)
+        .map_err(|e| e.to_string())?;
+    let display = relative
+        .iter()
+        .map(|segment| segment.to_string_lossy().to_string())
+        .collect::<Vec<_>>()
+        .join("/");
+    Ok(if display.is_empty() { ".".to_string() } else { display })
+}
+
 fn decode_js_string(value: &str) -> String {
     let mut result = String::new();
     let mut escaped = false;
@@ -807,21 +1093,29 @@ async fn import_zotero_storage_to_workspace(
         std::fs::create_dir_all(&workspace_root).map_err(|e| e.to_string())?;
     }
 
-    let target_root = workspace_root.join("zotero_storage");
+    let target_root = workspace_root.clone();
+    let legacy_target_root = workspace_root.join("zotero_storage");
     let selected_mode = mode.unwrap_or_default();
-    if selected_mode == IngestMode::Overwrite && target_root.exists() {
-        if target_root.is_dir() {
-            std::fs::remove_dir_all(&target_root).map_err(|e| e.to_string())?;
-        } else {
-            std::fs::remove_file(&target_root).map_err(|e| e.to_string())?;
+    if selected_mode == IngestMode::Overwrite {
+        for previous in load_zotero_import_manifest(&app)? {
+            let previous_path = PathBuf::from(previous);
+            if previous_path.exists() && previous_path.is_file() {
+                let _ = std::fs::remove_file(previous_path);
+            }
         }
-    }
-    if !target_root.exists() {
-        std::fs::create_dir_all(&target_root).map_err(|e| e.to_string())?;
+        if legacy_target_root.exists() {
+            if legacy_target_root.is_dir() {
+                let _ = std::fs::remove_dir_all(&legacy_target_root);
+            } else {
+                let _ = std::fs::remove_file(&legacy_target_root);
+            }
+        }
+        save_zotero_import_manifest(&app, &[])?;
     }
 
     let mut copied_pdfs = 0usize;
     let mut skipped_existing = 0usize;
+    let mut imported_paths = Vec::new();
     for entry in walkdir::WalkDir::new(&storage_root)
         .into_iter()
         .filter_map(|e| e.ok())
@@ -839,19 +1133,19 @@ async fn import_zotero_storage_to_workspace(
             continue;
         }
 
-        let rel = entry
-            .path()
-            .strip_prefix(&storage_root)
-            .map_err(|e| e.to_string())?;
-        let dst = target_root.join(rel);
-        if let Some(parent) = dst.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
+        let preferred_dst = target_root.join(
+            entry
+                .path()
+                .file_name()
+                .ok_or_else(|| "PDF file name is missing.".to_string())?,
+        );
 
-        if selected_mode == IngestMode::Incremental && dst.exists() {
+        if selected_mode == IngestMode::Incremental && preferred_dst.exists() {
             skipped_existing += 1;
             continue;
         }
+
+        let dst = unique_destination_path(&target_root, entry.path());
 
         std::fs::copy(entry.path(), &dst).map_err(|e| {
             format!(
@@ -862,17 +1156,20 @@ async fn import_zotero_storage_to_workspace(
             )
         })?;
         copied_pdfs += 1;
+        imported_paths.push(dst.to_string_lossy().to_string());
     }
 
     if copied_pdfs == 0 && skipped_existing == 0 {
         return Err("No PDF files found in Zotero storage.".to_string());
     }
 
+    save_zotero_import_manifest(&app, &imported_paths)?;
+
     let tree = build_tree_with_depth(&workspace_root, 2);
     Ok(ZoteroImportResult {
         source_storage_path: storage_root.to_string_lossy().to_string(),
         workspace_path: workspace_root.to_string_lossy().to_string(),
-        ingest_path: target_root.to_string_lossy().to_string(),
+        ingest_path: workspace_root.to_string_lossy().to_string(),
         tree,
         copied_pdfs,
         skipped_existing,
@@ -2406,6 +2703,30 @@ fn trim_non_empty_model_output(text: String, empty_message: &str) -> Result<Stri
     }
 }
 
+fn sanitize_chat_output(text: &str) -> String {
+    let mut cleaned = text.replace("\r\n", "\n");
+    for marker in [
+        "<|endoftext|>",
+        "<|im_start|>",
+        "<|im_end|>",
+        "<|end|>",
+        "<|user|>",
+        "<|assistant|>",
+        "<|system|>",
+    ] {
+        cleaned = cleaned.replace(marker, "");
+    }
+
+    for prefix in ["user", "assistant", "system"] {
+        let pattern = format!("\n{prefix} ");
+        if let Some(index) = cleaned.find(&pattern) {
+            cleaned.truncate(index);
+        }
+    }
+
+    cleaned.trim().to_string()
+}
+
 fn is_cjk_char(ch: char) -> bool {
     matches!(ch as u32, 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF)
 }
@@ -2575,11 +2896,220 @@ async fn run_ollama_chat(model: &str, messages: Vec<serde_json::Value>) -> Resul
     }
 
     let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
-    json.get("message")
-        .and_then(|v| v.get("content"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| "LLM response did not include content".to_string())
+    let message = json.get("message");
+    let thinking = message
+        .and_then(|value| value.get("thinking"))
+        .and_then(|value| value.as_str())
+        .or_else(|| json.get("thinking").and_then(|value| value.as_str()))
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let content = message
+        .and_then(|value| value.get("content"))
+        .and_then(|value| value.as_str())
+        .or_else(|| json.get("response").and_then(|value| value.as_str()))
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    let (reasoning_from_content, cleaned_answer) = content
+        .map(split_reasoning_and_answer_from_content)
+        .unwrap_or((None, String::new()));
+    let final_reasoning = thinking
+        .map(|value| value.to_string())
+        .or(reasoning_from_content);
+
+    match (final_reasoning, cleaned_answer.trim()) {
+        (Some(reasoning), answer) if !answer.is_empty() => Ok(format!(
+            "<think>\n{}\n</think>\n\n{}",
+            sanitize_chat_output(&reasoning),
+            sanitize_chat_output(answer)
+        )),
+        (Some(reasoning), _) => Ok(format!(
+            "<think>\n{}\n</think>",
+            sanitize_chat_output(&reasoning)
+        )),
+        (None, answer) if !answer.is_empty() => Ok(sanitize_chat_output(answer)),
+        (None, _) => Err("LLM response did not include content".to_string()),
+    }
+}
+
+async fn run_ollama_chat_stream(
+    window: &Window,
+    request_id: &str,
+    model: &str,
+    messages: Vec<serde_json::Value>,
+) -> Result<String, String> {
+    let client = reqwest::Client::new();
+    let body = serde_json::json!({
+        "model": model,
+        "messages": messages,
+        "stream": true
+    });
+
+    let url = "http://localhost:11434/api/chat";
+    let res = client
+        .post(url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to connect to LLM at {}: {}", url, e))?;
+
+    if !res.status().is_success() {
+        return Err(format!("LLM API error: {}", res.status()));
+    }
+
+    let mut raw_answer = String::new();
+    let mut reasoning = String::new();
+    let mut buffer = String::new();
+    let mut stream = res.bytes_stream();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| e.to_string())?;
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+        while let Some(newline_index) = buffer.find('\n') {
+            let line = buffer[..newline_index].trim().to_string();
+            buffer.drain(..=newline_index);
+            if line.is_empty() {
+                continue;
+            }
+
+            let json: serde_json::Value =
+                serde_json::from_str(&line).map_err(|e| e.to_string())?;
+            let message = json.get("message");
+            let thinking_delta = message
+                .and_then(|value| value.get("thinking"))
+                .and_then(|value| value.as_str())
+                .or_else(|| json.get("thinking").and_then(|value| value.as_str()))
+                .unwrap_or("");
+            let answer_delta = message
+                .and_then(|value| value.get("content"))
+                .and_then(|value| value.as_str())
+                .or_else(|| json.get("response").and_then(|value| value.as_str()))
+                .unwrap_or("");
+
+            if !thinking_delta.is_empty() {
+                reasoning.push_str(thinking_delta);
+            }
+
+            if !answer_delta.is_empty() {
+                raw_answer.push_str(answer_delta);
+            }
+
+            if !thinking_delta.is_empty() || !answer_delta.is_empty() {
+                let (reasoning_from_content, cleaned_answer) =
+                    split_reasoning_and_answer_from_content(&raw_answer);
+                let reasoning_display = if reasoning.trim().is_empty() {
+                    reasoning_from_content.unwrap_or_default()
+                } else {
+                    sanitize_chat_output(&reasoning)
+                };
+                let _ = window.emit(
+                    "chat-stream",
+                    &ChatStreamEvent {
+                        request_id: request_id.to_string(),
+                        phase: if cleaned_answer.trim().is_empty() {
+                            "thinking".to_string()
+                        } else {
+                            "answer".to_string()
+                        },
+                        reasoning: reasoning_display,
+                        answer: cleaned_answer,
+                    },
+                );
+            }
+
+            if json
+                .get("done")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
+            {
+                let _ = window.emit(
+                    "chat-stream",
+                    &ChatStreamEvent {
+                        request_id: request_id.to_string(),
+                        phase: "done".to_string(),
+                        reasoning: if reasoning.trim().is_empty() {
+                            split_reasoning_and_answer_from_content(&raw_answer)
+                                .0
+                                .unwrap_or_default()
+                        } else {
+                            sanitize_chat_output(&reasoning)
+                        },
+                        answer: split_reasoning_and_answer_from_content(&raw_answer).1,
+                    },
+                );
+            }
+        }
+    }
+
+    if !buffer.trim().is_empty() {
+        let json: serde_json::Value =
+            serde_json::from_str(buffer.trim()).map_err(|e| e.to_string())?;
+        let message = json.get("message");
+        let thinking_delta = message
+            .and_then(|value| value.get("thinking"))
+            .and_then(|value| value.as_str())
+            .or_else(|| json.get("thinking").and_then(|value| value.as_str()))
+            .unwrap_or("");
+        let answer_delta = message
+            .and_then(|value| value.get("content"))
+            .and_then(|value| value.as_str())
+            .or_else(|| json.get("response").and_then(|value| value.as_str()))
+            .unwrap_or("");
+
+        if !thinking_delta.is_empty() {
+            reasoning.push_str(thinking_delta);
+        }
+
+        if !answer_delta.is_empty() {
+            raw_answer.push_str(answer_delta);
+        }
+
+        if !thinking_delta.is_empty() || !answer_delta.is_empty() {
+            let (reasoning_from_content, cleaned_answer) =
+                split_reasoning_and_answer_from_content(&raw_answer);
+            let reasoning_display = if reasoning.trim().is_empty() {
+                reasoning_from_content.unwrap_or_default()
+            } else {
+                sanitize_chat_output(&reasoning)
+            };
+            let _ = window.emit(
+                "chat-stream",
+                &ChatStreamEvent {
+                    request_id: request_id.to_string(),
+                    phase: if cleaned_answer.trim().is_empty() {
+                        "thinking".to_string()
+                    } else {
+                        "answer".to_string()
+                    },
+                    reasoning: reasoning_display,
+                    answer: cleaned_answer,
+                },
+            );
+        }
+    }
+
+    let (reasoning_from_content, cleaned_answer) = split_reasoning_and_answer_from_content(&raw_answer);
+    let final_reasoning = if reasoning.trim().is_empty() {
+        reasoning_from_content
+    } else {
+        Some(sanitize_chat_output(&reasoning))
+    };
+
+    let final_answer = cleaned_answer.trim();
+    match (final_reasoning, final_answer.is_empty()) {
+        (None, true) => Err("LLM response did not include content".to_string()),
+        (Some(reasoning), false) => Ok(format!(
+            "<think>\n{}\n</think>\n\n{}",
+            sanitize_chat_output(&reasoning),
+            sanitize_chat_output(final_answer)
+        )),
+        (Some(reasoning), true) => Ok(format!(
+            "<think>\n{}\n</think>",
+            sanitize_chat_output(&reasoning)
+        )),
+        (None, false) => Ok(sanitize_chat_output(final_answer)),
+    }
 }
 
 fn is_translation_generate_model(model: &str) -> bool {
@@ -2587,6 +3117,51 @@ fn is_translation_generate_model(model: &str) -> bool {
     normalized.contains("tencent-hy-mt")
         || normalized.contains("hunyuan-translation")
         || normalized.contains("hy-mt")
+}
+
+fn thinking_capable_model(model: &str) -> bool {
+    let normalized = model.trim().to_lowercase();
+    normalized.contains("qwen3")
+        || normalized.contains("qwen3.5")
+        || normalized.contains("deepseek-r1")
+        || normalized.contains("reason")
+}
+
+fn split_reasoning_and_answer_from_content(content: &str) -> (Option<String>, String) {
+    let mut cleaned = sanitize_chat_output(content);
+
+    if let Some(close_index) = cleaned.find("</think>") {
+        if !cleaned[..close_index].contains("<think>") {
+            cleaned = cleaned[close_index + "</think>".len()..].trim().to_string();
+        }
+    }
+
+    if let Some(open_index) = cleaned.find("<think>") {
+        let think_start = open_index + "<think>".len();
+        if let Some(close_rel) = cleaned[think_start..].find("</think>") {
+            let close_index = think_start + close_rel;
+            let reasoning = cleaned[think_start..close_index].trim();
+            let before = cleaned[..open_index].trim();
+            let after = cleaned[close_index + "</think>".len()..].trim();
+            let answer = if before.is_empty() {
+                after.to_string()
+            } else if after.is_empty() {
+                before.to_string()
+            } else {
+                format!("{before}\n\n{after}")
+            };
+            return (
+                if reasoning.is_empty() {
+                    None
+                } else {
+                    Some(reasoning.to_string())
+                },
+                answer,
+            );
+        }
+    }
+
+    (None, cleaned)
 }
 
 async fn run_ollama_generate(model: &str, prompt: &str) -> Result<String, String> {
@@ -2643,13 +3218,20 @@ async fn run_translation_model(
 }
 
 async fn chat_via_ollama(
+    window: &Window,
+    request_id: &str,
     query: &str,
     context: &str,
     model: &str,
     image_path: Option<&str>,
 ) -> Result<String, String> {
+    let system_prompt = if thinking_capable_model(model) {
+        "你是科研助手。除非用户明确要求其他语言，否则必须始终使用中文 Markdown 回答。对于较复杂的问题，可以先给出简短思考过程，再给出最终答案。思考过程优先中文，也允许英文；内容精炼且相关。"
+    } else {
+        "你是科研助手。除非用户明确要求其他语言，否则必须始终使用中文 Markdown 回答。"
+    };
     let prompt = format!(
-        "Answer the question using the context below. If the answer is not in the context, say so.\n\nContext:\n{}\n\nQuestion:\n{}",
+        "请基于下面的上下文回答问题。如果上下文里没有答案，请明确说明。\n\n上下文：\n{}\n\n问题：\n{}",
         context, query
     );
 
@@ -2669,12 +3251,14 @@ async fn chat_via_ollama(
         })
     };
 
-    run_ollama_chat(
+    run_ollama_chat_stream(
+        window,
+        request_id,
         model,
         vec![
             serde_json::json!({
                 "role": "system",
-                "content": "You are a helpful research assistant."
+                "content": system_prompt
             }),
             user_message,
         ],
@@ -3078,6 +3662,8 @@ async fn translate_pdf_page(
 }
 
 async fn route_chat_completion(
+    window: &Window,
+    request_id: &str,
     query: &str,
     context: &str,
     model: &str,
@@ -3085,26 +3671,32 @@ async fn route_chat_completion(
     mode: InferenceMode,
 ) -> Result<String, String> {
     match mode {
-        InferenceMode::SingleMm => chat_via_ollama(query, context, model, image_path).await,
+        InferenceMode::SingleMm => {
+            chat_via_ollama(window, request_id, query, context, model, image_path).await
+        }
         InferenceMode::DualPipeline => {
             // Skeleton only: dual pipeline currently falls back to single-model chat.
             // Future implementation can split text and vision inference, then merge evidence.
-            chat_via_ollama(query, context, model, image_path).await
+            chat_via_ollama(window, request_id, query, context, model, image_path).await
         }
     }
 }
 
 #[tauri::command]
 async fn chat_with_llm(
+    window: Window,
     query: String,
     context: String,
     model: String,
     image_path: Option<String>,
+    request_id: String,
     settings_state: State<'_, InferenceSettingsState>,
 ) -> Result<String, String> {
     let settings = settings_state.get()?;
     let normalized_image_path = normalize_optional_path(image_path);
     route_chat_completion(
+        &window,
+        &request_id,
         &query,
         &context,
         &model,
@@ -3210,6 +3802,12 @@ pub fn run() {
             scan_directory,
             get_workspace_snapshot,
             list_directory_children,
+            create_workspace_folder,
+            rename_workspace_entry,
+            trash_workspace_entry,
+            copy_workspace_entry,
+            move_workspace_entry,
+            get_workspace_relative_path,
             import_directory_to_workspace,
             import_paths_to_workspace,
             import_zotero_storage_to_workspace,
