@@ -566,7 +566,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       <div className="chat-header">
         <div className="main-view-meta">
           <div className="main-view-title">科研助手</div>
-          <div className="main-view-subtitle" title={activeFileLabel}>当前文件：{activeFileLabel}</div>
+          <div className="main-view-subtitle" title={activeFileLabel}>
+            当前文件：{activeFileLabel}
+          </div>
         </div>
         <div className="chat-toolbar">
           <button style={TOOL_BUTTON_STYLE} onClick={handleSaveSession}>
@@ -641,7 +643,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 />
               </div>
 
-                            <div className="chat-input-actions">
+              <div className="chat-input-actions">
                 <button
                   className="send-button"
                   onClick={() => void handlePickImage()}
@@ -659,7 +661,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 />
 
                 <button
-                  className="send-button"
+                  className="send-button send-action"
                   onClick={() => void handleSendMessage()}
                   disabled={!inputValue.trim() || isLoading}
                   title="发送"
@@ -852,13 +854,3 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     </div>
   );
 };
-
-
-
-
-
-
-
-
-
-
