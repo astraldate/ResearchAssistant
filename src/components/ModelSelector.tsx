@@ -1,4 +1,10 @@
-﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+﻿import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -32,8 +38,13 @@ interface PullProgress {
 interface ModelSelectorProps {
   currentModel: string;
   onModelChange: (model: string) => void;
-  onStatus?: (message: string, tone?: "info" | "error", persistent?: boolean) => void;
+  onStatus?: (
+    message: string,
+    tone?: "info" | "error",
+    persistent?: boolean,
+  ) => void;
   variant?: "full" | "compact" | "drawer";
+  label?: string;
 }
 
 type ModelCategory =
@@ -237,7 +248,13 @@ const isInstalled = (target: string, installed: OllamaModel[]) => {
 };
 const canUseMirror = (target: string) => Boolean(resolveMirrorModel(target));
 
-export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onModelChange, onStatus, variant = "full" }) => {
+export const ModelSelector: React.FC<ModelSelectorProps> = ({
+  currentModel,
+  onModelChange,
+  onStatus,
+  variant = "full",
+  label = "当前模型",
+}) => {
   const [models, setModels] = useState<OllamaModel[]>([]);
   const [isOpen, setIsOpen] = useState(false);
   const [newModelName, setNewModelName] = useState("");
@@ -258,6 +275,26 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
       items: RECOMMENDED_MODELS.filter((item) => item.category === category),
     })).filter((group) => group.items.length > 0);
   }, []);
+
+  const compactOptions = useMemo(() => {
+    const seen = new Set<string>();
+    const currentExtras: string[] = [];
+    const grouped = groupedRecommended.map((group) => ({
+      category: group.category,
+      items: group.items.filter((item) => {
+        if (seen.has(item.name)) return false;
+        seen.add(item.name);
+        return true;
+      }),
+    }));
+
+    if (currentModel && !seen.has(currentModel)) {
+      currentExtras.push(currentModel);
+      seen.add(currentModel);
+    }
+
+    return { currentExtras, grouped };
+  }, [currentModel, groupedRecommended]);
 
   const selectedRecommendedMeta = useMemo(
     () => RECOMMENDED_MODELS.find((item) => item.name === selectedRecommended),
@@ -296,10 +333,6 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
       const sorted = [...list].sort((a, b) => a.name.localeCompare(b.name));
       setModels(sorted);
 
-      if (!currentModel && sorted.length > 0) {
-        onModelChange(sorted[0].name);
-      }
-
       setError(null);
       return sorted;
     } catch (err) {
@@ -325,6 +358,13 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
       void fetchModels();
     }
   }, [currentModel, models, fetchModels]);
+
+  useEffect(() => {
+    if (!currentModel) return;
+    setSelectedRecommended((previous) =>
+      previous === currentModel ? previous : currentModel,
+    );
+  }, [currentModel]);
 
   useEffect(() => {
     let unlistenFn: (() => void) | null = null;
@@ -390,11 +430,6 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
     await pullModelByName(newModelName);
   };
 
-  const handlePullSelectedModel = useCallback(async () => {
-    if (!selectedRecommended) return;
-    await pullModelByName(selectedRecommended);
-  }, [pullModelByName, selectedRecommended]);
-
   const focusManualInput = useCallback(() => {
     window.requestAnimationFrame(() => {
       const input = manualInputRef.current;
@@ -449,13 +484,17 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
     return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
   };
 
-    if (variant === "compact") {
-    const isSelectedInstalled = selectedRecommended ? isInstalled(selectedRecommended, models) : false;
+  if (variant === "compact") {
+    const compactValue = currentModel || selectedRecommended;
+    const isSelectedInstalled = compactValue
+      ? isInstalled(compactValue, models)
+      : false;
     return (
       <div className="model-selector-compact">
+        <div className="model-compact-label">{label}</div>
         <div className="model-compact-row">
           <select
-            value={selectedRecommended}
+            value={compactValue}
             onChange={(event) => {
               const value = event.target.value;
               setSelectedRecommended(value);
@@ -464,11 +503,24 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
               }
             }}
           >
-            {groupedRecommended.map((group) => (
-              <optgroup key={group.category} label={CATEGORY_LABELS[group.category]}>
+            {compactOptions.currentExtras.length > 0 && (
+              <optgroup label="当前已选">
+                {compactOptions.currentExtras.map((name) => (
+                  <option key={name} value={name}>
+                    {name} (current)
+                  </option>
+                ))}
+              </optgroup>
+            )}
+            {compactOptions.grouped.map((group) => (
+              <optgroup
+                key={group.category}
+                label={CATEGORY_LABELS[group.category]}
+              >
                 {group.items.map((item) => (
                   <option key={item.name} value={item.name}>
-                    {item.name} {isInstalled(item.name, models) ? "(installed)" : ""}
+                    {item.name}{" "}
+                    {isInstalled(item.name, models) ? "(installed)" : ""}
                   </option>
                 ))}
               </optgroup>
@@ -477,11 +529,15 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
           {!isSelectedInstalled && (
             <button
               className="model-compact-download"
-              onClick={() => void handlePullSelectedModel()}
-              disabled={isPulling || !selectedRecommended}
+              onClick={() => void pullModelByName(compactValue)}
+              disabled={isPulling || !compactValue}
               title="Download model"
             >
-              {isPulling ? <RefreshCw size={16} className="spin" /> : <Download size={16} />}
+              {isPulling ? (
+                <RefreshCw size={16} className="spin" />
+              ) : (
+                <Download size={16} />
+              )}
             </button>
           )}
         </div>
@@ -491,7 +547,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
 
   return (
     <div
-      className={`model-selector-container ${variant === "drawer" ? "drawer-mode" : "full-mode"}` }
+      className={`model-selector-container ${variant === "drawer" ? "drawer-mode" : "full-mode"}`}
     >
       <div className="model-selector-shell">
         <div className="model-selector-topbar">
@@ -513,7 +569,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
         </div>
 
         <section className="model-current-card">
-          <div className="model-card-label">当前模型</div>
+          <div className="model-card-label">{label}</div>
           <div className="model-current-name">
             {currentModelSummary?.name || currentModel || ZH.selectModel}
           </div>
@@ -630,11 +686,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
                     <span
                       className={`model-state-badge ${installed ? "installed" : mirrorReady ? "mirror" : "plain"}`}
                     >
-                      {installed
-                        ? "已安装"
-                        : mirrorReady
-                          ? "可镜像"
-                          : "可拉取"}
+                      {installed ? "已安装" : mirrorReady ? "可镜像" : "可拉取"}
                     </span>
                   </div>
 
@@ -684,7 +736,9 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
                 <button
                   type="button"
                   className="model-secondary-button"
-                  onClick={() => fillManualModelName(selectedRecommendedMeta.name)}
+                  onClick={() =>
+                    fillManualModelName(selectedRecommendedMeta.name)
+                  }
                 >
                   填入手动框
                 </button>
@@ -692,7 +746,9 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
                   type="button"
                   className="model-primary-button"
                   disabled={isPulling}
-                  onClick={() => void handleApplyRecommended(selectedRecommendedMeta)}
+                  onClick={() =>
+                    void handleApplyRecommended(selectedRecommendedMeta)
+                  }
                 >
                   {isInstalled(selectedRecommendedMeta.name, models)
                     ? "直接使用"
@@ -765,7 +821,3 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onMo
     </div>
   );
 };
-
-
-
-

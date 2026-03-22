@@ -21,7 +21,11 @@ import {
   Separator,
   type PanelImperativeHandle,
 } from "react-resizable-panels";
-import { FileNode, FileTree } from "./components/FileTree";
+import {
+  FileNode,
+  FileTree,
+  type TreeMutationPayload,
+} from "./components/FileTree";
 import { ChatInterface } from "./components/ChatInterface";
 import { CardLibrary } from "./components/CardLibrary";
 import { PdfDock } from "./components/PdfDock";
@@ -32,7 +36,7 @@ type InferenceMode = "single_mm" | "dual_pipeline";
 type IngestMode = "overwrite" | "incremental";
 type SidebarTool = "workspace" | "citations" | "notes" | "knowledge" | "cards";
 type StatusTone = "info" | "error";
-type AiRequirement = "chat" | "index";
+type AiRequirement = "chat" | "index" | "translate";
 
 interface InferenceSettings {
   mode: InferenceMode;
@@ -48,6 +52,7 @@ interface IngestProgress {
 interface StatusBanner {
   message: string;
   tone: StatusTone;
+  progress?: number;
   action?: StatusBannerAction;
 }
 
@@ -133,6 +138,13 @@ interface OllamaRuntimeProgress {
   completed?: number;
 }
 
+interface PullProgress {
+  status: string;
+  digest?: string;
+  total?: number;
+  completed?: number;
+}
+
 interface CitationItem {
   id: string;
   path: string;
@@ -161,9 +173,12 @@ interface DocumentResult {
 const REQUIRED_MODELS = {
   embedding: "nomic-embed-text",
   chat: "qwen2.5:0.5b",
+  translation: "MedAIBase/Tencent-HY-MT1.5:1.8b-q4_K_M",
 };
 
 const OLLAMA_MIN_RECOMMENDED_VERSION = "0.17.7";
+const CHAT_MODEL_KEY = "ra_chat_model_v1";
+const TRANSLATION_MODEL_KEY = "ra_translation_model_v1";
 
 const STAGE_LABELS: Record<string, string> = {
   scan: "扫描文件",
@@ -259,7 +274,14 @@ function App() {
   const [pdfPage, setPdfPage] = useState(1);
   const [isPdfDockVisible, setIsPdfDockVisible] = useState(false);
   const [isPdfFocusMode, setIsPdfFocusMode] = useState(false);
-  const [currentModel, setCurrentModel] = useState("");
+  const [currentModel, setCurrentModel] = useState(() => {
+    const stored = localStorage.getItem(CHAT_MODEL_KEY)?.trim();
+    return stored || REQUIRED_MODELS.chat;
+  });
+  const [translationModel, setTranslationModel] = useState(() => {
+    const stored = localStorage.getItem(TRANSLATION_MODEL_KEY)?.trim();
+    return stored || REQUIRED_MODELS.translation;
+  });
   const [activeSidebarTool, setActiveSidebarTool] =
     useState<SidebarTool>("workspace");
   const [ingestMode, setIngestMode] = useState<IngestMode>("overwrite");
@@ -303,9 +325,14 @@ function App() {
   const focusRestoreLayoutRef = useRef(DEFAULT_TWO_PANEL_LAYOUT);
   const pdfPanelRef = useRef<PanelImperativeHandle | null>(null);
   const aiPreparationPromiseRef = useRef<Promise<string> | null>(null);
-  const aiPreparedStateRef = useRef<{ chat: boolean; index: boolean }>({
+  const aiPreparedStateRef = useRef<{
+    chat: boolean;
+    index: boolean;
+    translate: boolean;
+  }>({
     chat: false,
     index: false,
+    translate: false,
   });
 
   const progressPercent = useMemo(() => {
@@ -334,10 +361,11 @@ function App() {
       message: string,
       tone: StatusTone = "info",
       timeoutMs?: number,
+      progress?: number,
       action?: StatusBannerAction,
     ) => {
       clearStatusTimer();
-      const nextBanner: StatusBanner = { message, tone, action };
+      const nextBanner: StatusBanner = { message, tone, progress, action };
       const startsExpanded = Boolean(
         (timeoutMs && timeoutMs > 0) || tone === "error" || action,
       );
@@ -364,9 +392,14 @@ function App() {
       message: string,
       tone: StatusTone = "info",
       timeoutMs = 3200,
+      progressOrAction?: number | StatusBannerAction,
       action?: StatusBannerAction,
     ) => {
-      showStatus(message, tone, timeoutMs, action);
+      const progress =
+        typeof progressOrAction === "number" ? progressOrAction : undefined;
+      const resolvedAction =
+        typeof progressOrAction === "number" ? action : progressOrAction;
+      showStatus(message, tone, timeoutMs, progress, resolvedAction);
     },
     [showStatus],
   );
@@ -375,9 +408,14 @@ function App() {
     (
       message: string,
       tone: StatusTone = "info",
+      progressOrAction?: number | StatusBannerAction,
       action?: StatusBannerAction,
     ) => {
-      showStatus(message, tone, undefined, action);
+      const progress =
+        typeof progressOrAction === "number" ? progressOrAction : undefined;
+      const resolvedAction =
+        typeof progressOrAction === "number" ? action : progressOrAction;
+      showStatus(message, tone, undefined, progress, resolvedAction);
     },
     [showStatus],
   );
@@ -521,9 +559,15 @@ function App() {
     async (requirement: AiRequirement = "chat") => {
       const preparedState = aiPreparedStateRef.current;
       const alreadyPrepared =
-        requirement === "index" ? preparedState.index : preparedState.chat;
-      if (alreadyPrepared && currentModel) {
-        return currentModel;
+        requirement === "index"
+          ? preparedState.index
+          : requirement === "translate"
+            ? preparedState.translate
+            : preparedState.chat;
+      const activeModelForRequirement =
+        requirement === "translate" ? translationModel : currentModel;
+      if (alreadyPrepared && activeModelForRequirement) {
+        return activeModelForRequirement;
       }
 
       if (aiPreparationPromiseRef.current) {
@@ -616,24 +660,79 @@ function App() {
         ) {
           await pullModel(REQUIRED_MODELS.embedding);
         }
-        if (!names.some((name) => name.includes(REQUIRED_MODELS.chat))) {
+        if (
+          requirement === "translate" &&
+          !names.some((name) => name.includes(REQUIRED_MODELS.translation))
+        ) {
+          await pullModel(REQUIRED_MODELS.translation);
+        }
+        if (
+          requirement !== "translate" &&
+          !names.some((name) => name.includes(REQUIRED_MODELS.chat))
+        ) {
           await pullModel(REQUIRED_MODELS.chat);
         }
 
         models = await getInstalledModels();
         names = models.map((model) => model.name);
+        const preferredChatModel =
+          currentModel &&
+          names.some(
+            (name) =>
+              name === currentModel ||
+              name.startsWith(`${currentModel.split(":")[0]}:`),
+          )
+            ? names.find((name) => name === currentModel) ||
+              names.find((name) =>
+                name.startsWith(`${currentModel.split(":")[0]}:`),
+              ) ||
+              currentModel
+            : "";
+        const preferredTranslationModel =
+          translationModel &&
+          names.some(
+            (name) =>
+              name === translationModel ||
+              name.startsWith(`${translationModel.split(":")[0]}:`),
+          )
+            ? names.find((name) => name === translationModel) ||
+              names.find((name) =>
+                name.startsWith(`${translationModel.split(":")[0]}:`),
+              ) ||
+              translationModel
+            : "";
         const selectedModel =
-          names.find((name) => name === REQUIRED_MODELS.chat) ||
-          names.find((name) => name.includes(REQUIRED_MODELS.chat)) ||
-          names[0] ||
-          currentModel ||
-          REQUIRED_MODELS.chat;
+          requirement === "translate"
+            ? preferredTranslationModel ||
+              names.find((name) => name === REQUIRED_MODELS.translation) ||
+              names.find((name) =>
+                name.includes(REQUIRED_MODELS.translation),
+              ) ||
+              translationModel ||
+              REQUIRED_MODELS.translation
+            : preferredChatModel ||
+              names.find((name) => name === REQUIRED_MODELS.chat) ||
+              names.find((name) => name.includes(REQUIRED_MODELS.chat)) ||
+              currentModel ||
+              names[0] ||
+              REQUIRED_MODELS.chat;
 
-        setCurrentModel(selectedModel);
+        if (requirement === "translate") {
+          setTranslationModel(selectedModel);
+        } else {
+          setCurrentModel(selectedModel);
+        }
         aiPreparedStateRef.current = {
-          chat: true,
+          chat:
+            requirement === "translate"
+              ? aiPreparedStateRef.current.chat
+              : true,
           index:
             requirement === "index" ? true : aiPreparedStateRef.current.index,
+          translate:
+            requirement === "translate"
+              ? true
+              : aiPreparedStateRef.current.translate,
         };
         clearStatus();
         return selectedModel;
@@ -665,8 +764,14 @@ function App() {
       readOllamaVersion,
       showOllamaUpgradeStatus,
       showPersistentStatus,
+      translationModel,
       waitForOllamaReady,
     ],
+  );
+
+  const ensureTranslationReady = useCallback(
+    () => ensureAiReady("translate"),
+    [ensureAiReady],
   );
 
   const handleChildStatus = useCallback(
@@ -703,6 +808,22 @@ function App() {
   useEffect(() => {
     localStorage.setItem("ra_ingest_mode_v1", ingestMode);
   }, [ingestMode]);
+
+  useEffect(() => {
+    if (currentModel.trim()) {
+      localStorage.setItem(CHAT_MODEL_KEY, currentModel.trim());
+    } else {
+      localStorage.removeItem(CHAT_MODEL_KEY);
+    }
+  }, [currentModel]);
+
+  useEffect(() => {
+    if (translationModel.trim()) {
+      localStorage.setItem(TRANSLATION_MODEL_KEY, translationModel.trim());
+    } else {
+      localStorage.removeItem(TRANSLATION_MODEL_KEY);
+    }
+  }, [translationModel]);
 
   const loadInferenceSettings = async () => {
     const startedAt = performance.now();
@@ -783,6 +904,39 @@ function App() {
     }
   }, []);
 
+  const handleTreeChanged = useCallback(
+    async (payload: TreeMutationPayload) => {
+      for (const path of payload.refreshPaths) {
+        await loadDirectoryChildren(path);
+      }
+
+      if (payload.rebasedPath && activeFilePath) {
+        const { from, to } = payload.rebasedPath;
+        if (
+          activeFilePath === from ||
+          activeFilePath.startsWith(`${from}\\`) ||
+          activeFilePath.startsWith(`${from}/`)
+        ) {
+          setActiveFilePath(activeFilePath.replace(from, to));
+        }
+        return;
+      }
+
+      if (payload.removedPath && activeFilePath) {
+        const removedPath = payload.removedPath;
+        if (
+          activeFilePath === removedPath ||
+          activeFilePath.startsWith(`${removedPath}\\`) ||
+          activeFilePath.startsWith(`${removedPath}/`)
+        ) {
+          setActiveFilePath(null);
+          setIsPdfDockVisible(false);
+        }
+      }
+    },
+    [activeFilePath, loadDirectoryChildren],
+  );
+
   useEffect(() => {
     console.info("[startup] App mounted");
     void loadInferenceSettings();
@@ -825,7 +979,7 @@ function App() {
           0,
           Math.min(100, Math.round((completed / total) * 100)),
         );
-        showPersistentStatus(`${status} ${percent}%`);
+        showPersistentStatus(`${status} ${percent}%`, "info", percent);
         return;
       }
       showPersistentStatus(status);
@@ -836,6 +990,40 @@ function App() {
       if (unlistenFn) unlistenFn();
     };
   }, [showPersistentStatus]);
+
+  useEffect(() => {
+    let unlistenFn: (() => void) | null = null;
+    listen<PullProgress>("pull-progress", (event) => {
+      const { status, total, completed } = event.payload;
+      if (!status) return;
+
+      const normalizedStatus = status.trim().toLowerCase();
+      if (normalizedStatus === "success") {
+        showTemporaryStatus("模型拉取完成。", "info", 2600, 100);
+        return;
+      }
+
+      if (
+        typeof total === "number" &&
+        total > 0 &&
+        typeof completed === "number"
+      ) {
+        const percent = Math.max(
+          0,
+          Math.min(100, Math.round((completed / total) * 100)),
+        );
+        showPersistentStatus(status, "info", percent);
+        return;
+      }
+
+      showPersistentStatus(status);
+    }).then((unlisten) => {
+      unlistenFn = unlisten;
+    });
+    return () => {
+      if (unlistenFn) unlistenFn();
+    };
+  }, [showPersistentStatus, showTemporaryStatus]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1283,8 +1471,11 @@ function App() {
         <FileTree
           data={files.length > 0 ? files : undefined}
           activePath={activeFilePath}
+          workspacePath={workspacePath}
           onSelect={handleFileSelect}
           onLoadChildren={loadDirectoryChildren}
+          onTreeChanged={handleTreeChanged}
+          onStatus={handleChildStatus}
         />
       </>
     ) : activeSidebarTool === "cards" ? (
@@ -1524,6 +1715,14 @@ function App() {
           {isStatusBannerExpanded && (
             <div className={`status-banner ${statusBanner.tone}`}>
               <div className="status-banner-text">{statusBanner.message}</div>
+              {typeof statusBanner.progress === "number" && (
+                <div className="status-banner-progress-track">
+                  <div
+                    className="status-banner-progress-fill"
+                    style={{ width: `${statusBanner.progress}%` }}
+                  />
+                </div>
+              )}
               <div className="status-banner-controls">
                 {statusBanner.action && (
                   <button
@@ -1671,6 +1870,10 @@ function App() {
                   activePdfPath={activePdfPath}
                   currentModel={currentModel || REQUIRED_MODELS.chat}
                   ensureAiReady={ensureAiReady}
+                  translationModel={
+                    translationModel || REQUIRED_MODELS.translation
+                  }
+                  ensureTranslationReady={ensureTranslationReady}
                   currentPage={pdfPage}
                   onPageChange={setPdfPage}
                   onStatus={handleChildStatus}

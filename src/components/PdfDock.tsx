@@ -9,6 +9,8 @@ interface PdfDockProps {
   activePdfPath: string;
   currentModel: string;
   ensureAiReady?: () => Promise<string>;
+  translationModel: string;
+  ensureTranslationReady?: () => Promise<string>;
   currentPage: number;
   onPageChange: (page: number) => void;
   onStatus: (message: string, tone?: StatusTone, persistent?: boolean) => void;
@@ -24,6 +26,8 @@ export const PdfDock: React.FC<PdfDockProps> = ({
   activePdfPath,
   currentModel,
   ensureAiReady,
+  translationModel,
+  ensureTranslationReady,
   currentPage,
   onPageChange,
   onStatus,
@@ -81,6 +85,8 @@ export const PdfDock: React.FC<PdfDockProps> = ({
           activePdfPath={activePdfPath}
           currentModel={currentModel}
           ensureAiReady={ensureAiReady}
+          translationModel={translationModel}
+          ensureTranslationReady={ensureTranslationReady}
           isFocused
           lookupMode={lookupMode}
           onLookupModeChange={setLookupMode}

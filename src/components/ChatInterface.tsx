@@ -6,6 +6,7 @@
   useState,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { ImagePlus, Send, X } from "lucide-react";
 import { ModelSelector } from "./ModelSelector";
@@ -57,6 +58,13 @@ interface SelectionMenuState {
   y: number;
 }
 
+interface ChatStreamEvent {
+  request_id: string;
+  phase: "thinking" | "answer" | "done";
+  reasoning: string;
+  answer: string;
+}
+
 interface ChatInterfaceProps {
   currentModel?: string;
   ensureAiReady?: () => Promise<string>;
@@ -100,6 +108,31 @@ const buildDocSnippet = (content: string, limit = 220) => {
     : normalized;
 };
 
+const buildStreamingContent = (reasoning: string, answer: string) => {
+  const sanitizeStreamingText = (value: string) =>
+    [
+      "<|endoftext|>",
+      "<|im_start|>",
+      "<|im_end|>",
+      "<|assistant|>",
+      "<|user|>",
+      "<|system|>",
+    ]
+      .reduce((cleaned, marker) => cleaned.split(marker).join(""), value)
+      .trim();
+
+  const trimmedReasoning = sanitizeStreamingText(reasoning);
+  const trimmedAnswer = sanitizeStreamingText(answer);
+
+  if (trimmedReasoning && trimmedAnswer) {
+    return `<think>\n${trimmedReasoning}\n</think>\n\n${trimmedAnswer}`;
+  }
+  if (trimmedReasoning) {
+    return `<think>\n${trimmedReasoning}\n</think>`;
+  }
+  return trimmedAnswer;
+};
+
 const readSession = (): SessionPayload | null => {
   const raw = localStorage.getItem(SESSION_KEY);
   if (!raw) return null;
@@ -138,8 +171,14 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   );
   const [isSessionHydrated, setIsSessionHydrated] = useState(false);
 
+  const messagesListRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const selectionMenuRef = useRef<HTMLDivElement>(null);
+  const activeStreamRef = useRef<{
+    requestId: string;
+    messageId: string;
+  } | null>(null);
+  const shouldAutoScrollRef = useRef(true);
   const activePdfPath =
     activeFilePath && isPdfFile(activeFilePath) ? activeFilePath : null;
 
@@ -181,8 +220,20 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   }, [isSessionHydrated, persistSession]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (!shouldAutoScrollRef.current) return;
+    messagesEndRef.current?.scrollIntoView({
+      behavior: isLoading ? "auto" : "smooth",
+      block: "end",
+    });
   }, [messages, isLoading]);
+
+  const handleMessagesScroll = () => {
+    const element = messagesListRef.current;
+    if (!element) return;
+    const distanceToBottom =
+      element.scrollHeight - element.scrollTop - element.clientHeight;
+    shouldAutoScrollRef.current = distanceToBottom <= 80;
+  };
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -193,6 +244,42 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  useEffect(() => {
+    let unlistenFn: (() => void) | null = null;
+
+    listen<ChatStreamEvent>("chat-stream", (event) => {
+      const activeStream = activeStreamRef.current;
+      if (
+        !activeStream ||
+        activeStream.requestId !== event.payload.request_id
+      ) {
+        return;
+      }
+
+      setMessages((previous) =>
+        previous.map((message) =>
+          message.id === activeStream.messageId
+            ? {
+                ...message,
+                content: buildStreamingContent(
+                  event.payload.reasoning,
+                  event.payload.answer,
+                ),
+              }
+            : message,
+        ),
+      );
+    }).then((unlisten) => {
+      unlistenFn = unlisten;
+    });
+
+    return () => {
+      if (unlistenFn) {
+        unlistenFn();
+      }
+    };
   }, []);
 
   const handlePickImage = async () => {
@@ -385,20 +472,34 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   const handleSendMessage = async () => {
     const question = inputValue.trim();
     if (!question) return;
+    const startedAt = Date.now();
+    const assistantMessageId = `${startedAt}-ai`;
+    const requestId = `${startedAt}-${Math.random().toString(36).slice(2, 10)}`;
 
     setMessages((previous) => [
       ...previous,
       {
-        id: `${Date.now()}-user`,
+        id: `${startedAt}-user`,
         role: "user",
         content: imagePath
           ? `${question}\n\n[图片: ${getFileName(imagePath)}]`
           : question,
-        timestamp: Date.now(),
+        timestamp: startedAt,
+      },
+      {
+        id: assistantMessageId,
+        role: "ai",
+        content: "",
+        timestamp: startedAt,
       },
     ]);
     setInputValue("");
     setIsLoading(true);
+    shouldAutoScrollRef.current = true;
+    activeStreamRef.current = {
+      requestId,
+      messageId: assistantMessageId,
+    };
 
     try {
       const activeModel = ensureAiReady
@@ -419,29 +520,31 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         context,
         model: activeModel,
         imagePath,
+        requestId,
       });
 
       setMessages((previous) => [
-        ...previous,
-        {
-          id: `${Date.now()}-ai`,
-          role: "ai",
-          content: response,
-          timestamp: Date.now(),
-        },
+        ...previous.map((message) =>
+          message.id === assistantMessageId
+            ? { ...message, content: response, timestamp: Date.now() }
+            : message,
+        ),
       ]);
       setImagePath(null);
     } catch (error) {
       setMessages((previous) => [
-        ...previous,
-        {
-          id: `${Date.now()}-error`,
-          role: "ai",
-          content: `回答失败：${String(error)}\n\n请确认 Ollama 已启动，并且模型可用。`,
-          timestamp: Date.now(),
-        },
+        ...previous.map((message) =>
+          message.id === assistantMessageId
+            ? {
+                ...message,
+                content: `回答失败：${String(error)}\n\n请确认 Ollama 已启动，并且模型可用。`,
+                timestamp: Date.now(),
+              }
+            : message,
+        ),
       ]);
     } finally {
+      activeStreamRef.current = null;
       setIsLoading(false);
     }
   };
@@ -593,13 +696,21 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         <Group orientation="vertical" className="chat-content-panels">
           <Panel defaultSize="70%" minSize="30%">
             <div
+              ref={messagesListRef}
               className="messages-list"
+              onScroll={handleMessagesScroll}
               onMouseUp={handleScopedTextSelection}
             >
               {messages.map((message) => (
                 <div key={message.id} className={`message ${message.role}`}>
                   {message.role === "ai" ? (
-                    <MarkdownRenderer content={message.content} />
+                    <MarkdownRenderer
+                      content={message.content}
+                      autoExpandReasoning={
+                        isLoading &&
+                        activeStreamRef.current?.messageId === message.id
+                      }
+                    />
                   ) : (
                     <div style={{ whiteSpace: "pre-wrap" }}>
                       {message.content}
@@ -607,7 +718,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                   )}
                 </div>
               ))}
-              {isLoading && (
+              {isLoading && !activeStreamRef.current && (
                 <div className="message ai">
                   <span className="thinking-text">正在思考...</span>
                 </div>
@@ -658,6 +769,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                   onModelChange={(model) => onModelChange?.(model)}
                   onStatus={onStatus}
                   variant="compact"
+                  label="当前聊天模型"
                 />
 
                 <button
