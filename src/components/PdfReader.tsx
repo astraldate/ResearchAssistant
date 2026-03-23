@@ -9,6 +9,7 @@ import React, {
 import { invoke } from "@tauri-apps/api/core";
 import {
   AlertTriangle,
+  CheckCircle2,
   List,
   LoaderCircle,
   MoveHorizontal,
@@ -74,6 +75,13 @@ interface PageTranslationState {
   result: TranslatePdfPageResult | null;
   error: string | null;
   requestedPage: number | null;
+}
+
+interface TranslationToast {
+  id: number;
+  message: string;
+  tone: "info" | "success" | "error";
+  leaving: boolean;
 }
 
 interface RenderedPageState {
@@ -148,6 +156,10 @@ const FLOATING_BUTTON_HEIGHT = 36;
 const POPOVER_ANCHOR_GAP = 14;
 const TOOL_MODE_STORAGE_KEY = "ra_pdf_reader_tool_mode_v1";
 const MAX_TRANSLATE_SELECTION_CHARS = 800;
+const TRANSLATION_TOAST_EXIT_MS = 240;
+const TRANSLATION_INFO_TOAST_MS = 1800;
+const TRANSLATION_SUCCESS_TOAST_MS = 2400;
+const TRANSLATION_ERROR_TOAST_MS = 3400;
 
 GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -596,6 +608,12 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
   const viewportAnchorRef = useRef<ViewportAnchorState | null>(null);
   const gestureZoomStartRef = useRef<number | null>(null);
   const toolbarHideTimerRef = useRef<number | null>(null);
+  const pageTranslationInFlightRef = useRef(false);
+  const pageTranslationRequestTokenRef = useRef(0);
+  const translationToastIdRef = useRef(0);
+  const translationToastTimersRef = useRef<
+    Map<number, { hide: number; remove: number }>
+  >(new Map());
   const onStatusRef = useRef(onStatus);
   const onPageChangeRef = useRef(onPageChange);
 
@@ -623,6 +641,11 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
   >({});
   const [renderWindow, setRenderWindow] = useState({ start: 1, end: 3 });
   const [isToolbarAutoHidden, setIsToolbarAutoHidden] = useState(false);
+  const [isPageTranslationRunning, setIsPageTranslationRunning] =
+    useState(false);
+  const [translationToasts, setTranslationToasts] = useState<
+    TranslationToast[]
+  >([]);
   const [pageTranslation, setPageTranslation] = useState<PageTranslationState>(
     EMPTY_PAGE_TRANSLATION_STATE,
   );
@@ -655,6 +678,63 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
     clearToolbarHideTimer();
     setIsToolbarAutoHidden(false);
   }, [clearToolbarHideTimer]);
+
+  const clearTranslationToastTimers = useCallback((id?: number) => {
+    const timerMap = translationToastTimersRef.current;
+    if (typeof id === "number") {
+      const timers = timerMap.get(id);
+      if (timers) {
+        window.clearTimeout(timers.hide);
+        window.clearTimeout(timers.remove);
+        timerMap.delete(id);
+      }
+      return;
+    }
+
+    timerMap.forEach((timers) => {
+      window.clearTimeout(timers.hide);
+      window.clearTimeout(timers.remove);
+    });
+    timerMap.clear();
+  }, []);
+
+  const pushTranslationToast = useCallback(
+    (
+      message: string,
+      tone: TranslationToast["tone"],
+      duration = tone === "error"
+        ? TRANSLATION_ERROR_TOAST_MS
+        : tone === "success"
+          ? TRANSLATION_SUCCESS_TOAST_MS
+          : TRANSLATION_INFO_TOAST_MS,
+    ) => {
+      const id = translationToastIdRef.current + 1;
+      translationToastIdRef.current = id;
+
+      setTranslationToasts((previous) => [
+        ...previous,
+        { id, message, tone, leaving: false },
+      ]);
+
+      const hide = window.setTimeout(() => {
+        setTranslationToasts((previous) =>
+          previous.map((toast) =>
+            toast.id === id ? { ...toast, leaving: true } : toast,
+          ),
+        );
+      }, duration);
+
+      const remove = window.setTimeout(() => {
+        clearTranslationToastTimers(id);
+        setTranslationToasts((previous) =>
+          previous.filter((toast) => toast.id !== id),
+        );
+      }, duration + TRANSLATION_TOAST_EXIT_MS);
+
+      translationToastTimersRef.current.set(id, { hide, remove });
+    },
+    [clearTranslationToastTimers],
+  );
 
   const scheduleToolbarAutoHide = useCallback(
     (delay = TOOLBAR_AUTO_HIDE_DELAY_MS) => {
@@ -693,10 +773,15 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
     setPageAspectRatios({});
     setRenderWindow({ start: 1, end: 3 });
     setIsToolbarAutoHidden(false);
+    pageTranslationInFlightRef.current = false;
+    pageTranslationRequestTokenRef.current += 1;
+    setIsPageTranslationRunning(false);
+    clearTranslationToastTimers();
+    setTranslationToasts([]);
     setPageTranslation(EMPTY_PAGE_TRANSLATION_STATE);
     clearToolbarHideTimer();
     pageRefs.current.clear();
-  }, [activePdfPath, clearToolbarHideTimer]);
+  }, [activePdfPath, clearToolbarHideTimer, clearTranslationToastTimers]);
 
   useEffect(() => {
     let cancelled = false;
@@ -761,6 +846,10 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
   }, []);
 
   useEffect(() => () => clearToolbarHideTimer(), [clearToolbarHideTimer]);
+  useEffect(
+    () => () => clearTranslationToastTimers(),
+    [clearTranslationToastTimers],
+  );
 
   useEffect(() => {
     if (isToolbarCollapsed || isOutlineOpen || viewerMode !== "pdfjs") {
@@ -1484,38 +1573,56 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
       return;
     }
 
-    const page = normalizePageNumber(currentPageRef.current);
-    const cacheKey = buildPageTranslationCacheKey(activePdfPath, page, model);
-    const cached = sessionStorage.getItem(cacheKey);
-
-    setSelection(null);
-    window.getSelection()?.removeAllRanges();
-
-    if (cached) {
-      try {
-        const parsed = JSON.parse(cached) as TranslatePdfPageResult;
-        setPageTranslation({
-          open: true,
-          phase: "success",
-          result: parsed,
-          error: null,
-          requestedPage: page,
-        });
-        return;
-      } catch {
-        sessionStorage.removeItem(cacheKey);
-      }
-    }
-
-    setPageTranslation({
-      open: true,
-      phase: "loading",
-      result: null,
-      error: null,
-      requestedPage: page,
-    });
+    pageTranslationInFlightRef.current = true;
+    setIsPageTranslationRunning(true);
+    const requestToken = pageTranslationRequestTokenRef.current + 1;
+    pageTranslationRequestTokenRef.current = requestToken;
 
     try {
+      const model = ensureAiReady ? await ensureAiReady() : currentModel;
+      if (pageTranslationRequestTokenRef.current !== requestToken) return;
+      if (!model) {
+        pushTranslationToast(
+          "当前没有可用模型，暂时无法执行整页翻译。",
+          "error",
+        );
+        return;
+      }
+
+      const page = normalizePageNumber(currentPageRef.current);
+      const cacheKey = buildPageTranslationCacheKey(activePdfPath, page, model);
+      const cached = sessionStorage.getItem(cacheKey);
+
+      setSelection(null);
+      window.getSelection()?.removeAllRanges();
+
+      if (cached) {
+        try {
+          const parsed = JSON.parse(cached) as TranslatePdfPageResult;
+          if (pageTranslationRequestTokenRef.current !== requestToken) return;
+          setPageTranslation({
+            open: true,
+            phase: "success",
+            result: parsed,
+            error: null,
+            requestedPage: page,
+          });
+          pushTranslationToast(`已显示第 ${page} 页译文。`, "success", 2000);
+          return;
+        } catch {
+          sessionStorage.removeItem(cacheKey);
+        }
+      }
+
+      setPageTranslation({
+        open: true,
+        phase: "loading",
+        result: null,
+        error: null,
+        requestedPage: page,
+      });
+      pushTranslationToast(`正在翻译第 ${page} 页...`, "info");
+
       const result = await invoke<TranslatePdfPageResult>(
         "translate_pdf_page",
         {
@@ -1526,6 +1633,8 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
           },
         },
       );
+      if (pageTranslationRequestTokenRef.current !== requestToken) return;
+
       sessionStorage.setItem(cacheKey, JSON.stringify(result));
       setPageTranslation({
         open: true,
@@ -1534,16 +1643,27 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
         error: null,
         requestedPage: page,
       });
+      if (result.source_text_length === 0) {
+        pushTranslationToast("当前页没有可翻译文本，OCR 后可重试。", "error");
+      } else {
+        pushTranslationToast(`第 ${page} 页翻译完成。`, "success");
+      }
     } catch (error) {
+      if (pageTranslationRequestTokenRef.current !== requestToken) return;
       const message = String(error);
       setPageTranslation({
         open: true,
         phase: "error",
         result: null,
         error: message,
-        requestedPage: page,
+        requestedPage: normalizePageNumber(currentPageRef.current),
       });
-      onStatusRef.current(`整页翻译失败：${message}`, "error", true);
+      pushTranslationToast(`整页翻译失败：${message}`, "error");
+    } finally {
+      if (pageTranslationRequestTokenRef.current === requestToken) {
+        pageTranslationInFlightRef.current = false;
+        setIsPageTranslationRunning(false);
+      }
     }
   }, [
     activePdfPath,
@@ -1812,6 +1932,29 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
 
   return (
     <div className="pdf-reader-shell">
+      {translationToasts.length > 0 && (
+        <div className="pdf-translation-toast-stack" aria-live="polite">
+          {translationToasts.map((toast) => (
+            <div
+              key={toast.id}
+              className={`pdf-translation-toast ${toast.tone} ${toast.leaving ? "leaving" : ""}`}
+              role="status"
+            >
+              <div className="pdf-translation-toast-icon" aria-hidden="true">
+                {toast.tone === "success" ? (
+                  <CheckCircle2 size={16} />
+                ) : toast.tone === "error" ? (
+                  <AlertTriangle size={16} />
+                ) : (
+                  <LoaderCircle size={16} className="spin" />
+                )}
+              </div>
+              <div className="pdf-translation-toast-text">{toast.message}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="pdf-viewer-frame">
         {!isToolbarCollapsed ? (
           <div
@@ -1937,7 +2080,11 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
                     type="button"
                     className="action-button"
                     onClick={() => void handleTranslateCurrentPage()}
-                    disabled={viewerMode !== "pdfjs" || isLoading}
+                    disabled={
+                      viewerMode !== "pdfjs" ||
+                      isLoading ||
+                      isPageTranslationRunning
+                    }
                     title={subtitleText}
                   >
                     整页翻译

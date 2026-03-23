@@ -2,10 +2,10 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Instant, UNIX_EPOCH};
 use tauri::{Emitter, State, Window};
 
 mod cards;
@@ -251,6 +251,121 @@ impl InferenceSettingsState {
             .lock()
             .map_err(|e| format!("Failed to lock inference settings: {}", e))?;
         *guard = settings;
+        Ok(())
+    }
+}
+
+const MAX_PDF_PAGE_TEXT_CACHE_ENTRIES: usize = 128;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PdfPageTextCacheSignature {
+    file_len: u64,
+    modified_unix_ms: u128,
+}
+
+#[derive(Clone, Debug)]
+struct PdfPageTextCacheEntry {
+    signature: PdfPageTextCacheSignature,
+    text: String,
+    last_access_tick: u64,
+}
+
+struct PdfPageTextCacheInner {
+    entries: HashMap<String, PdfPageTextCacheEntry>,
+    next_access_tick: u64,
+}
+
+pub struct PdfPageTextCacheState {
+    inner: Mutex<PdfPageTextCacheInner>,
+}
+
+impl PdfPageTextCacheState {
+    pub fn new() -> Self {
+        Self {
+            inner: Mutex::new(PdfPageTextCacheInner {
+                entries: HashMap::new(),
+                next_access_tick: 1,
+            }),
+        }
+    }
+
+    fn build_key(path: &str, page: u32) -> String {
+        format!("{}::{}", path, page)
+    }
+
+    fn next_tick(inner: &mut PdfPageTextCacheInner) -> u64 {
+        let tick = inner.next_access_tick;
+        inner.next_access_tick = inner.next_access_tick.saturating_add(1);
+        tick
+    }
+
+    fn read_signature(path: &str) -> Result<PdfPageTextCacheSignature, String> {
+        let metadata = std::fs::metadata(path).map_err(|e| e.to_string())?;
+        let modified_unix_ms = metadata
+            .modified()
+            .ok()
+            .and_then(|timestamp| timestamp.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis())
+            .unwrap_or(0);
+        Ok(PdfPageTextCacheSignature {
+            file_len: metadata.len(),
+            modified_unix_ms,
+        })
+    }
+
+    fn get(&self, path: &str, page: u32) -> Result<Option<String>, String> {
+        let signature = Self::read_signature(path)?;
+        let key = Self::build_key(path, page);
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| format!("Failed to lock PDF page text cache: {}", e))?;
+
+        let cached_text = match inner.entries.get(&key) {
+            Some(entry) if entry.signature == signature => Some(entry.text.clone()),
+            _ => None,
+        };
+
+        if cached_text.is_some() {
+            let next_tick = Self::next_tick(&mut inner);
+            if let Some(entry) = inner.entries.get_mut(&key) {
+                entry.last_access_tick = next_tick;
+            }
+        }
+
+        Ok(cached_text)
+    }
+
+    fn insert(&self, path: &str, page: u32, text: String) -> Result<(), String> {
+        let signature = Self::read_signature(path)?;
+        let key = Self::build_key(path, page);
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| format!("Failed to lock PDF page text cache: {}", e))?;
+
+        let tick = Self::next_tick(&mut inner);
+        inner.entries.insert(
+            key,
+            PdfPageTextCacheEntry {
+                signature,
+                text,
+                last_access_tick: tick,
+            },
+        );
+
+        while inner.entries.len() > MAX_PDF_PAGE_TEXT_CACHE_ENTRIES {
+            let Some(oldest_key) = inner
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_access_tick)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            inner.entries.remove(&oldest_key);
+        }
+
         Ok(())
     }
 }
@@ -1410,7 +1525,7 @@ fn normalize_extracted_pdf_text(text: &str) -> String {
         .join("\n")
 }
 
-fn extract_pdf_page_text_internal(path: &str, page: u32) -> Result<String, String> {
+fn extract_pdf_page_text_uncached(path: &str, page: u32) -> Result<String, String> {
     let doc = lopdf::Document::load(path).map_err(|e| e.to_string())?;
     let pages = doc.get_pages();
     if !pages.contains_key(&page) {
@@ -1421,9 +1536,27 @@ fn extract_pdf_page_text_internal(path: &str, page: u32) -> Result<String, Strin
     Ok(normalize_extracted_pdf_text(&text))
 }
 
+fn extract_pdf_page_text_cached(
+    path: &str,
+    page: u32,
+    cache: &PdfPageTextCacheState,
+) -> Result<String, String> {
+    if let Some(cached) = cache.get(path, page)? {
+        return Ok(cached);
+    }
+
+    let extracted = extract_pdf_page_text_uncached(path, page)?;
+    cache.insert(path, page, extracted.clone())?;
+    Ok(extracted)
+}
+
 #[tauri::command]
-async fn extract_pdf_page_text(path: String, page: u32) -> Result<String, String> {
-    extract_pdf_page_text_internal(&path, page)
+async fn extract_pdf_page_text(
+    path: String,
+    page: u32,
+    cache: State<'_, PdfPageTextCacheState>,
+) -> Result<String, String> {
+    extract_pdf_page_text_cached(&path, page, &cache)
 }
 
 #[tauri::command]
@@ -3532,13 +3665,14 @@ fn should_ignore_reference_for_term(term: &str, reference: &encyclopedia::Refere
 #[tauri::command]
 async fn explain_pdf_selection(
     request: ExplainPdfSelectionRequest,
+    cache: State<'_, PdfPageTextCacheState>,
 ) -> Result<ExplainPdfSelectionResult, String> {
     let term = request.term.trim().to_string();
     if term.is_empty() {
         return Err("Term must not be empty.".to_string());
     }
 
-    let page_text = extract_pdf_page_text_internal(&request.pdf_path, request.page)?;
+    let page_text = extract_pdf_page_text_cached(&request.pdf_path, request.page, &cache)?;
     let context_snippet = build_page_context_snippet(&page_text, &term);
     let treat_as_plain_english_word = is_common_everyday_english_word(&term);
     let mut reference = if treat_as_plain_english_word {
@@ -3610,6 +3744,7 @@ async fn explain_pdf_selection(
 #[tauri::command]
 async fn translate_pdf_selection(
     request: TranslatePdfSelectionRequest,
+    cache: State<'_, PdfPageTextCacheState>,
 ) -> Result<TranslatePdfSelectionResult, String> {
     let original_text = request.text.trim().to_string();
     if original_text.is_empty() {
@@ -3620,7 +3755,7 @@ async fn translate_pdf_selection(
         return Err("选中文本过长，请使用“翻译本页”。".to_string());
     }
 
-    let page_context = extract_pdf_page_text_internal(&request.pdf_path, request.page).ok();
+    let page_context = extract_pdf_page_text_cached(&request.pdf_path, request.page, &cache).ok();
     let translated_text =
         translate_pdf_selection_text_v2(&original_text, page_context.as_deref(), &request.model)
             .await?;
@@ -3637,8 +3772,9 @@ async fn translate_pdf_selection(
 #[tauri::command]
 async fn translate_pdf_page(
     request: TranslatePdfPageRequest,
+    cache: State<'_, PdfPageTextCacheState>,
 ) -> Result<TranslatePdfPageResult, String> {
-    let page_text = extract_pdf_page_text_internal(&request.pdf_path, request.page)?;
+    let page_text = extract_pdf_page_text_cached(&request.pdf_path, request.page, &cache)?;
     let source_text_length = page_text.chars().count();
 
     if page_text.trim().is_empty() {
@@ -3743,6 +3879,7 @@ pub fn run() {
     let rag_state = RagState::new();
     let inference_settings_state = InferenceSettingsState::new();
     let mobile_companion_state = mobile::MobileCompanionState::new();
+    let pdf_page_text_cache_state = PdfPageTextCacheState::new();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -3752,6 +3889,7 @@ pub fn run() {
         .manage(rag_state)
         .manage(inference_settings_state)
         .manage(mobile_companion_state)
+        .manage(pdf_page_text_cache_state)
         .setup(|app| {
             let started = Instant::now();
             let handle = app.handle().clone();

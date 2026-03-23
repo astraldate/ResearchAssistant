@@ -1259,15 +1259,18 @@ function App() {
       });
       return;
     }
+    const isOpeningPdfDock = !isPdfDockVisible;
     if (previousPdfPathRef.current !== activePdfPath) {
       setIsPdfDockVisible(true);
       previousPdfPathRef.current = activePdfPath;
-      window.requestAnimationFrame(() => {
-        mainPanelRef.current?.resize(`${DEFAULT_TWO_PANEL_LAYOUT.main}%`);
-        pdfPanelRef.current?.resize(`${DEFAULT_TWO_PANEL_LAYOUT.pdf}%`);
-      });
+      if (isOpeningPdfDock) {
+        window.requestAnimationFrame(() => {
+          mainPanelRef.current?.resize(`${DEFAULT_TWO_PANEL_LAYOUT.main}%`);
+          pdfPanelRef.current?.resize(`${DEFAULT_TWO_PANEL_LAYOUT.pdf}%`);
+        });
+      }
     }
-  }, [activePdfPath, isPdfFocusMode]);
+  }, [activePdfPath, isPdfDockVisible, isPdfFocusMode]);
 
   useEffect(() => {
     const syncSession = () => {
@@ -1797,6 +1800,14 @@ function App() {
                 >
                   <LayoutGrid size={18} />
                 </button>
+                <div className="sidebar-rail-spacer" aria-hidden="true" />
+                <button
+                  className={`rail-button ${isSettingsOpen ? "active" : ""}`}
+                  onClick={() => setIsSettingsOpen(true)}
+                  title="Settings"
+                >
+                  <Settings size={18} />
+                </button>
               </div>
 
               <div className="sidebar-content">
@@ -1812,36 +1823,31 @@ function App() {
                             ? "Knowledge"
                             : "Knowledge Cards"}
                   </span>
-                  <div className="sidebar-actions">
-                    <button
-                      className="icon-button"
-                      onClick={() => void handleImportZotero()}
-                      title="Auto import Zotero PDFs"
-                    >
-                      <BookOpen size={16} />
-                    </button>
-                    <button
-                      className="icon-button"
-                      onClick={() => void handleOpenFiles()}
-                      title="Import files"
-                    >
-                      <FilePlus size={16} />
-                    </button>
-                    <button
-                      className="icon-button"
-                      onClick={() => void handleOpenFolder()}
-                      title="Import folder"
-                    >
-                      <FolderOpen size={16} />
-                    </button>
-                    <button
-                      className="icon-button"
-                      onClick={() => setIsSettingsOpen(true)}
-                      title="Settings"
-                    >
-                      <Settings size={16} />
-                    </button>
-                  </div>
+                  {activeSidebarTool === "workspace" ? (
+                    <div className="sidebar-actions">
+                      <button
+                        className="icon-button"
+                        onClick={() => void handleImportZotero()}
+                        title="Auto import Zotero PDFs"
+                      >
+                        <BookOpen size={16} />
+                      </button>
+                      <button
+                        className="icon-button"
+                        onClick={() => void handleOpenFiles()}
+                        title="Import files"
+                      >
+                        <FilePlus size={16} />
+                      </button>
+                      <button
+                        className="icon-button"
+                        onClick={() => void handleOpenFolder()}
+                        title="Import folder"
+                      >
+                        <FolderOpen size={16} />
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
 
                 {sidebarToolBody}

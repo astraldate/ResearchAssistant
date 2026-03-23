@@ -773,7 +773,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 />
 
                 <button
-                  className="send-button"
+                  className="send-button send-action"
                   onClick={() => void handleSendMessage()}
                   disabled={!inputValue.trim() || isLoading}
                   title="发送"
