@@ -1,4 +1,4 @@
-import React, {
+﻿import React, {
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -252,7 +252,7 @@ const flattenOutlineEntries = async (
       return [
         {
           id,
-          title: item.title?.trim() || `章节 ${index + 1}`,
+          title: item.title?.trim() || `绔犺妭 ${index + 1}`,
           pageNumber,
           depth,
           hasChildren: children.length > 0,
@@ -631,6 +631,12 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
     readStoredToolMode(),
   );
   const [selection, setSelection] = useState<PdfSelectionState | null>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+  } | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement | null>(null);
+  const selectionOverlayRef = useRef<HTMLDivElement | null>(null);
   const [pageInputValue, setPageInputValue] = useState("1");
   const [outlineEntries, setOutlineEntries] = useState<PdfOutlineEntry[]>([]);
   const [isOutlineLoading, setIsOutlineLoading] = useState(false);
@@ -1477,8 +1483,7 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
         text.length > MAX_TRANSLATE_SELECTION_CHARS
       ) {
         setSelection(null);
-        window.getSelection()?.removeAllRanges();
-        onStatusRef.current("选中文本过长，请使用“整页翻译”", "info", false);
+        onStatusRef.current("选中文本过长，请使用“整页翻译”。", "info", false);
         return;
       }
 
@@ -1544,6 +1549,72 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
     });
   };
 
+  const handlePdfContextMenu = (event: React.MouseEvent) => {
+    if (viewerMode !== "pdfjs") return;
+
+    const browserSelection = window.getSelection();
+    const text = normalizeSelectedText(browserSelection?.toString() ?? "");
+    if (!text) return;
+
+    event.preventDefault();
+
+    if (!selection || selection.text !== text) {
+      handleSelectionCapture();
+    }
+
+    const overlayRect = selectionOverlayRef.current?.getBoundingClientRect();
+    const baseLeft = overlayRect?.left ?? 0;
+    const baseTop = overlayRect?.top ?? 0;
+    const overlayWidth = overlayRect?.width ?? window.innerWidth;
+    const overlayHeight = overlayRect?.height ?? window.innerHeight;
+
+    const menuWidth = 140;
+    const menuHeight = 120;
+    const padding = 8;
+
+    const left = clamp(
+      event.clientX - baseLeft,
+      padding,
+      Math.max(padding, overlayWidth - menuWidth - padding),
+    );
+    const top = clamp(
+      event.clientY - baseTop,
+      padding,
+      Math.max(padding, overlayHeight - menuHeight - padding),
+    );
+    setContextMenu({ x: left, y: top });
+  };
+
+  const handleContextExplain = () => {
+    if (!selection) return;
+    setSelection((previous) =>
+      previous ? { ...previous, overlay: "explain" } : previous,
+    );
+    setContextMenu(null);
+  };
+  const handleContextTranslate = () => {
+    if (!selection) return;
+    if (selection.text.length > MAX_TRANSLATE_SELECTION_CHARS) {
+      onStatusRef.current("选中文本过长，请使用“整页翻译”。", "info", false);
+      return;
+    }
+    setSelection((previous) =>
+      previous ? { ...previous, overlay: "translate" } : previous,
+    );
+    setContextMenu(null);
+  };
+
+  const handleContextCopy = async () => {
+    if (!selection?.text) return;
+    try {
+      await navigator.clipboard.writeText(selection.text);
+      onStatusRef.current("已复制选中文本。", "info", false);
+    } catch {
+      onStatusRef.current("复制失败，请手动复制。", "error", false);
+    }
+    setContextMenu(null);
+  };
+
   const handleOpenExplainPopover = () => {
     setSelection((previous) =>
       previous ? { ...previous, overlay: "explain" } : previous,
@@ -1554,6 +1625,27 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
     setSelection(null);
     window.getSelection()?.removeAllRanges();
   };
+
+  useEffect(() => {
+    if (!selection) {
+      setContextMenu(null);
+    }
+  }, [selection]);
+
+  useEffect(() => {
+    const handlePointerDown = (event: MouseEvent) => {
+      if (contextMenuRef.current?.contains(event.target as Node)) return;
+      setContextMenu(null);
+    };
+    const handleScroll = () => setContextMenu(null);
+
+    window.addEventListener("mousedown", handlePointerDown);
+    window.addEventListener("scroll", handleScroll, true);
+    return () => {
+      window.removeEventListener("mousedown", handlePointerDown);
+      window.removeEventListener("scroll", handleScroll, true);
+    };
+  }, []);
 
   const handleClosePageTranslation = useCallback(() => {
     setPageTranslation(EMPTY_PAGE_TRANSLATION_STATE);
@@ -1925,7 +2017,7 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
   );
   const subtitleText =
     readerToolMode === "translate"
-      ? "翻译模式下，选中文字会直接弹出译文；较长内容请使用“整页翻译”。"
+      ? "翻译模式下，选中文本会直接弹出译文；较长内容请使用“整页翻译”。"
       : "解释模式下，选中术语后点击“解释”即可生成说明与知识卡片。";
   const translatedPageNumber =
     pageTranslation.result?.page ?? pageTranslation.requestedPage;
@@ -2001,7 +2093,7 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
                     onFocus={handlePageInputFocus}
                     onBlur={handlePageInputBlur}
                     onKeyDown={handlePageInputKeyDown}
-                    aria-label="跳转页码"
+                    aria-label="璺宠浆椤电爜"
                   />
                   <span className="pdf-toolbar-text">/ {pageCount || "-"}</span>
                 </div>
@@ -2011,8 +2103,8 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
                     className="action-button pdf-toolbar-icon-button"
                     onClick={zoomOut}
                     disabled={viewerMode !== "pdfjs" || zoomPercent <= MIN_ZOOM}
-                    aria-label="缩小 PDF"
-                    title="缩小"
+                    aria-label="缂╁皬 PDF"
+                    title="缂╁皬"
                   >
                     <ZoomOut size={14} />
                   </button>
@@ -2115,14 +2207,14 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
           <div className="pdf-outline-header">
             <div>
               <div className="pdf-outline-title">目录</div>
-              <div className="pdf-outline-subtitle">跳转到对应页</div>
+              <div className="pdf-outline-subtitle">璺宠浆鍒板搴旈〉</div>
             </div>
             <button
               className="ghost-icon-button"
               onClick={() => setIsOutlineOpen(false)}
               aria-label="关闭目录"
             >
-              ×
+              脳
             </button>
           </div>
 
@@ -2182,7 +2274,11 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
         )}
 
         {viewerMode === "pdfjs" && !isLoading && (
-          <div className="pdfjs-stage" ref={stageRef}>
+          <div
+            className="pdfjs-stage"
+            ref={stageRef}
+            onContextMenu={handlePdfContextMenu}
+          >
             <div className="pdfjs-pages">
               {pageNumbers.map((pageNumber) => (
                 <PdfPageCanvas
@@ -2215,7 +2311,7 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
                     <div className="pdf-page-translation-title">当前页译文</div>
                     <div className="pdf-page-translation-meta">
                       当前显示的是第 {translatedPageNumber ?? currentPage}{" "}
-                      页译文
+                      椤佃瘧鏂?
                     </div>
                   </div>
                   <button
@@ -2232,7 +2328,7 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
                     <LoaderCircle size={16} className="spin" />
                     <span>
                       正在翻译第 {pageTranslation.requestedPage ?? currentPage}{" "}
-                      页...
+                      椤?..
                     </span>
                   </div>
                 )}
@@ -2275,7 +2371,7 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
           ))}
 
         {viewerMode === "pdfjs" && (
-          <div className="pdf-selection-overlay">
+          <div className="pdf-selection-overlay" ref={selectionOverlayRef}>
             {selection && selection.overlay === "button" && (
               <button
                 className="pdf-selection-target"
@@ -2285,6 +2381,25 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
               >
                 解释
               </button>
+            )}
+
+            {contextMenu && selection && (
+              <div
+                ref={contextMenuRef}
+                className="pdf-selection-context-menu"
+                style={{ left: contextMenu.x, top: contextMenu.y }}
+                onMouseDown={(event) => event.preventDefault()}
+              >
+                <button type="button" onClick={handleContextCopy}>
+                  复制
+                </button>
+                <button type="button" onClick={handleContextExplain}>
+                  解释
+                </button>
+                <button type="button" onClick={handleContextTranslate}>
+                  翻译
+                </button>
+              </div>
             )}
 
             {selection && selection.overlay === "explain" && (
