@@ -2171,6 +2171,36 @@ textarea:focus {
   pointer-events: auto;
 }
 
+.pdf-selection-context-menu {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 120px;
+  padding: 6px;
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+  background: #fff;
+  box-shadow: var(--shadow-float);
+  z-index: 12;
+  pointer-events: auto;
+}
+
+.pdf-selection-context-menu button {
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 6px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--text-primary);
+  font-size: 0.85rem;
+}
+
+.pdf-selection-context-menu button:hover {
+  background: rgba(48, 95, 151, 0.12);
+}
+
 .term-popover {
   position: fixed;
   width: min(420px, calc(100vw - 32px));
