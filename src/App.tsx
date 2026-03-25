@@ -164,6 +164,13 @@ interface ChatSessionSnapshot {
   notes?: NoteItem[];
 }
 
+interface FocusRestoreLayout {
+  sidebar: number;
+  main: number;
+  pdf: number;
+  sidebarCollapsed: boolean;
+}
+
 interface DocumentResult {
   id: string;
   path: string;
@@ -179,6 +186,7 @@ const REQUIRED_MODELS = {
 const OLLAMA_MIN_RECOMMENDED_VERSION = "0.17.7";
 const CHAT_MODEL_KEY = "ra_chat_model_v1";
 const TRANSLATION_MODEL_KEY = "ra_translation_model_v1";
+const SIDEBAR_COLLAPSED_WIDTH_PX = 58;
 
 const STAGE_LABELS: Record<string, string> = {
   scan: "扫描文件",
@@ -194,6 +202,12 @@ const CHAT_SESSION_KEY = "ra_chat_session_v3";
 const isPdfFile = (path: string | null | undefined) =>
   Boolean(path && /\.pdf$/i.test(path));
 const DEFAULT_TWO_PANEL_LAYOUT = { main: 55, pdf: 45 };
+const DEFAULT_FOCUS_RESTORE_LAYOUT: FocusRestoreLayout = {
+  sidebar: 23,
+  main: DEFAULT_TWO_PANEL_LAYOUT.main,
+  pdf: DEFAULT_TWO_PANEL_LAYOUT.pdf,
+  sidebarCollapsed: false,
+};
 const AI_IDLE_CHECK_DELAY_MS = 1200;
 const logTiming = (label: string, startedAt: number) => {
   const duration = Math.round(performance.now() - startedAt);
@@ -284,6 +298,7 @@ function App() {
   });
   const [activeSidebarTool, setActiveSidebarTool] =
     useState<SidebarTool>("workspace");
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [ingestMode, setIngestMode] = useState<IngestMode>("overwrite");
   const [ingestProgress, setIngestProgress] = useState<IngestProgress | null>(
     null,
@@ -322,7 +337,9 @@ function App() {
   const previousPdfPathRef = useRef<string | null>(null);
   const sidebarPanelRef = useRef<PanelImperativeHandle | null>(null);
   const mainPanelRef = useRef<PanelImperativeHandle | null>(null);
-  const focusRestoreLayoutRef = useRef(DEFAULT_TWO_PANEL_LAYOUT);
+  const focusRestoreLayoutRef = useRef<FocusRestoreLayout>(
+    DEFAULT_FOCUS_RESTORE_LAYOUT,
+  );
   const pdfPanelRef = useRef<PanelImperativeHandle | null>(null);
   const aiPreparationPromiseRef = useRef<Promise<string> | null>(null);
   const aiPreparedStateRef = useRef<{
@@ -1246,15 +1263,47 @@ function App() {
     }
   };
 
+  const handleSidebarToolToggle = useCallback(
+    (tool: SidebarTool) => {
+      const sidebarPanel = sidebarPanelRef.current;
+      const collapsed = sidebarPanel?.isCollapsed() ?? isSidebarCollapsed;
+      if (activeSidebarTool === tool && !collapsed) {
+        sidebarPanel?.collapse();
+        setIsSidebarCollapsed(true);
+        return;
+      }
+
+      setActiveSidebarTool(tool);
+      if (collapsed) {
+        window.requestAnimationFrame(() => {
+          sidebarPanelRef.current?.expand();
+        });
+      }
+      setIsSidebarCollapsed(false);
+    },
+    [activeSidebarTool, isSidebarCollapsed],
+  );
+
   useEffect(() => {
     if (!activePdfPath) {
+      const wasPdfFocusMode = isPdfFocusMode;
       if (isPdfFocusMode) {
         setIsPdfFocusMode(false);
       }
-      focusRestoreLayoutRef.current = DEFAULT_TWO_PANEL_LAYOUT;
+      const restored = focusRestoreLayoutRef.current;
+      focusRestoreLayoutRef.current = DEFAULT_FOCUS_RESTORE_LAYOUT;
       previousPdfPathRef.current = null;
       setIsPdfDockVisible(false);
       window.requestAnimationFrame(() => {
+        if (wasPdfFocusMode) {
+          if (restored.sidebarCollapsed) {
+            sidebarPanelRef.current?.collapse();
+            setIsSidebarCollapsed(true);
+          } else {
+            sidebarPanelRef.current?.resize(`${restored.sidebar}%`);
+            setIsSidebarCollapsed(false);
+          }
+        }
         mainPanelRef.current?.resize("100%");
       });
       return;
@@ -1304,6 +1353,13 @@ function App() {
       const restored = focusRestoreLayoutRef.current;
       setIsPdfFocusMode(false);
       window.requestAnimationFrame(() => {
+        if (restored.sidebarCollapsed) {
+          sidebarPanelRef.current?.collapse();
+          setIsSidebarCollapsed(true);
+        } else {
+          sidebarPanelRef.current?.resize(`${restored.sidebar}%`);
+          setIsSidebarCollapsed(false);
+        }
         mainPanelRef.current?.resize(`${restored.main}%`);
         pdfPanelRef.current?.resize(`${restored.pdf}%`);
       });
@@ -1311,30 +1367,47 @@ function App() {
     }
 
     focusRestoreLayoutRef.current = {
+      sidebar:
+        sidebarPanelRef.current?.getSize().asPercentage ??
+        DEFAULT_FOCUS_RESTORE_LAYOUT.sidebar,
       main:
         mainPanelRef.current?.getSize().asPercentage ??
         DEFAULT_TWO_PANEL_LAYOUT.main,
       pdf:
         pdfPanelRef.current?.getSize().asPercentage ??
         DEFAULT_TWO_PANEL_LAYOUT.pdf,
+      sidebarCollapsed:
+        sidebarPanelRef.current?.isCollapsed() ?? isSidebarCollapsed,
     };
 
     setIsPdfFocusMode(true);
     window.requestAnimationFrame(() => {
+      sidebarPanelRef.current?.resize("0%");
       mainPanelRef.current?.resize("0%");
       mainPanelRef.current?.resize("100%");
       pdfPanelRef.current?.resize("0%");
     });
-  }, [activePdfPath, isPdfDockVisible, isPdfFocusMode]);
+  }, [activePdfPath, isPdfDockVisible, isPdfFocusMode, isSidebarCollapsed]);
 
   const handleClosePdfDock = useCallback(() => {
+    const restored = focusRestoreLayoutRef.current;
+    const wasPdfFocusMode = isPdfFocusMode;
     setIsPdfFocusMode(false);
-    focusRestoreLayoutRef.current = DEFAULT_TWO_PANEL_LAYOUT;
+    focusRestoreLayoutRef.current = DEFAULT_FOCUS_RESTORE_LAYOUT;
     setIsPdfDockVisible(false);
     window.requestAnimationFrame(() => {
+      if (wasPdfFocusMode) {
+        if (restored.sidebarCollapsed) {
+          sidebarPanelRef.current?.collapse();
+          setIsSidebarCollapsed(true);
+        } else {
+          sidebarPanelRef.current?.resize(`${restored.sidebar}%`);
+          setIsSidebarCollapsed(false);
+        }
+      }
       mainPanelRef.current?.resize("100%");
     });
-  }, []);
+  }, [isPdfFocusMode]);
 
   const handleKnowledgeSearch = useCallback(async () => {
     const query = knowledgeQuery.trim();
@@ -1761,41 +1834,49 @@ function App() {
             defaultSize="23%"
             minSize={isPdfFocusMode ? "0%" : "16%"}
             maxSize="38%"
-            className={`sidebar-panel ${isPdfFocusMode ? "panel-collapsed" : ""}`}
+            collapsible
+            collapsedSize={`${SIDEBAR_COLLAPSED_WIDTH_PX}px`}
+            onResize={(panelSize) => {
+              setIsSidebarCollapsed(
+                !isPdfFocusMode &&
+                  panelSize.inPixels <= SIDEBAR_COLLAPSED_WIDTH_PX + 2,
+              );
+            }}
+            className={`sidebar-panel ${isPdfFocusMode ? "panel-collapsed" : ""} ${isSidebarCollapsed ? "sidebar-panel-collapsed" : ""}`}
           >
             <aside className="sidebar sidebar-with-rail">
               <div className="sidebar-rail">
                 <button
-                  className={`rail-button ${activeSidebarTool === "workspace" ? "active" : ""}`}
-                  onClick={() => setActiveSidebarTool("workspace")}
+                  className={`rail-button ${activeSidebarTool === "workspace" && !isSidebarCollapsed ? "active" : ""}`}
+                  onClick={() => handleSidebarToolToggle("workspace")}
                   title="Workspace"
                 >
                   <FolderOpen size={18} />
                 </button>
                 <button
-                  className={`rail-button ${activeSidebarTool === "citations" ? "active" : ""}`}
-                  onClick={() => setActiveSidebarTool("citations")}
+                  className={`rail-button ${activeSidebarTool === "citations" && !isSidebarCollapsed ? "active" : ""}`}
+                  onClick={() => handleSidebarToolToggle("citations")}
                   title="Citations"
                 >
                   <MessageSquareText size={18} />
                 </button>
                 <button
-                  className={`rail-button ${activeSidebarTool === "notes" ? "active" : ""}`}
-                  onClick={() => setActiveSidebarTool("notes")}
+                  className={`rail-button ${activeSidebarTool === "notes" && !isSidebarCollapsed ? "active" : ""}`}
+                  onClick={() => handleSidebarToolToggle("notes")}
                   title="Notes"
                 >
                   <StickyNote size={18} />
                 </button>
                 <button
-                  className={`rail-button ${activeSidebarTool === "knowledge" ? "active" : ""}`}
-                  onClick={() => setActiveSidebarTool("knowledge")}
+                  className={`rail-button ${activeSidebarTool === "knowledge" && !isSidebarCollapsed ? "active" : ""}`}
+                  onClick={() => handleSidebarToolToggle("knowledge")}
                   title="Knowledge Search"
                 >
                   <Search size={18} />
                 </button>
                 <button
-                  className={`rail-button ${activeSidebarTool === "cards" ? "active" : ""}`}
-                  onClick={() => setActiveSidebarTool("cards")}
+                  className={`rail-button ${activeSidebarTool === "cards" && !isSidebarCollapsed ? "active" : ""}`}
+                  onClick={() => handleSidebarToolToggle("cards")}
                   title="Knowledge Cards"
                 >
                   <LayoutGrid size={18} />
@@ -1810,7 +1891,9 @@ function App() {
                 </button>
               </div>
 
-              <div className="sidebar-content">
+              <div
+                className={`sidebar-content ${isSidebarCollapsed ? "collapsed" : ""}`}
+              >
                 <div className="sidebar-header">
                   <span>
                     {activeSidebarTool === "workspace"

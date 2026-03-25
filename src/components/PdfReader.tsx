@@ -6,13 +6,14 @@
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import {
   AlertTriangle,
   CheckCircle2,
+  FileText,
   List,
   LoaderCircle,
-  MoveHorizontal,
   X,
   ZoomIn,
   ZoomOut,
@@ -31,8 +32,19 @@ import { LookupMode, TermExplainPopover } from "./TermExplainPopover";
 
 type StatusTone = "info" | "error";
 type ViewerMode = "pdfjs" | "compat";
-type ReaderToolMode = "explain" | "translate";
-type SelectionOverlayMode = "button" | "explain" | "translate";
+type SelectionOverlayMode = "preview" | "button" | "explain" | "translate";
+
+interface PdfSelectionHighlightRect {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+interface PdfSelectionHighlightGroup {
+  page: number;
+  rects: PdfSelectionHighlightRect[];
+}
 
 interface PdfReaderProps {
   activePdfPath: string;
@@ -54,10 +66,13 @@ interface PdfReaderProps {
 interface PdfSelectionState {
   text: string;
   page: number;
+  startPage: number;
+  endPage: number;
   targetLeft: number;
   targetTop: number;
   popoverLeft: number;
   popoverTop: number;
+  highlightGroups: PdfSelectionHighlightGroup[];
   overlay: SelectionOverlayMode;
 }
 
@@ -121,7 +136,8 @@ interface PdfPageCanvasProps {
   pageWidth: number;
   estimatedHeight: number;
   shouldRender: boolean;
-  onSelectionCapture: () => void;
+  onSelectionStart: (event: React.MouseEvent<HTMLDivElement>) => void;
+  onSelectionCapture: (event?: React.MouseEvent<HTMLDivElement>) => void;
   onPageRefChange: (pageNumber: number, node: HTMLDivElement | null) => void;
   onPageMetricsChange: (pageNumber: number, aspectRatio: number) => void;
   onRenderError: (message: string) => void;
@@ -142,7 +158,6 @@ const MIN_STAGE_WIDTH = 320;
 const ZOOM_STEP = 20;
 const MIN_ZOOM = 60;
 const MAX_ZOOM = 220;
-const TRACKPAD_ZOOM_SENSITIVITY = 0.08;
 const TOOLBAR_AUTO_HIDE_DELAY_MS = 1100;
 const DEFAULT_PAGE_ASPECT_RATIO = 1.414;
 const PAGE_RENDER_OVERSCAN = 2;
@@ -154,7 +169,6 @@ const POPOVER_ESTIMATED_HEIGHT = 560;
 const FLOATING_BUTTON_WIDTH = 84;
 const FLOATING_BUTTON_HEIGHT = 36;
 const POPOVER_ANCHOR_GAP = 14;
-const TOOL_MODE_STORAGE_KEY = "ra_pdf_reader_tool_mode_v1";
 const MAX_TRANSLATE_SELECTION_CHARS = 800;
 const TRANSLATION_TOAST_EXIT_MS = 240;
 const TRANSLATION_INFO_TOAST_MS = 1800;
@@ -187,19 +201,184 @@ const buildPageTranslationCacheKey = (
   page: number,
   model: string,
 ) => `ra_pdf_translate_page_v2:${pdfPath}:${page}:${model}`;
+type SelectionClientRect = {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+};
 const normalizeSelectedText = (value: string) =>
   value.replace(/\s+/g, " ").trim();
 const clamp = (value: number, min: number, max: number) =>
   Math.min(Math.max(value, min), max);
-const readStoredToolMode = (): ReaderToolMode =>
-  localStorage.getItem(TOOL_MODE_STORAGE_KEY) === "translate"
-    ? "translate"
-    : "explain";
+const resolveSelectionTargetElement = (target: EventTarget | null) => {
+  const candidate =
+    target instanceof Text
+      ? target.parentElement
+      : target instanceof HTMLElement
+        ? target
+        : null;
+  if (!candidate) {
+    return null;
+  }
+
+  const textSpan = candidate.closest(".pdfjs-text-layer span");
+  if (
+    !textSpan ||
+    textSpan.classList.contains("markedContent") ||
+    !textSpan.textContent?.trim()
+  ) {
+    return null;
+  }
+  return textSpan;
+};
+const getSelectionRectCenterY = (rect: SelectionClientRect) =>
+  rect.top + (rect.bottom - rect.top) / 2;
+const getSelectionRectHeight = (rect: SelectionClientRect) =>
+  rect.bottom - rect.top;
+const getDistanceToRect = (x: number, y: number, rect: DOMRect) => {
+  const dx =
+    x < rect.left ? rect.left - x : x > rect.right ? x - rect.right : 0;
+  const dy =
+    y < rect.top ? rect.top - y : y > rect.bottom ? y - rect.bottom : 0;
+  return Math.hypot(dx, dy);
+};
+const getSelectionClientRects = (range: Range) =>
+  Array.from(range.getClientRects())
+    .filter((rect) => rect.width >= 1 && rect.height >= 1)
+    .map(
+      (rect): SelectionClientRect => ({
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+      }),
+    )
+    .sort((leftRect, rightRect) =>
+      leftRect.top === rightRect.top
+        ? leftRect.left - rightRect.left
+        : leftRect.top - rightRect.top,
+    );
+const isSameSelectionRow = (
+  currentRow: SelectionClientRect,
+  nextRect: SelectionClientRect,
+) => {
+  const verticalOverlap =
+    Math.min(currentRow.bottom, nextRect.bottom) -
+    Math.max(currentRow.top, nextRect.top);
+  const minHeight = Math.min(
+    getSelectionRectHeight(currentRow),
+    getSelectionRectHeight(nextRect),
+  );
+  if (verticalOverlap >= minHeight * 0.28) {
+    return true;
+  }
+
+  return (
+    Math.abs(
+      getSelectionRectCenterY(currentRow) - getSelectionRectCenterY(nextRect),
+    ) <=
+    Math.max(
+      6,
+      Math.min(
+        14,
+        Math.max(
+          getSelectionRectHeight(currentRow),
+          getSelectionRectHeight(nextRect),
+        ) * 0.6,
+      ),
+    )
+  );
+};
+const getSelectionHighlightRectsFromClientRects = (
+  rects: SelectionClientRect[],
+): PdfSelectionHighlightRect[] => {
+  if (rects.length === 0) {
+    return [];
+  }
+
+  const mergedRows: SelectionClientRect[] = [];
+  rects.forEach((rect) => {
+    const currentRow = mergedRows[mergedRows.length - 1];
+    if (!currentRow || !isSameSelectionRow(currentRow, rect)) {
+      mergedRows.push({ ...rect });
+      return;
+    }
+
+    currentRow.left = Math.min(currentRow.left, rect.left);
+    currentRow.top = Math.min(currentRow.top, rect.top);
+    currentRow.right = Math.max(currentRow.right, rect.right);
+    currentRow.bottom = Math.max(currentRow.bottom, rect.bottom);
+  });
+
+  return mergedRows.map((rect) => ({
+    left: Math.max(0, rect.left - 0.5),
+    top: Math.max(0, rect.top - 0.5),
+    width: rect.right - rect.left + 1,
+    height: rect.bottom - rect.top + 1,
+  }));
+};
+const getSelectableTextNodes = (textLayer: HTMLElement) => {
+  const walker = document.createTreeWalker(textLayer, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      return node.textContent?.trim()
+        ? NodeFilter.FILTER_ACCEPT
+        : NodeFilter.FILTER_REJECT;
+    },
+  });
+  const textNodes: Text[] = [];
+  let currentNode = walker.nextNode();
+  while (currentNode) {
+    if (currentNode instanceof Text) {
+      textNodes.push(currentNode);
+    }
+    currentNode = walker.nextNode();
+  }
+  return textNodes;
+};
+
+const resolveBoundaryPointInTextLayer = (
+  textLayer: HTMLElement,
+  container: Node,
+  offset: number,
+  preferEnd: boolean,
+) => {
+  const textNodes = getSelectableTextNodes(textLayer);
+  if (textNodes.length === 0) {
+    return null;
+  }
+
+  if (container instanceof Text && textLayer.contains(container)) {
+    return {
+      node: container,
+      offset: clamp(offset, 0, container.textContent?.length ?? 0),
+    };
+  }
+
+  const fallbackNode = preferEnd
+    ? textNodes[textNodes.length - 1]
+    : textNodes[0];
+  return {
+    node: fallbackNode,
+    offset: preferEnd ? (fallbackNode.textContent?.length ?? 0) : 0,
+  };
+};
 const formatPdfRenderError = (message: string) => {
   if (/ToUnicode CMap/i.test(message)) {
     return "PDF 内嵌字体映射异常，已切换到兼容预览。这个文件的划词解释和整页翻译可能不可用。";
   }
   return `PDF 页面渲染失败，已切换为兼容模式：${message}`;
+};
+
+const ensureTextLayerEndOfContent = (textLayerElement: HTMLElement) => {
+  let endOfContent =
+    textLayerElement.querySelector<HTMLElement>(".endOfContent");
+  if (!endOfContent) {
+    endOfContent = document.createElement("div");
+    endOfContent.className = "endOfContent";
+    textLayerElement.append(endOfContent);
+  }
+  return endOfContent;
 };
 
 const resolveOutlinePageNumber = async (
@@ -327,6 +506,7 @@ const PdfPageCanvas: React.FC<PdfPageCanvasProps> = ({
   pageWidth,
   estimatedHeight,
   shouldRender,
+  onSelectionStart,
   onSelectionCapture,
   onPageRefChange,
   onPageMetricsChange,
@@ -494,6 +674,7 @@ const PdfPageCanvas: React.FC<PdfPageCanvasProps> = ({
         textLayerElement.replaceChildren(
           ...Array.from(nextTextLayer.childNodes),
         );
+        ensureTextLayerEndOfContent(textLayerElement);
         renderedPageRef.current = {
           width: viewport.width,
           height: viewport.height,
@@ -563,6 +744,7 @@ const PdfPageCanvas: React.FC<PdfPageCanvasProps> = ({
           <div
             className="textLayer pdfjs-text-layer"
             ref={textLayerRef}
+            onMouseDown={onSelectionStart}
             onMouseUp={onSelectionCapture}
           />
         </div>
@@ -606,7 +788,6 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
   const isPageInputFocusedRef = useRef(false);
   const zoomPercentRef = useRef(100);
   const viewportAnchorRef = useRef<ViewportAnchorState | null>(null);
-  const gestureZoomStartRef = useRef<number | null>(null);
   const toolbarHideTimerRef = useRef<number | null>(null);
   const pageTranslationInFlightRef = useRef(false);
   const pageTranslationRequestTokenRef = useRef(0);
@@ -627,9 +808,6 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
   const [stageWidth, setStageWidth] = useState(MIN_STAGE_WIDTH);
   const [viewerMode, setViewerMode] = useState<ViewerMode>("pdfjs");
   const [viewerError, setViewerError] = useState<string | null>(null);
-  const [readerToolMode, setReaderToolMode] = useState<ReaderToolMode>(() =>
-    readStoredToolMode(),
-  );
   const [selection, setSelection] = useState<PdfSelectionState | null>(null);
   const [contextMenu, setContextMenu] = useState<{
     x: number;
@@ -637,6 +815,8 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
   } | null>(null);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
   const selectionOverlayRef = useRef<HTMLDivElement | null>(null);
+  const isSelectionDraggingRef = useRef(false);
+  const selectionRangeRef = useRef<Range[]>([]);
   const [pageInputValue, setPageInputValue] = useState("1");
   const [outlineEntries, setOutlineEntries] = useState<PdfOutlineEntry[]>([]);
   const [isOutlineLoading, setIsOutlineLoading] = useState(false);
@@ -660,10 +840,6 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
     onStatusRef.current = onStatus;
     onPageChangeRef.current = onPageChange;
   }, [onPageChange, onStatus]);
-
-  useEffect(() => {
-    localStorage.setItem(TOOL_MODE_STORAGE_KEY, readerToolMode);
-  }, [readerToolMode]);
 
   useEffect(() => {
     currentPageRef.current = currentPage;
@@ -1440,65 +1616,235 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
     onStatusRef.current(fullMessage, "error", true);
   }, []);
 
-  const handleSelectionCapture = () => {
-    if (viewerMode !== "pdfjs") return;
+  const resolvePageFromViewportPoint = useCallback((x: number, y: number) => {
+    let bestPage = currentPageRef.current;
+    let bestDistance = Number.POSITIVE_INFINITY;
 
-    window.requestAnimationFrame(() => {
-      const browserSelection = window.getSelection();
+    for (const [pageNumber, node] of pageRefs.current.entries()) {
+      const rect = node.getBoundingClientRect();
       if (
-        !browserSelection ||
-        browserSelection.rangeCount === 0 ||
-        browserSelection.isCollapsed
+        x >= rect.left &&
+        x <= rect.right &&
+        y >= rect.top &&
+        y <= rect.bottom
       ) {
-        setSelection((previous) =>
-          previous && previous.overlay !== "button" ? previous : null,
-        );
-        return;
+        return pageNumber;
       }
 
-      const anchorNode = browserSelection.anchorNode;
-      const focusNode = browserSelection.focusNode;
-      if (!anchorNode || !focusNode) return;
+      const distance = getDistanceToRect(x, y, rect);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestPage = pageNumber;
+      }
+    }
 
-      const pageNumber =
-        resolvePageFromNode(anchorNode) ??
-        resolvePageFromNode(focusNode) ??
-        currentPageRef.current;
+    return bestPage;
+  }, []);
+
+  const groupSelectionClientRectsByPage = useCallback(
+    (rects: SelectionClientRect[]): PdfSelectionHighlightGroup[] => {
+      const groupedRects = new Map<number, SelectionClientRect[]>();
+
+      rects.forEach((rect) => {
+        const centerX = rect.left + (rect.right - rect.left) / 2;
+        const centerY = rect.top + (rect.bottom - rect.top) / 2;
+        let bestPage = resolvePageFromViewportPoint(centerX, centerY);
+        let bestOverlapArea = 0;
+
+        for (const [pageNumber, pageNode] of pageRefs.current.entries()) {
+          const pageRect = pageNode.getBoundingClientRect();
+          const overlapWidth =
+            Math.min(rect.right, pageRect.right) -
+            Math.max(rect.left, pageRect.left);
+          const overlapHeight =
+            Math.min(rect.bottom, pageRect.bottom) -
+            Math.max(rect.top, pageRect.top);
+          const overlapArea =
+            Math.max(0, overlapWidth) * Math.max(0, overlapHeight);
+
+          if (overlapArea > bestOverlapArea) {
+            bestOverlapArea = overlapArea;
+            bestPage = pageNumber;
+          }
+        }
+
+        const pageRects = groupedRects.get(bestPage) ?? [];
+        pageRects.push(rect);
+        groupedRects.set(bestPage, pageRects);
+      });
+
+      return Array.from(groupedRects.entries())
+        .sort(([leftPage], [rightPage]) => leftPage - rightPage)
+        .map(([page, pageRects]) => ({
+          page,
+          rects: getSelectionHighlightRectsFromClientRects(pageRects),
+        }))
+        .filter((group) => group.rects.length > 0);
+    },
+    [resolvePageFromViewportPoint],
+  );
+
+  const getActiveSelectionRanges = useCallback((rangeOverrides?: Range[]) => {
+    if (rangeOverrides && rangeOverrides.length > 0) {
+      return rangeOverrides.filter((range) => !range.collapsed);
+    }
+
+    const browserSelection = window.getSelection();
+    if (!browserSelection || browserSelection.rangeCount === 0) {
+      return [];
+    }
+
+    return Array.from({ length: browserSelection.rangeCount }, (_, index) =>
+      browserSelection.getRangeAt(index),
+    ).filter((range) => !range.collapsed);
+  }, []);
+
+  const splitSelectionRangeByPage = useCallback((range: Range) => {
+    if (range.collapsed) {
+      return [];
+    }
+
+    const startPageNumber =
+      resolvePageFromNode(range.startContainer) ?? currentPageRef.current;
+    const endPageNumber =
+      resolvePageFromNode(range.endContainer) ?? startPageNumber;
+    if (startPageNumber === endPageNumber) {
+      return [range.cloneRange()];
+    }
+
+    const pageRanges: Range[] = [];
+    for (
+      let pageNumber = Math.min(startPageNumber, endPageNumber);
+      pageNumber <= Math.max(startPageNumber, endPageNumber);
+      pageNumber += 1
+    ) {
       const pageElement = pageRefs.current.get(pageNumber);
-      if (
-        !pageElement ||
-        !pageElement.contains(anchorNode) ||
-        !pageElement.contains(focusNode)
-      )
-        return;
+      const textLayer =
+        pageElement?.querySelector<HTMLElement>(".pdfjs-text-layer") ?? null;
+      if (!textLayer) {
+        continue;
+      }
 
-      const text = normalizeSelectedText(browserSelection.toString());
-      if (!text) {
-        setSelection(null);
-        return;
+      const textNodes = getSelectableTextNodes(textLayer);
+      if (textNodes.length === 0) {
+        continue;
+      }
+
+      const firstTextNode = textNodes[0];
+      const lastTextNode = textNodes[textNodes.length - 1];
+      const startBoundary =
+        pageNumber === startPageNumber
+          ? resolveBoundaryPointInTextLayer(
+              textLayer,
+              range.startContainer,
+              range.startOffset,
+              false,
+            )
+          : { node: firstTextNode, offset: 0 };
+      const endBoundary =
+        pageNumber === endPageNumber
+          ? resolveBoundaryPointInTextLayer(
+              textLayer,
+              range.endContainer,
+              range.endOffset,
+              true,
+            )
+          : {
+              node: lastTextNode,
+              offset: lastTextNode.textContent?.length ?? 0,
+            };
+
+      if (!startBoundary || !endBoundary) {
+        continue;
+      }
+
+      const pageRange = document.createRange();
+      pageRange.setStart(startBoundary.node, startBoundary.offset);
+      pageRange.setEnd(endBoundary.node, endBoundary.offset);
+      if (!pageRange.collapsed) {
+        pageRanges.push(pageRange);
+      }
+    }
+
+    return pageRanges;
+  }, []);
+
+  const getStableSelectionRanges = useCallback(
+    (rangeOverrides?: Range[]) =>
+      getActiveSelectionRanges(rangeOverrides).flatMap((range) =>
+        splitSelectionRangeByPage(range),
+      ),
+    [getActiveSelectionRanges, splitSelectionRangeByPage],
+  );
+
+  const buildSelectionState = useCallback(
+    (
+      overlay: SelectionOverlayMode,
+      suppressTranslateLengthStatus = false,
+      rangeOverrides?: Range[],
+    ): PdfSelectionState | null => {
+      if (viewerMode !== "pdfjs") return null;
+
+      const ranges = getStableSelectionRanges(rangeOverrides);
+      if (ranges.length === 0) {
+        return null;
+      }
+
+      const startRange = ranges[0];
+      const endRange = ranges[ranges.length - 1];
+      const startPageNumber =
+        resolvePageFromNode(startRange.startContainer) ??
+        currentPageRef.current;
+      const endPageNumber =
+        resolvePageFromNode(endRange.endContainer) ?? startPageNumber;
+      const startPageElement = pageRefs.current.get(startPageNumber);
+      const endPageElement = pageRefs.current.get(endPageNumber);
+      if (
+        !startPageElement ||
+        !endPageElement ||
+        !startPageElement.contains(startRange.startContainer) ||
+        !endPageElement.contains(endRange.endContainer)
+      ) {
+        return null;
+      }
+
+      const text = normalizeSelectedText(
+        ranges.map((range) => range.toString()).join(" "),
+      );
+      const rawClientRects = ranges.flatMap((range) =>
+        getSelectionClientRects(range),
+      );
+      const highlightGroups = groupSelectionClientRectsByPage(rawClientRects);
+      if (!text || highlightGroups.length === 0) {
+        return null;
       }
 
       if (
-        readerToolMode === "translate" &&
+        overlay !== "preview" &&
+        overlay === "translate" &&
         text.length > MAX_TRANSLATE_SELECTION_CHARS
       ) {
-        setSelection(null);
-        onStatusRef.current("选中文本过长，请使用“整页翻译”。", "info", false);
-        return;
+        if (!suppressTranslateLengthStatus) {
+          onStatusRef.current(
+            "选中文本过长，请使用“整页翻译”。",
+            "info",
+            false,
+          );
+        }
+        return null;
       }
 
-      const range = browserSelection.getRangeAt(0);
-      const rect = range.getBoundingClientRect();
-      if (rect.width === 0 && rect.height === 0) {
-        setSelection(null);
-        return;
+      const actionRect = rawClientRects[rawClientRects.length - 1];
+      if (!actionRect) {
+        return null;
       }
 
       const popoverWidth = Math.min(
         POPOVER_ESTIMATED_WIDTH,
         window.innerWidth - VIEWPORT_MARGIN_X * 2,
       );
-      const selectionCenterX = rect.left + rect.width / 2;
+      const selectionCenterX =
+        actionRect.left + (actionRect.right - actionRect.left) / 2;
       const preferredPopoverLeft = selectionCenterX - popoverWidth / 2;
       const popoverLeft = clamp(
         preferredPopoverLeft,
@@ -1506,17 +1852,17 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
         window.innerWidth - popoverWidth - VIEWPORT_MARGIN_X,
       );
       const canOpenBelow =
-        rect.bottom + POPOVER_ANCHOR_GAP + POPOVER_ESTIMATED_HEIGHT <=
+        actionRect.bottom + POPOVER_ANCHOR_GAP + POPOVER_ESTIMATED_HEIGHT <=
         window.innerHeight - VIEWPORT_MARGIN_X;
       const canOpenAbove =
-        rect.top - POPOVER_ANCHOR_GAP - POPOVER_ESTIMATED_HEIGHT >=
+        actionRect.top - POPOVER_ANCHOR_GAP - POPOVER_ESTIMATED_HEIGHT >=
         VIEWPORT_MARGIN_TOP;
       const popoverTop = canOpenBelow
-        ? rect.bottom + POPOVER_ANCHOR_GAP
+        ? actionRect.bottom + POPOVER_ANCHOR_GAP
         : canOpenAbove
-          ? rect.top - POPOVER_ESTIMATED_HEIGHT - POPOVER_ANCHOR_GAP
+          ? actionRect.top - POPOVER_ESTIMATED_HEIGHT - POPOVER_ANCHOR_GAP
           : clamp(
-              rect.bottom + 10,
+              actionRect.bottom + 10,
               VIEWPORT_MARGIN_TOP,
               window.innerHeight - POPOVER_ESTIMATED_HEIGHT - VIEWPORT_MARGIN_X,
             );
@@ -1527,27 +1873,110 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
       );
       const targetTop = canOpenBelow
         ? clamp(
-            rect.bottom + 6,
+            actionRect.bottom + 6,
             VIEWPORT_MARGIN_TOP,
             window.innerHeight - FLOATING_BUTTON_HEIGHT - VIEWPORT_MARGIN_X,
           )
         : clamp(
-            rect.top - FLOATING_BUTTON_HEIGHT - 6,
+            actionRect.top - FLOATING_BUTTON_HEIGHT - 6,
             VIEWPORT_MARGIN_TOP,
             window.innerHeight - FLOATING_BUTTON_HEIGHT - VIEWPORT_MARGIN_X,
           );
 
-      setSelection({
+      return {
         text,
-        page: pageNumber,
+        page: endPageNumber,
+        startPage: startPageNumber,
+        endPage: endPageNumber,
         targetLeft,
         targetTop,
         popoverLeft,
         popoverTop,
-        overlay: readerToolMode === "translate" ? "translate" : "button",
-      });
+        highlightGroups,
+        overlay,
+      };
+    },
+    [getStableSelectionRanges, groupSelectionClientRectsByPage, viewerMode],
+  );
+
+  const cloneCurrentSelectionRanges = useCallback(() => {
+    const ranges = getStableSelectionRanges();
+    return ranges.map((range) => range.cloneRange());
+  }, [getStableSelectionRanges]);
+
+  const clearActiveTextLayerSelections = useCallback(() => {
+    const textLayers =
+      stageRef.current?.querySelectorAll<HTMLElement>(".pdfjs-text-layer") ??
+      [];
+    textLayers.forEach((textLayer) => {
+      const endOfContent = ensureTextLayerEndOfContent(textLayer);
+      textLayer.append(endOfContent);
+      endOfContent.style.top = "";
+      endOfContent.classList.remove("active");
+      textLayer.classList.remove("selecting");
     });
-  };
+  }, []);
+
+  const handleSelectionStart = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      if (!resolveSelectionTargetElement(event.target)) {
+        event.preventDefault();
+        isSelectionDraggingRef.current = false;
+        selectionRangeRef.current = [];
+        clearActiveTextLayerSelections();
+        setSelection(null);
+        return;
+      }
+
+      isSelectionDraggingRef.current = true;
+      const textLayer = event.currentTarget;
+      const endOfContent = ensureTextLayerEndOfContent(textLayer);
+      let adjustTop = event.target !== textLayer;
+      adjustTop &&=
+        getComputedStyle(endOfContent).getPropertyValue("-moz-user-select") !==
+        "none";
+      if (adjustTop) {
+        const textLayerBounds = textLayer.getBoundingClientRect();
+        const ratio = clamp(
+          (event.clientY - textLayerBounds.top) /
+            Math.max(textLayerBounds.height, 1),
+          0,
+          1,
+        );
+        endOfContent.style.top = `${(ratio * 100).toFixed(2)}%`;
+      } else {
+        endOfContent.style.top = "";
+      }
+      endOfContent.classList.add("active");
+      textLayer.classList.add("selecting");
+      selectionRangeRef.current = [];
+      setContextMenu(null);
+      setSelection(null);
+    },
+    [clearActiveTextLayerSelections],
+  );
+
+  const handleSelectionCapture = useCallback(
+    (_event?: React.MouseEvent<HTMLDivElement> | MouseEvent) => {
+      if (viewerMode !== "pdfjs" || !isSelectionDraggingRef.current) return;
+      clearActiveTextLayerSelections();
+      isSelectionDraggingRef.current = false;
+
+      window.requestAnimationFrame(() => {
+        const nextSelection = buildSelectionState("button");
+        selectionRangeRef.current = nextSelection
+          ? cloneCurrentSelectionRanges()
+          : [];
+        setSelection(nextSelection);
+      });
+    },
+    [
+      buildSelectionState,
+      clearActiveTextLayerSelections,
+      cloneCurrentSelectionRanges,
+      viewerMode,
+    ],
+  );
 
   const handlePdfContextMenu = (event: React.MouseEvent) => {
     if (viewerMode !== "pdfjs") return;
@@ -1622,9 +2051,66 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
   };
 
   const handleClosePopover = () => {
+    selectionRangeRef.current = [];
     setSelection(null);
     window.getSelection()?.removeAllRanges();
   };
+
+  useEffect(() => {
+    if (viewerMode !== "pdfjs") return;
+
+    const handleWindowMouseUp = (event: MouseEvent) => {
+      if (!isSelectionDraggingRef.current) return;
+      handleSelectionCapture(event);
+    };
+
+    const handleWindowBlur = () => {
+      clearActiveTextLayerSelections();
+      isSelectionDraggingRef.current = false;
+    };
+
+    window.addEventListener("mouseup", handleWindowMouseUp);
+    window.addEventListener("blur", handleWindowBlur);
+    return () => {
+      window.removeEventListener("mouseup", handleWindowMouseUp);
+      window.removeEventListener("blur", handleWindowBlur);
+      clearActiveTextLayerSelections();
+    };
+  }, [clearActiveTextLayerSelections, handleSelectionCapture, viewerMode]);
+
+  useEffect(() => {
+    if (viewerMode !== "pdfjs") return;
+
+    let frameId: number | null = null;
+    const handleSelectionChange = () => {
+      if (!isSelectionDraggingRef.current) {
+        return;
+      }
+
+      if (frameId != null) {
+        window.cancelAnimationFrame(frameId);
+      }
+
+      frameId = window.requestAnimationFrame(() => {
+        frameId = null;
+        const nextSelection = buildSelectionState("preview", true);
+        setSelection((previous) => {
+          if (nextSelection) {
+            return nextSelection;
+          }
+          return previous?.overlay === "preview" ? null : previous;
+        });
+      });
+    };
+
+    document.addEventListener("selectionchange", handleSelectionChange);
+    return () => {
+      document.removeEventListener("selectionchange", handleSelectionChange);
+      if (frameId != null) {
+        window.cancelAnimationFrame(frameId);
+      }
+    };
+  }, [buildSelectionState, viewerMode]);
 
   useEffect(() => {
     if (!selection) {
@@ -1633,9 +2119,61 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
   }, [selection]);
 
   useEffect(() => {
+    if (viewerMode !== "pdfjs" || !selection) return;
+
+    let frameId: number | null = null;
+    const refreshSelectionPosition = () => {
+      if (frameId != null) {
+        window.cancelAnimationFrame(frameId);
+      }
+
+      frameId = window.requestAnimationFrame(() => {
+        frameId = null;
+        const nextSelection = buildSelectionState(
+          selection.overlay,
+          true,
+          selectionRangeRef.current,
+        );
+        if (nextSelection) {
+          setSelection(nextSelection);
+        }
+      });
+    };
+
+    window.addEventListener("scroll", refreshSelectionPosition, true);
+    window.addEventListener("resize", refreshSelectionPosition);
+    return () => {
+      window.removeEventListener("scroll", refreshSelectionPosition, true);
+      window.removeEventListener("resize", refreshSelectionPosition);
+      if (frameId != null) {
+        window.cancelAnimationFrame(frameId);
+      }
+    };
+  }, [buildSelectionState, selection, viewerMode]);
+
+  useEffect(() => {
     const handlePointerDown = (event: MouseEvent) => {
-      if (contextMenuRef.current?.contains(event.target as Node)) return;
+      const targetNode = event.target as Node | null;
+      const targetElement =
+        targetNode instanceof Element ? targetNode : targetNode?.parentElement;
+      if (contextMenuRef.current?.contains(targetNode)) return;
+      if (
+        targetElement?.closest(
+          ".term-popover, .pdf-selection-target, .pdf-selection-context-menu",
+        )
+      ) {
+        return;
+      }
       setContextMenu(null);
+
+      if (resolveSelectionTargetElement(targetNode)) {
+        return;
+      }
+
+      selectionRangeRef.current = [];
+      clearActiveTextLayerSelections();
+      setSelection(null);
+      window.getSelection()?.removeAllRanges();
     };
     const handleScroll = () => setContextMenu(null);
 
@@ -1645,7 +2183,7 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
       window.removeEventListener("mousedown", handlePointerDown);
       window.removeEventListener("scroll", handleScroll, true);
     };
-  }, []);
+  }, [clearActiveTextLayerSelections]);
 
   const handleClosePageTranslation = useCallback(() => {
     setPageTranslation(EMPTY_PAGE_TRANSLATION_STATE);
@@ -1779,13 +2317,6 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
     setZoomPercent((previous) => Math.min(MAX_ZOOM, previous + ZOOM_STEP));
   };
 
-  const fitToWidth = () => {
-    setSelection(null);
-    window.getSelection()?.removeAllRanges();
-    captureViewportAnchor();
-    setZoomPercent(100);
-  };
-
   const handlePageInputChange = (
     event: React.ChangeEvent<HTMLInputElement>,
   ) => {
@@ -1853,130 +2384,6 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
     scheduleToolbarAutoHide(260);
   };
 
-  useEffect(() => {
-    if (viewerMode !== "pdfjs" || !stageRef.current) return;
-
-    const stageElement = stageRef.current;
-    const isStageEvent = (target: EventTarget | null) =>
-      target instanceof Node ? stageElement.contains(target) : false;
-
-    const clearSelectionForZoom = () => {
-      setSelection(null);
-      window.getSelection()?.removeAllRanges();
-    };
-
-    const handleWheelZoom = (event: WheelEvent) => {
-      if (!isStageEvent(event.target) && !stageElement.matches(":hover"))
-        return;
-
-      const nativeWheelEvent = event as WheelEvent & { deltaZ?: number };
-      const isPinchLike =
-        event.ctrlKey ||
-        event.metaKey ||
-        (typeof nativeWheelEvent.deltaZ === "number" &&
-          nativeWheelEvent.deltaZ !== 0);
-      if (!isPinchLike) return;
-      event.preventDefault();
-
-      const nextDelta = clamp(
-        -event.deltaY * TRACKPAD_ZOOM_SENSITIVITY,
-        -18,
-        18,
-      );
-      if (Math.abs(nextDelta) < 0.25) return;
-
-      clearSelectionForZoom();
-      captureViewportAnchor(event.clientX, event.clientY);
-      setZoomPercent((previous) =>
-        clamp(Math.round(previous + nextDelta), MIN_ZOOM, MAX_ZOOM),
-      );
-    };
-
-    const handleGestureStart = (event: Event) => {
-      const gestureEvent = event as Event & {
-        scale?: number;
-        preventDefault: () => void;
-      };
-      if (!isStageEvent(gestureEvent.target) && !stageElement.matches(":hover"))
-        return;
-      gestureEvent.preventDefault();
-      clearSelectionForZoom();
-      captureViewportAnchor(
-        "clientX" in gestureEvent && typeof gestureEvent.clientX === "number"
-          ? gestureEvent.clientX
-          : undefined,
-        "clientY" in gestureEvent && typeof gestureEvent.clientY === "number"
-          ? gestureEvent.clientY
-          : undefined,
-      );
-      gestureZoomStartRef.current = zoomPercentRef.current;
-    };
-
-    const handleGestureChange = (event: Event) => {
-      const gestureEvent = event as Event & {
-        scale?: number;
-        preventDefault: () => void;
-      };
-      if (!isStageEvent(gestureEvent.target) && !stageElement.matches(":hover"))
-        return;
-      if (
-        gestureZoomStartRef.current == null ||
-        typeof gestureEvent.scale !== "number"
-      )
-        return;
-      gestureEvent.preventDefault();
-      clearSelectionForZoom();
-      setZoomPercent(
-        clamp(
-          Math.round(gestureZoomStartRef.current * gestureEvent.scale),
-          MIN_ZOOM,
-          MAX_ZOOM,
-        ),
-      );
-    };
-
-    const handleGestureEnd = () => {
-      gestureZoomStartRef.current = null;
-    };
-
-    window.addEventListener("wheel", handleWheelZoom, {
-      passive: false,
-      capture: true,
-    });
-    window.addEventListener(
-      "gesturestart",
-      handleGestureStart as EventListener,
-      { passive: false, capture: true },
-    );
-    window.addEventListener(
-      "gesturechange",
-      handleGestureChange as EventListener,
-      { passive: false, capture: true },
-    );
-    window.addEventListener("gestureend", handleGestureEnd as EventListener, {
-      capture: true,
-    });
-
-    return () => {
-      window.removeEventListener("wheel", handleWheelZoom, true);
-      window.removeEventListener(
-        "gesturestart",
-        handleGestureStart as EventListener,
-        true,
-      );
-      window.removeEventListener(
-        "gesturechange",
-        handleGestureChange as EventListener,
-        true,
-      );
-      window.removeEventListener(
-        "gestureend",
-        handleGestureEnd as EventListener,
-        true,
-      );
-    };
-  }, [captureViewportAnchor, viewerMode]);
-
   const handlePageInputKeyDown = (
     event: React.KeyboardEvent<HTMLInputElement>,
   ) => {
@@ -2015,12 +2422,89 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
     () => Array.from({ length: pageCount }, (_, index) => index + 1),
     [pageCount],
   );
-  const subtitleText =
-    readerToolMode === "translate"
-      ? "翻译模式下，选中文本会直接弹出译文；较长内容请使用“整页翻译”。"
-      : "解释模式下，选中术语后点击“解释”即可生成说明与知识卡片。";
+  const subtitleText = "整页翻译";
   const translatedPageNumber =
     pageTranslation.result?.page ?? pageTranslation.requestedPage;
+  const selectionOverlay =
+    viewerMode === "pdfjs" && typeof document !== "undefined"
+      ? createPortal(
+          <div className="pdf-selection-overlay" ref={selectionOverlayRef}>
+            {selection?.highlightGroups.flatMap((group) =>
+              group.rects.map((rect, index) => (
+                <div
+                  key={`${group.page}:${index}:${rect.left}:${rect.top}`}
+                  className="pdf-selection-highlight"
+                  style={{
+                    left: rect.left,
+                    top: rect.top,
+                    width: rect.width,
+                    height: rect.height,
+                  }}
+                />
+              )),
+            )}
+
+            {selection && selection.overlay === "button" && (
+              <button
+                className="pdf-selection-target"
+                style={selectionStyle}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={handleOpenExplainPopover}
+              >
+                解释
+              </button>
+            )}
+
+            {contextMenu && selection && (
+              <div
+                ref={contextMenuRef}
+                className="pdf-selection-context-menu"
+                style={{ left: contextMenu.x, top: contextMenu.y }}
+                onMouseDown={(event) => event.preventDefault()}
+              >
+                <button type="button" onClick={handleContextCopy}>
+                  复制
+                </button>
+                <button type="button" onClick={handleContextExplain}>
+                  解释
+                </button>
+                <button type="button" onClick={handleContextTranslate}>
+                  翻译
+                </button>
+              </div>
+            )}
+
+            {selection && selection.overlay === "explain" && (
+              <TermExplainPopover
+                selectedText={selection.text}
+                pdfPath={activePdfPath}
+                page={selection.page}
+                currentModel={currentModel}
+                ensureAiReady={ensureAiReady}
+                lookupMode={lookupMode}
+                onClose={handleClosePopover}
+                onSaveCardSuccess={onSaveCardSuccess}
+                onStatus={onStatus}
+                style={popoverStyle}
+              />
+            )}
+
+            {selection && selection.overlay === "translate" && (
+              <PdfTranslatePopover
+                selectedText={selection.text}
+                pdfPath={activePdfPath}
+                page={selection.page}
+                translationModel={translationModel}
+                ensureTranslationReady={ensureTranslationReady}
+                onClose={handleClosePopover}
+                onStatus={onStatus}
+                style={popoverStyle}
+              />
+            )}
+          </div>,
+          document.body,
+        )
+      : null;
 
   return (
     <div className="pdf-reader-shell">
@@ -2069,8 +2553,8 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
             onBlurCapture={handleToolbarBlurCapture}
           >
             <div className="pdf-reader-toolbar-scroll">
-              <div className="pdf-reader-toolbar-inner">
-                <div className="pdf-toolbar-group">
+              <div className="pdf-reader-toolbar-layout">
+                <div className="pdf-toolbar-section pdf-toolbar-section-start">
                   <button
                     className={`action-button pdf-toolbar-icon-button ${isOutlineOpen ? "primary" : ""}`}
                     onClick={() => setIsOutlineOpen((previous) => !previous)}
@@ -2082,23 +2566,7 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
                   >
                     <List size={14} />
                   </button>
-                </div>
-
-                <div className="pdf-toolbar-group pdf-page-jump-group">
-                  <input
-                    className="pdf-page-input"
-                    inputMode="numeric"
-                    value={pageInputValue}
-                    onChange={handlePageInputChange}
-                    onFocus={handlePageInputFocus}
-                    onBlur={handlePageInputBlur}
-                    onKeyDown={handlePageInputKeyDown}
-                    aria-label="璺宠浆椤电爜"
-                  />
-                  <span className="pdf-toolbar-text">/ {pageCount || "-"}</span>
-                </div>
-
-                <div className="pdf-toolbar-group">
+                  <span className="pdf-toolbar-divider" aria-hidden="true" />
                   <button
                     className="action-button pdf-toolbar-icon-button"
                     onClick={zoomOut}
@@ -2108,7 +2576,6 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
                   >
                     <ZoomOut size={14} />
                   </button>
-                  <span className="pdf-toolbar-pill">{zoomPercent}%</span>
                   <button
                     className="action-button pdf-toolbar-icon-button"
                     onClick={zoomIn}
@@ -2118,59 +2585,51 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
                   >
                     <ZoomIn size={14} />
                   </button>
-                  <button
-                    className="action-button pdf-toolbar-icon-button"
-                    onClick={fitToWidth}
-                    disabled={viewerMode !== "pdfjs"}
-                    aria-label="适应宽度"
-                    title="适应宽度"
-                  >
-                    <MoveHorizontal size={14} />
-                  </button>
+                  <span className="pdf-toolbar-pill pdf-toolbar-zoom-pill">
+                    {zoomPercent}%
+                  </span>
                 </div>
 
-                <label className="pdf-mode-control">
-                  <select
-                    value={lookupMode}
-                    onChange={(event) =>
-                      onLookupModeChange(event.target.value as LookupMode)
-                    }
-                    aria-label="选择术语解释来源"
-                  >
-                    {LOOKUP_MODE_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                <div className="pdf-toolbar-section pdf-toolbar-section-center">
+                  <div className="pdf-toolbar-page-chip pdf-page-jump-group">
+                    <input
+                      className="pdf-page-input"
+                      inputMode="numeric"
+                      value={pageInputValue}
+                      onChange={handlePageInputChange}
+                      onFocus={handlePageInputFocus}
+                      onBlur={handlePageInputBlur}
+                      onKeyDown={handlePageInputKeyDown}
+                      aria-label="跳转页码"
+                    />
+                    <span className="pdf-toolbar-text">
+                      / {pageCount || "-"}
+                    </span>
+                  </div>
+                </div>
 
-                <div
-                  className="pdf-toolbar-group"
-                  role="group"
-                  aria-label="划词工具模式"
-                >
+                <div className="pdf-toolbar-section pdf-toolbar-section-end">
+                  <label className="pdf-mode-control pdf-lookup-control">
+                    <select
+                      value={lookupMode}
+                      onChange={(event) =>
+                        onLookupModeChange(event.target.value as LookupMode)
+                      }
+                      aria-label="选择术语解释来源"
+                    >
+                      {LOOKUP_MODE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <span className="pdf-toolbar-divider" aria-hidden="true" />
+
                   <button
                     type="button"
-                    className={`action-button ${readerToolMode === "explain" ? "primary" : ""}`}
-                    onClick={() => setReaderToolMode("explain")}
-                    disabled={viewerMode !== "pdfjs"}
-                    title="选中文本后先显示解释入口"
-                  >
-                    解释模式
-                  </button>
-                  <button
-                    type="button"
-                    className={`action-button ${readerToolMode === "translate" ? "primary" : ""}`}
-                    onClick={() => setReaderToolMode("translate")}
-                    disabled={viewerMode !== "pdfjs"}
-                    title="选中文本后直接打开翻译"
-                  >
-                    翻译模式
-                  </button>
-                  <button
-                    type="button"
-                    className="action-button"
+                    className="action-button pdf-toolbar-icon-button"
                     onClick={() => void handleTranslateCurrentPage()}
                     disabled={
                       viewerMode !== "pdfjs" ||
@@ -2178,16 +2637,23 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
                       isPageTranslationRunning
                     }
                     title={subtitleText}
+                    aria-label={subtitleText}
                   >
-                    整页翻译
+                    <FileText size={14} />
                   </button>
-                </div>
 
-                {toolbarActions ? (
-                  <div className="pdf-toolbar-group pdf-toolbar-group-end">
-                    {toolbarActions}
-                  </div>
-                ) : null}
+                  {toolbarActions ? (
+                    <>
+                      <span
+                        className="pdf-toolbar-divider"
+                        aria-hidden="true"
+                      />
+                      <div className="pdf-toolbar-group pdf-toolbar-group-end">
+                        {toolbarActions}
+                      </div>
+                    </>
+                  ) : null}
+                </div>
               </div>
             </div>
           </div>
@@ -2296,6 +2762,7 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
                     pageNumber >= renderWindow.start &&
                     pageNumber <= renderWindow.end
                   }
+                  onSelectionStart={handleSelectionStart}
                   onSelectionCapture={handleSelectionCapture}
                   onPageRefChange={handlePageRefChange}
                   onPageMetricsChange={handlePageMetricsChange}
@@ -2370,67 +2837,7 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
             </div>
           ))}
 
-        {viewerMode === "pdfjs" && (
-          <div className="pdf-selection-overlay" ref={selectionOverlayRef}>
-            {selection && selection.overlay === "button" && (
-              <button
-                className="pdf-selection-target"
-                style={selectionStyle}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={handleOpenExplainPopover}
-              >
-                解释
-              </button>
-            )}
-
-            {contextMenu && selection && (
-              <div
-                ref={contextMenuRef}
-                className="pdf-selection-context-menu"
-                style={{ left: contextMenu.x, top: contextMenu.y }}
-                onMouseDown={(event) => event.preventDefault()}
-              >
-                <button type="button" onClick={handleContextCopy}>
-                  复制
-                </button>
-                <button type="button" onClick={handleContextExplain}>
-                  解释
-                </button>
-                <button type="button" onClick={handleContextTranslate}>
-                  翻译
-                </button>
-              </div>
-            )}
-
-            {selection && selection.overlay === "explain" && (
-              <TermExplainPopover
-                selectedText={selection.text}
-                pdfPath={activePdfPath}
-                page={selection.page}
-                currentModel={currentModel}
-                ensureAiReady={ensureAiReady}
-                lookupMode={lookupMode}
-                onClose={handleClosePopover}
-                onSaveCardSuccess={onSaveCardSuccess}
-                onStatus={onStatus}
-                style={popoverStyle}
-              />
-            )}
-
-            {selection && selection.overlay === "translate" && (
-              <PdfTranslatePopover
-                selectedText={selection.text}
-                pdfPath={activePdfPath}
-                page={selection.page}
-                translationModel={translationModel}
-                ensureTranslationReady={ensureTranslationReady}
-                onClose={handleClosePopover}
-                onStatus={onStatus}
-                style={popoverStyle}
-              />
-            )}
-          </div>
-        )}
+        {selectionOverlay}
       </div>
 
       {viewerError && (

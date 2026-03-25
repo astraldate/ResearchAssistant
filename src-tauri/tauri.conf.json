@@ -14,20 +14,17 @@
       {
         "title": "Research Assistant",
         "width": 1200,
-        "height": 800
+        "height": 800,
+        "zoomHotkeysEnabled": true
       }
     ],
     "security": {
       "csp": null,
-      "capabilities": [
-        "default"
-      ]
+      "capabilities": ["default"]
     }
   },
   "bundle": {
-    "externalBin": [
-      "binaries/ollama"
-    ],
+    "externalBin": ["binaries/ollama"],
     "active": true,
     "targets": "all",
     "icon": [
