@@ -11,11 +11,15 @@ use tauri::{Emitter, State, Window};
 mod cards;
 mod encyclopedia;
 mod mobile;
-mod rag;
+mod research_memory;
 mod text_decode;
 use cards::{CardSettings, KnowledgeCardDetail, KnowledgeCardSummary, SaveKnowledgeCardRequest};
 use encyclopedia::TermLookupMode;
-use rag::{Document, IngestMode, IngestProgress, RagState};
+use research_memory::{
+    ApplyReviewRequest, ComparePapersResult, DocumentResult, IdeaCandidate, IngestMode,
+    PageVisualNoteResult, ResearchGraph, ResearchGraphEdgeDetail, ResearchGraphNodeDetail,
+    ResearchIngestOptions, ResearchPaperRecord, ResearchSearchHit, ReviewRecord,
+};
 use text_decode::{decode_command_output, decode_text_bytes, read_text_file_auto};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -71,8 +75,11 @@ pub struct OllamaRuntimeProgress {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct PullProgress {
     pub status: String,
+    pub model_name: Option<String>,
+    pub source_url: Option<String>,
     pub digest: Option<String>,
     pub total: Option<u64>,
     pub completed: Option<u64>,
@@ -1515,7 +1522,11 @@ async fn write_text_file(path: String, content: String) -> Result<(), String> {
     std::fs::write(&path, content).map_err(|e| e.to_string())
 }
 
-const MAX_PDF_SELECTION_TRANSLATE_CHARS: usize = 800;
+const MAX_PDF_SELECTION_TRANSLATE_CHARS: usize = 2400;
+const PDF_SELECTION_CONTEXT_LIMIT_SHORT: usize = 2200;
+const PDF_SELECTION_CONTEXT_LIMIT_LONG: usize = 4200;
+const LONG_SELECTION_THRESHOLD_CHARS: usize = 220;
+const TRANSLATION_OUTPUT_SENTINEL: &str = "[[[TRANSLATION]]]";
 
 fn normalize_extracted_pdf_text(text: &str) -> String {
     text.lines()
@@ -2444,7 +2455,9 @@ async fn pull_model_from_modelscope(
     filename: String,
     window: Window,
 ) -> Result<(), String> {
-    use std::io::Write;
+    use reqwest::header::{CONTENT_LENGTH, CONTENT_RANGE, RANGE};
+    use std::fs::OpenOptions;
+    use std::io::{Seek, SeekFrom, Write};
     use tauri::Manager;
 
     let app_handle = window.app_handle();
@@ -2463,11 +2476,17 @@ async fn pull_model_from_modelscope(
     }
 
     let gguf_path = temp_dir.join(&filename);
+    let partial_size = std::fs::metadata(&gguf_path)
+        .map(|meta| meta.len())
+        .unwrap_or(0);
 
     // 1. Download GGUF
     let client = reqwest::Client::new();
-    let res = client
-        .get(&url)
+    let mut request = client.get(&url);
+    if partial_size > 0 {
+        request = request.header(RANGE, format!("bytes={}-", partial_size));
+    }
+    let res = request
         .send()
         .await
         .map_err(|e| format!("Failed to connect to mirror: {}", e))?;
@@ -2476,26 +2495,82 @@ async fn pull_model_from_modelscope(
         return Err(format!("Mirror download failed: {}", res.status()));
     }
 
-    let total_size = res.content_length().unwrap_or(0);
-    let mut stream = res.bytes_stream();
-    let mut file = std::fs::File::create(&gguf_path).map_err(|e| e.to_string())?;
-    let mut downloaded: u64 = 0;
+    let status = res.status();
+    let total_size = if status == reqwest::StatusCode::PARTIAL_CONTENT {
+        parse_total_size_from_content_range(res.headers().get(CONTENT_RANGE))
+            .unwrap_or_else(|| partial_size + res.content_length().unwrap_or(0))
+    } else {
+        res.headers()
+            .get(CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0)
+    };
 
-    while let Some(item) = stream.next().await {
-        let chunk = item.map_err(|e| e.to_string())?;
-        file.write_all(&chunk).map_err(|e| e.to_string())?;
-        downloaded += chunk.len() as u64;
+    let resume_supported = status == reqwest::StatusCode::PARTIAL_CONTENT;
+    let already_complete = total_size > 0 && partial_size == total_size;
+    let mut downloaded = if resume_supported { partial_size } else { 0 };
+    let mut file = if already_complete {
+        OpenOptions::new()
+            .append(true)
+            .open(&gguf_path)
+            .map_err(|e| e.to_string())?
+    } else if partial_size > 0 && resume_supported {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&gguf_path)
+            .map_err(|e| e.to_string())?;
+        file.seek(SeekFrom::End(0)).map_err(|e| e.to_string())?;
+        file
+    } else {
+        let _ = std::fs::remove_file(&gguf_path);
+        OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&gguf_path)
+            .map_err(|e| e.to_string())?
+    };
 
-        // Emit progress
+    if already_complete {
         let _ = window.emit(
             "pull-progress",
             &PullProgress {
-                status: format!("Downloading from mirror: {}/{}", downloaded, total_size),
+                status: "Reusing downloaded file from cache...".to_string(),
+                model_name: Some(name.clone()),
+                source_url: Some(url.clone()),
                 digest: None,
                 total: Some(total_size),
-                completed: Some(downloaded),
+                completed: Some(total_size),
             },
         );
+    }
+
+    let mut stream = res.bytes_stream();
+    if !already_complete {
+        while let Some(item) = stream.next().await {
+            let chunk = item.map_err(|e| e.to_string())?;
+            file.write_all(&chunk).map_err(|e| e.to_string())?;
+            downloaded += chunk.len() as u64;
+
+            let status_text = if resume_supported && partial_size > 0 {
+                format!("Resuming mirror download: {}/{}", downloaded, total_size)
+            } else {
+                format!("Downloading from mirror: {}/{}", downloaded, total_size)
+            };
+            let _ = window.emit(
+                "pull-progress",
+                &PullProgress {
+                    status: status_text,
+                    model_name: Some(name.clone()),
+                    source_url: Some(url.clone()),
+                    digest: None,
+                    total: Some(total_size),
+                    completed: Some(downloaded),
+                },
+            );
+        }
     }
 
     // 2. Create Modelfile
@@ -2511,6 +2586,8 @@ async fn pull_model_from_modelscope(
         "pull-progress",
         &PullProgress {
             status: "Importing model into Ollama...".to_string(),
+            model_name: Some(name.clone()),
+            source_url: Some(url.clone()),
             digest: None,
             total: None,
             completed: None,
@@ -2545,6 +2622,18 @@ async fn pull_model_from_modelscope(
     // Cleanup
     let _ = std::fs::remove_file(gguf_path);
     let _ = std::fs::remove_file(modelfile_path);
+
+    let _ = window.emit(
+        "pull-progress",
+        &PullProgress {
+            status: "success".to_string(),
+            model_name: Some(name),
+            source_url: Some(url),
+            digest: None,
+            total: Some(total_size),
+            completed: Some(total_size),
+        },
+    );
 
     Ok(())
 }
@@ -2604,44 +2693,176 @@ async fn ingest_knowledge_base(
     path: String,
     model: String,
     mode: Option<IngestMode>,
-    state: State<'_, RagState>,
     app: AppHandle,
     window: Window,
 ) -> Result<usize, String> {
-    let selected_mode = mode.unwrap_or_default();
-    let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel::<IngestProgress>();
-    let progress_window = window.clone();
-    tauri::async_runtime::spawn(async move {
-        while let Some(progress) = progress_rx.recv().await {
-            let _ = progress_window.emit("ingest-progress", &progress);
-        }
-    });
+    research_memory::ingest_research_corpus(
+        &app,
+        &window,
+        &path,
+        ResearchIngestOptions {
+            extract_model: Some(model),
+            extract_fast_model: None,
+            extract_fallback_model: None,
+            allow_auto_pull_extract_model: Some(true),
+            extraction_mode: Some("balanced".to_string()),
+            embedding_model: None,
+            vision_model: None,
+            mode,
+        },
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
 
-    let count = state
-        .ingest_directory(&path, &model, selected_mode, Some(progress_tx))
+#[tauri::command]
+async fn ingest_research_corpus(
+    app: AppHandle,
+    window: Window,
+    path: String,
+    options: Option<ResearchIngestOptions>,
+) -> Result<usize, String> {
+    research_memory::ingest_research_corpus(&app, &window, &path, options.unwrap_or_default())
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())
+}
 
-    // Save to disk
-    if let Ok(app_data_dir) = app.path().app_data_dir() {
-        if !app_data_dir.exists() {
-            let _ = std::fs::create_dir_all(&app_data_dir);
-        }
-        let db_path = app_data_dir.join("knowledge_base.json");
-        if let Err(e) = state.save(db_path.to_str().unwrap()).await {
-            println!("Failed to save database: {}", e);
-        }
-    }
-
-    Ok(count)
+#[tauri::command]
+async fn unindex_research_path(
+    app: AppHandle,
+    path: String,
+) -> Result<usize, String> {
+    research_memory::unindex_research_path(&app, &path, None)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn query_knowledge_base(
     query: String,
-    state: State<'_, RagState>,
-) -> Result<Vec<Document>, String> {
-    state.search(&query, 5).await.map_err(|e| e.to_string())
+    app: AppHandle,
+    scope_path: Option<String>,
+    scope_paper: Option<String>,
+) -> Result<Vec<DocumentResult>, String> {
+    research_memory::query_knowledge_base(
+        &app,
+        &query,
+        5,
+        None,
+        research_memory::ResearchSearchScope {
+            path: scope_path.as_deref(),
+            paper_query: scope_paper.as_deref(),
+        },
+    )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn search_research_memory(
+    app: AppHandle,
+    query: String,
+    limit: Option<usize>,
+    scope_path: Option<String>,
+    scope_paper: Option<String>,
+) -> Result<Vec<ResearchSearchHit>, String> {
+    research_memory::search_research_memory(
+        &app,
+        &query,
+        limit.unwrap_or(8),
+        None,
+        research_memory::ResearchSearchScope {
+            path: scope_path.as_deref(),
+            paper_query: scope_paper.as_deref(),
+        },
+    )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_research_graph(
+    app: AppHandle,
+    view: String,
+) -> Result<ResearchGraph, String> {
+    research_memory::get_research_graph(&app, &view)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_research_graph_node_detail(
+    app: AppHandle,
+    node_id: String,
+) -> Result<ResearchGraphNodeDetail, String> {
+    research_memory::get_research_graph_node_detail(&app, &node_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_research_graph_edge_detail(
+    app: AppHandle,
+    edge_id: String,
+) -> Result<ResearchGraphEdgeDetail, String> {
+    research_memory::get_research_graph_edge_detail(&app, &edge_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn list_extraction_reviews(app: AppHandle) -> Result<Vec<ReviewRecord>, String> {
+    research_memory::list_extraction_reviews(&app)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn list_research_papers(app: AppHandle) -> Result<Vec<ResearchPaperRecord>, String> {
+    research_memory::list_research_papers(&app)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn apply_extraction_review(
+    app: AppHandle,
+    request: ApplyReviewRequest,
+) -> Result<usize, String> {
+    research_memory::apply_extraction_review(&app, request)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn list_idea_candidates(app: AppHandle) -> Result<Vec<IdeaCandidate>, String> {
+    research_memory::list_idea_candidates(&app)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn compare_papers(
+    app: AppHandle,
+    left_paper_id: String,
+    right_paper_id: String,
+    focus: Option<String>,
+) -> Result<ComparePapersResult, String> {
+    research_memory::compare_papers(&app, &left_paper_id, &right_paper_id, focus.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn analyze_pdf_page_visual(
+    app: AppHandle,
+    pdf_path: String,
+    page: u32,
+    model: String,
+) -> Result<PageVisualNoteResult, String> {
+    research_memory::analyze_pdf_page_visual(&app, &pdf_path, page, &model)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2780,7 +3001,13 @@ async fn pull_ollama_model(name: String, window: Window) -> Result<(), String> {
                         if let Some(error) = payload.get("error").and_then(|value| value.as_str()) {
                             return Err(format!("Ollama pull failed: {}", error));
                         }
-                        if let Ok(progress) = serde_json::from_value::<PullProgress>(payload) {
+                        if let Ok(mut progress) = serde_json::from_value::<PullProgress>(payload) {
+                            if progress.model_name.is_none() {
+                                progress.model_name = Some(name.clone());
+                            }
+                            if progress.source_url.is_none() {
+                                progress.source_url = Some(ollama_library_url(&name));
+                            }
                             let _ = window.emit("pull-progress", &progress);
                         }
                     }
@@ -2791,6 +3018,41 @@ async fn pull_ollama_model(name: String, window: Window) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[tauri::command]
+async fn delete_ollama_model(name: String) -> Result<(), String> {
+    let client = reqwest::Client::new();
+    let response = client
+        .delete("http://localhost:11434/api/delete")
+        .json(&serde_json::json!({ "name": name }))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to connect to Ollama: {}", e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!(
+            "Ollama delete failed: {} {}",
+            status,
+            body
+        ));
+    }
+    Ok(())
+}
+
+fn ollama_library_url(name: &str) -> String {
+    let base = name.split(':').next().unwrap_or(name).trim();
+    format!("https://ollama.com/library/{}", base)
+}
+
+fn parse_total_size_from_content_range(
+    header: Option<&reqwest::header::HeaderValue>,
+) -> Option<u64> {
+    let raw = header?.to_str().ok()?;
+    let total = raw.split('/').nth(1)?.trim();
+    total.parse::<u64>().ok()
 }
 
 fn normalize_optional_path(value: Option<String>) -> Option<String> {
@@ -2825,6 +3087,92 @@ fn build_page_context_snippet(text: &str, term: &str) -> Option<String> {
 
 fn truncate_chars(text: &str, limit: usize) -> String {
     text.chars().take(limit).collect::<String>()
+}
+
+fn split_page_text_into_segments(page_text: &str) -> Vec<String> {
+    let normalized = page_text.replace("\r\n", "\n");
+    let primary_segments = normalized
+        .split("\n\n")
+        .flat_map(|block| {
+            let trimmed = block.trim();
+            if trimmed.is_empty() {
+                return Vec::<String>::new();
+            }
+            if trimmed.chars().count() <= 900 {
+                return vec![trimmed.to_string()];
+            }
+
+            let mut parts = Vec::new();
+            let mut current = String::new();
+            for line in trimmed.lines() {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                let candidate_len = current.chars().count() + line.chars().count() + 1;
+                if candidate_len > 900 && !current.is_empty() {
+                    parts.push(current.trim().to_string());
+                    current.clear();
+                }
+                if !current.is_empty() {
+                    current.push('\n');
+                }
+                current.push_str(line);
+            }
+            if !current.trim().is_empty() {
+                parts.push(current.trim().to_string());
+            }
+            parts
+        })
+        .collect::<Vec<_>>();
+
+    if !primary_segments.is_empty() {
+        return primary_segments;
+    }
+
+    let single = normalized.trim();
+    if single.is_empty() {
+        Vec::new()
+    } else {
+        vec![single.to_string()]
+    }
+}
+
+fn locate_selection_segment_index(segments: &[String], selected_text: &str) -> Option<usize> {
+    let normalized_selected = selected_text.trim();
+    if normalized_selected.is_empty() {
+        return None;
+    }
+
+    segments
+        .iter()
+        .position(|segment| segment.contains(normalized_selected))
+        .or_else(|| {
+            let selected_lower = normalized_selected.to_lowercase();
+            segments.iter().position(|segment| {
+                segment.to_lowercase().contains(&selected_lower)
+            })
+        })
+}
+
+fn build_selection_context_window(
+    page_text: &str,
+    selected_text: &str,
+    context_limit: usize,
+) -> String {
+    let segments = split_page_text_into_segments(page_text);
+    if segments.is_empty() {
+        return truncate_chars(page_text, context_limit);
+    }
+
+    let Some(index) = locate_selection_segment_index(&segments, selected_text) else {
+        return truncate_chars(page_text, context_limit);
+    };
+
+    let start = index.saturating_sub(1);
+    let end = (index + 2).min(segments.len());
+    let joined = segments[start..end].join("\n\n");
+    truncate_chars(&joined, context_limit)
 }
 
 fn trim_non_empty_model_output(text: String, empty_message: &str) -> Result<String, String> {
@@ -2932,7 +3280,15 @@ fn validate_selection_translation_output(
         return Err("模型输出超出选中文本范围，疑似混入了上下文内容。".to_string());
     }
 
-    if original_len <= 80 && translated_len > original_len * 6 {
+    if original_len <= 120 && translated_len > original_len * 6 {
+        return Err("模型输出明显长于原文，疑似把上下文一起翻译了。".to_string());
+    }
+
+    if original_len <= 400 && translated_len > original_len * 9 {
+        return Err("模型输出明显长于原文，疑似把上下文一起翻译了。".to_string());
+    }
+
+    if original_len > 400 && translated_len > original_len * 12 {
         return Err("模型输出明显长于原文，疑似把上下文一起翻译了。".to_string());
     }
 
@@ -2945,11 +3301,21 @@ fn sanitize_translation_output(original_text: &str, translated_text: &str) -> Op
         return None;
     }
 
+    if let Some(index) = cleaned.rfind(TRANSLATION_OUTPUT_SENTINEL) {
+        cleaned = cleaned[index + TRANSLATION_OUTPUT_SENTINEL.len()..]
+            .trim()
+            .to_string();
+    }
+
     let leak_markers = [
         "\n页面上下文：",
+        "\n页面上下文（仅供参考",
+        "\n页面上下文（仅用于消歧",
         "\nPage context:",
+        "\nPage context (reference only",
         "\n原文：",
         "\nSource text:",
+        "\nSource passage:",
         "\n待翻译原文：",
         "\nPage text:",
     ];
@@ -2967,12 +3333,40 @@ fn sanitize_translation_output(original_text: &str, translated_text: &str) -> Op
         "Instructions:",
     ];
     if prefix_markers.iter().any(|marker| cleaned.starts_with(marker)) {
-        let split_markers = ["\n\n译文：", "\n\nTranslation:", "\n\n虽然", "\n\n当", "\n\n本", "\n\n该"];
+        let split_markers = [
+            "\n\n译文：",
+            "\n\nTranslation:",
+            "\n\n[[[TRANSLATION]]]",
+            "\n\n虽然",
+            "\n\n当",
+            "\n\n本",
+            "\n\n该",
+        ];
         for marker in split_markers {
             if let Some(index) = cleaned.find(marker) {
                 cleaned = cleaned[index + 2..].to_string();
                 break;
             }
+        }
+    }
+
+    let standalone_prompt_markers = [
+        "Page context (reference only",
+        "Page context:",
+        "Source passage:",
+        "Source text:",
+        "Strict rules:",
+        "Rules:",
+        "页面上下文（仅供参考",
+        "页面上下文：",
+        "源文本：",
+        "原文：",
+        "规则：",
+        "要求：",
+    ];
+    for marker in standalone_prompt_markers {
+        if let Some(index) = cleaned.find(marker) {
+            cleaned.truncate(index);
         }
     }
 
@@ -3330,7 +3724,9 @@ async fn run_translation_model(
     user_prompt: &str,
 ) -> Result<String, String> {
     if is_translation_generate_model(model) {
-        let prompt = format!("{system_prompt}\n\n{user_prompt}");
+        let prompt = format!(
+            "{system_prompt}\n\n{user_prompt}\n\nOnly output the final translation after the sentinel line below. Do not repeat the prompt, rules, source text, or page context.\n{TRANSLATION_OUTPUT_SENTINEL}"
+        );
         return run_ollama_generate(model, &prompt).await;
     }
 
@@ -3359,12 +3755,12 @@ async fn chat_via_ollama(
     image_path: Option<&str>,
 ) -> Result<String, String> {
     let system_prompt = if thinking_capable_model(model) {
-        "你是科研助手。除非用户明确要求其他语言，否则必须始终使用中文 Markdown 回答。对于较复杂的问题，可以先给出简短思考过程，再给出最终答案。思考过程优先中文，也允许英文；内容精炼且相关。"
+        "你是科研助手。除非用户明确要求其他语言，否则必须始终使用中文 Markdown 回答。对于较复杂的问题，可以先给出简短思考过程，再给出最终答案。思考过程优先中文，也允许英文；内容精炼且相关。优先利用检索上下文与用户当前文档作答，但不要被其机械束缚；如果上下文不足，可以结合你已有的通用知识补充回答，并明确区分哪些结论来自上下文、哪些是基于通用知识的补充或推断。不要因为上下文不完整就直接拒答。"
     } else {
-        "你是科研助手。除非用户明确要求其他语言，否则必须始终使用中文 Markdown 回答。"
+        "你是科研助手。除非用户明确要求其他语言，否则必须始终使用中文 Markdown 回答。优先利用检索上下文与用户当前文档作答，但如果上下文不足，可以结合通用知识补充回答，并明确区分哪些内容来自上下文、哪些是补充说明或推断。不要因为上下文不完整就直接拒答。"
     };
     let prompt = format!(
-        "请基于下面的上下文回答问题。如果上下文里没有答案，请明确说明。\n\n上下文：\n{}\n\n问题：\n{}",
+        "请回答下面的问题。\n\n要求：\n1. 优先使用检索上下文中的证据。\n2. 如果上下文不足以完整回答，可以结合你的通用知识继续回答，但要在答案里明确说明“根据上下文”与“补充说明/推断”的区别。\n3. 如果上下文为空，也不要机械地说无法回答；应尽量先直接解释问题，再指出当前上下文未提供哪些特定证据。\n4. 如果给出了具体论文或片段范围，优先围绕该范围作答。\n\n检索上下文：\n{}\n\n问题：\n{}",
         context, query
     );
 
@@ -3456,17 +3852,33 @@ async fn translate_pdf_selection_text_v2(
     page_context: Option<&str>,
     model: &str,
 ) -> Result<String, String> {
+    let selection_len = selected_text.trim().chars().count();
+    let context_limit = if selection_len > LONG_SELECTION_THRESHOLD_CHARS {
+        PDF_SELECTION_CONTEXT_LIMIT_LONG
+    } else {
+        PDF_SELECTION_CONTEXT_LIMIT_SHORT
+    };
     let context_block = page_context
-        .map(|text| truncate_chars(text, 1200))
+        .map(|text| build_selection_context_window(text, selected_text, context_limit))
         .filter(|text| !text.trim().is_empty())
         .unwrap_or_else(|| "No page context is available.".to_string());
-    let primary_prompt = format!(
-        "Translate only the source text below into Simplified Chinese.\n\nRules:\n1. Output only the translation of the source text.\n2. Do not translate, repeat, or summarize the page context.\n3. Use the page context only to disambiguate terms.\n4. Do not copy the English source unless it is a formula, variable name, URL, DOI, or code fragment.\n5. No explanation, no notes, no preface.\n6. The output must stay proportional to the source text length.\n\nPage context (reference only, never translate it):\n{context_block}\n\nSource text (translate this part only):\n{selected_text}"
-    );
+    let primary_prompt = if selection_len > LONG_SELECTION_THRESHOLD_CHARS {
+        format!(
+            "Translate only the selected source passage below into Simplified Chinese.\n\nRules:\n1. Translate the entire source passage faithfully into Chinese.\n2. Output only the translation of the source passage.\n3. Do not translate, repeat, or summarize the page context.\n4. Use the page context only to disambiguate terminology, pronouns, and sentence relations.\n5. Keep formulas, variable names, URLs, DOI, and code fragments unchanged.\n6. Preserve paragraph boundaries when the source passage spans multiple sentences or lines.\n7. No explanation, no notes, no preface.\n\nPage context (reference only, never translate it):\n{context_block}\n\nSource passage (translate this part only):\n{selected_text}"
+        )
+    } else {
+        format!(
+            "Translate only the source text below into Simplified Chinese.\n\nRules:\n1. Output only the translation of the source text.\n2. Do not translate, repeat, or summarize the page context.\n3. Use the page context only to disambiguate terms.\n4. Do not copy the English source unless it is a formula, variable name, URL, DOI, or code fragment.\n5. No explanation, no notes, no preface.\n6. The output must stay proportional to the source text length.\n\nPage context (reference only, never translate it):\n{context_block}\n\nSource text (translate this part only):\n{selected_text}"
+        )
+    };
 
     let primary_result = run_translation_model(
         model,
-        "You are a precise academic translator. Translate only the user-selected source text into Simplified Chinese. Never translate the page context. Never return the original English sentence unchanged.",
+        if selection_len > LONG_SELECTION_THRESHOLD_CHARS {
+            "You are a precise academic translator. Translate the full user-selected source passage into Simplified Chinese. Never translate the page context. Never add explanations or summaries."
+        } else {
+            "You are a precise academic translator. Translate only the user-selected source text into Simplified Chinese. Never translate the page context. Never return the original English sentence unchanged."
+        },
         &primary_prompt,
     )
     .await
@@ -3476,13 +3888,23 @@ async fn translate_pdf_selection_text_v2(
         return Ok(validated);
     }
 
-    let retry_prompt = format!(
-        "The previous attempt failed because it included too much non-source content.\n\nTry again and translate only the selected source text into natural Simplified Chinese.\n\nStrict rules:\n1. Translate only the source text.\n2. Do not translate or paraphrase the page context.\n3. Keep formulas, tensor names, URLs, DOI, and code identifiers as-is.\n4. If a proper noun must stay in English, keep a short Chinese translation and put the English in parentheses.\n5. No explanation. No bullet points. No preface.\n6. Keep the output length close to the source text length.\n\nPage context (reference only):\n{context_block}\n\nSource text:\n{selected_text}"
-    );
+    let retry_prompt = if selection_len > LONG_SELECTION_THRESHOLD_CHARS {
+        format!(
+            "The previous attempt failed because it included too much non-source content.\n\nRetry and translate only the selected source passage into natural Simplified Chinese.\n\nStrict rules:\n1. Translate the entire selected source passage and nothing else.\n2. Do not translate or paraphrase the page context.\n3. Keep formulas, tensor names, URLs, DOI, and code identifiers as-is.\n4. Preserve paragraph and sentence structure as much as possible.\n5. No explanation. No bullet points. No preface.\n\nPage context (reference only):\n{context_block}\n\nSource passage:\n{selected_text}"
+        )
+    } else {
+        format!(
+            "The previous attempt failed because it included too much non-source content.\n\nTry again and translate only the selected source text into natural Simplified Chinese.\n\nStrict rules:\n1. Translate only the source text.\n2. Do not translate or paraphrase the page context.\n3. Keep formulas, tensor names, URLs, DOI, and code identifiers as-is.\n4. If a proper noun must stay in English, keep a short Chinese translation and put the English in parentheses.\n5. No explanation. No bullet points. No preface.\n6. Keep the output length close to the source text length.\n\nPage context (reference only):\n{context_block}\n\nSource text:\n{selected_text}"
+        )
+    };
 
     run_translation_model(
         model,
-        "You are an academic English-to-Chinese translator. You must return a valid Simplified Chinese translation of only the selected source text, not the page context.",
+        if selection_len > LONG_SELECTION_THRESHOLD_CHARS {
+            "You are an academic English-to-Chinese translator. You must return a valid Simplified Chinese translation of only the selected source passage, not the page context."
+        } else {
+            "You are an academic English-to-Chinese translator. You must return a valid Simplified Chinese translation of only the selected source text, not the page context."
+        },
         &retry_prompt,
     )
     .await
@@ -3876,7 +4298,6 @@ async fn set_mobile_inbox_item_status(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let rag_state = RagState::new();
     let inference_settings_state = InferenceSettingsState::new();
     let mobile_companion_state = mobile::MobileCompanionState::new();
     let pdf_page_text_cache_state = PdfPageTextCacheState::new();
@@ -3886,7 +4307,6 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .manage(rag_state)
         .manage(inference_settings_state)
         .manage(mobile_companion_state)
         .manage(pdf_page_text_cache_state)
@@ -3908,22 +4328,16 @@ pub fn run() {
                 Err(e) => println!("Failed to load inference settings: {}", e),
             }
 
-            // Try to load existing database
-            if let Ok(app_data_dir) = handle.path().app_data_dir() {
-                let db_path = app_data_dir.join("knowledge_base.json");
-                if db_path.exists() {
-                    let path_str = db_path.to_string_lossy().to_string();
-                    let load_handle = handle.clone();
-                    tauri::async_runtime::spawn(async move {
-                        let state = load_handle.state::<RagState>();
-                        if let Err(e) = state.load(&path_str).await {
-                            println!("Failed to load database: {}", e);
-                        } else {
-                            println!("Loaded database from {}", path_str);
-                        }
-                    });
+            let research_handle = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = research_memory::initialize(&research_handle).await {
+                    println!("Failed to initialize research memory: {}", e);
+                    return;
                 }
-            }
+                if let Err(e) = research_memory::sync_index_state(&research_handle, None).await {
+                    println!("Failed to sync research memory index state: {}", e);
+                }
+            });
 
             let mobile_state = handle
                 .state::<mobile::MobileCompanionState>()
@@ -3951,8 +4365,21 @@ pub fn run() {
             import_zotero_storage_to_workspace,
             detect_zotero_storage,
             ingest_knowledge_base,
+            ingest_research_corpus,
+            unindex_research_path,
             query_knowledge_base,
+            search_research_memory,
+            get_research_graph,
+            get_research_graph_node_detail,
+            get_research_graph_edge_detail,
+            list_research_papers,
+            list_extraction_reviews,
+            apply_extraction_review,
+            list_idea_candidates,
+            compare_papers,
+            analyze_pdf_page_visual,
             get_ollama_models,
+            delete_ollama_model,
             get_ollama_version,
             inspect_system_ollama_installation,
             get_private_ollama_runtime_info,

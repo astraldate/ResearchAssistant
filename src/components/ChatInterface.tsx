@@ -5,6 +5,7 @@
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
@@ -42,6 +43,15 @@ interface NoteItem {
   createdAt: number;
 }
 
+interface ResearchPaperOption {
+  paperId: string;
+  title: string;
+  path: string;
+  parseStatus: string;
+  chunkCount: number;
+  candidateCount: number;
+}
+
 interface SessionPayload {
   messages: Message[];
   inputValue: string;
@@ -50,6 +60,7 @@ interface SessionPayload {
   citationDraft: string;
   citations: CitationItem[];
   notes: NoteItem[];
+  restrictToActivePaper?: boolean;
 }
 
 interface SelectionMenuState {
@@ -78,6 +89,7 @@ interface ChatInterfaceProps {
 }
 
 const SESSION_KEY = "ra_chat_session_v3";
+const CHAT_SCOPE_KEY = "ra_chat_scope_current_paper_v1";
 
 const DEFAULT_MESSAGES: Message[] = [
   {
@@ -106,6 +118,31 @@ const buildDocSnippet = (content: string, limit = 220) => {
   return normalized.length > limit
     ? `${normalized.slice(0, limit)}...`
     : normalized;
+};
+
+const parsePaperScopedQuestion = (value: string) => {
+  const trimmed = value.trim();
+  const match = trimmed.match(/^@paper\s+(.+?)(?:\r?\n+|$)([\s\S]*)/i);
+  if (!match) {
+    return {
+      cleanQuestion: trimmed,
+      scopePaper: null as string | null,
+    };
+  }
+  const scopePaper = match[1].trim();
+  const remainder = (match[2] ?? "").trim();
+  return {
+    cleanQuestion: remainder || trimmed,
+    scopePaper: scopePaper || null,
+  };
+};
+
+const extractActiveMentionQuery = (value: string, cursor: number | null) => {
+  const effectiveCursor = cursor ?? value.length;
+  const beforeCursor = value.slice(0, effectiveCursor);
+  const match = beforeCursor.match(/(?:^|\s)@([^\n@]*)$/);
+  if (!match) return null;
+  return match[1] ?? "";
 };
 
 const buildStreamingContent = (reasoning: string, answer: string) => {
@@ -166,6 +203,18 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   );
   const [lastKnowledgeQuery, setLastKnowledgeQuery] = useState("");
   const [isKnowledgeSearching, setIsKnowledgeSearching] = useState(false);
+  const [restrictToActivePaper, setRestrictToActivePaper] = useState(() => {
+    return localStorage.getItem(CHAT_SCOPE_KEY) === "1";
+  });
+  const [paperOptions, setPaperOptions] = useState<ResearchPaperOption[]>([]);
+  const [isPaperOptionsLoaded, setIsPaperOptionsLoaded] = useState(false);
+  const [paperMentionQuery, setPaperMentionQuery] = useState("");
+  const [selectedMentionIndex, setSelectedMentionIndex] = useState(0);
+  const [paperMentionMenuRect, setPaperMentionMenuRect] = useState<{
+    left: number;
+    top: number;
+    width: number;
+  } | null>(null);
   const [selectionMenu, setSelectionMenu] = useState<SelectionMenuState | null>(
     null,
   );
@@ -174,6 +223,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   const messagesListRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const selectionMenuRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const activeStreamRef = useRef<{
     requestId: string;
     messageId: string;
@@ -192,10 +242,20 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         citationDraft,
         citations,
         notes,
+        restrictToActivePaper,
       };
       localStorage.setItem(SESSION_KEY, JSON.stringify(nextPayload));
     },
-    [citationDraft, citations, imagePath, inputValue, messages, notes, pdfPage],
+    [
+      citationDraft,
+      citations,
+      imagePath,
+      inputValue,
+      messages,
+      notes,
+      pdfPage,
+      restrictToActivePaper,
+    ],
   );
 
   useEffect(() => {
@@ -207,6 +267,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       setCitationDraft(stored.citationDraft || "");
       setCitations(Array.isArray(stored.citations) ? stored.citations : []);
       setNotes(Array.isArray(stored.notes) ? stored.notes : []);
+      setRestrictToActivePaper(Boolean(stored.restrictToActivePaper));
       const restoredPage =
         stored.pdfPage && stored.pdfPage > 0 ? stored.pdfPage : 1;
       onPdfPageChange?.(restoredPage);
@@ -218,6 +279,14 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     if (!isSessionHydrated) return;
     persistSession();
   }, [isSessionHydrated, persistSession]);
+
+  useEffect(() => {
+    if (restrictToActivePaper) {
+      localStorage.setItem(CHAT_SCOPE_KEY, "1");
+    } else {
+      localStorage.removeItem(CHAT_SCOPE_KEY);
+    }
+  }, [restrictToActivePaper]);
 
   useEffect(() => {
     if (!shouldAutoScrollRef.current) return;
@@ -245,6 +314,64 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
+
+  useEffect(() => {
+    const mentionQuery = extractActiveMentionQuery(
+      inputValue,
+      inputRef.current?.selectionStart ?? null,
+    );
+    setPaperMentionQuery(mentionQuery ?? "");
+    setSelectedMentionIndex(0);
+  }, [inputValue]);
+
+  useEffect(() => {
+    const rawShouldShowMentionList =
+      paperMentionQuery !== "" ||
+      extractActiveMentionQuery(
+        inputValue,
+        inputRef.current?.selectionStart ?? null,
+      ) !== null;
+    if (!rawShouldShowMentionList || !inputRef.current) {
+      setPaperMentionMenuRect(null);
+      return;
+    }
+    const updateRect = () => {
+      const rect = inputRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      setPaperMentionMenuRect({
+        left: rect.left,
+        top: rect.top - 10,
+        width: rect.width,
+      });
+    };
+    updateRect();
+    window.addEventListener("resize", updateRect);
+    window.addEventListener("scroll", updateRect, true);
+    return () => {
+      window.removeEventListener("resize", updateRect);
+      window.removeEventListener("scroll", updateRect, true);
+    };
+  }, [inputValue, paperMentionQuery]);
+
+  useEffect(() => {
+    if (paperMentionQuery === "" && !inputValue.includes("@")) return;
+    if (isPaperOptionsLoaded) return;
+    let cancelled = false;
+    invoke<ResearchPaperOption[]>("list_research_papers")
+      .then((records) => {
+        if (cancelled) return;
+        setPaperOptions(records);
+        setIsPaperOptionsLoaded(true);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setPaperOptions([]);
+        setIsPaperOptionsLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [inputValue, isPaperOptionsLoaded, paperMentionQuery]);
 
   useEffect(() => {
     let unlistenFn: (() => void) | null = null;
@@ -436,11 +563,20 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         return;
       }
 
+      const { cleanQuestion, scopePaper } = parsePaperScopedQuestion(query);
+      const scopePath =
+        !scopePaper && restrictToActivePaper && activeFilePath
+          ? activeFilePath
+          : undefined;
+      const effectiveQuery = cleanQuestion || query;
+
       setIsKnowledgeSearching(true);
       setLastKnowledgeQuery(query);
       try {
         const docs = await invoke<DocumentResult[]>("query_knowledge_base", {
-          query,
+          query: effectiveQuery,
+          scopePath,
+          scopePaper: scopePaper ?? undefined,
         });
         setKnowledgeResults(docs);
       } catch (error) {
@@ -449,7 +585,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         setIsKnowledgeSearching(false);
       }
     },
-    [knowledgeQuery, onStatus],
+    [activeFilePath, knowledgeQuery, onStatus, restrictToActivePaper],
   );
 
   const handleKnowledgeSearchKeyDown = (
@@ -472,6 +608,12 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   const handleSendMessage = async () => {
     const question = inputValue.trim();
     if (!question) return;
+    const { cleanQuestion, scopePaper } = parsePaperScopedQuestion(question);
+    const effectiveQuestion = cleanQuestion || question;
+    const scopePath =
+      !scopePaper && restrictToActivePaper && activeFilePath
+        ? activeFilePath
+        : undefined;
     const startedAt = Date.now();
     const assistantMessageId = `${startedAt}-ai`;
     const requestId = `${startedAt}-${Math.random().toString(36).slice(2, 10)}`;
@@ -504,11 +646,13 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     try {
       const activeModel = ensureAiReady
         ? await ensureAiReady()
-        : currentModel || "qwen2.5:0.5b";
+        : currentModel || "qwen3.5:9b";
       let context = "";
       try {
         const docs = await invoke<DocumentResult[]>("query_knowledge_base", {
-          query: question,
+          query: effectiveQuestion,
+          scopePath,
+          scopePaper: scopePaper ?? undefined,
         });
         context = docs.map((doc) => doc.content).join("\n\n");
       } catch {
@@ -516,7 +660,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       }
 
       const response = await invoke<string>("chat_with_llm", {
-        query: question,
+        query: effectiveQuestion,
         context,
         model: activeModel,
         imagePath,
@@ -566,6 +710,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     setCitationDraft(stored.citationDraft || "");
     setCitations(Array.isArray(stored.citations) ? stored.citations : []);
     setNotes(Array.isArray(stored.notes) ? stored.notes : []);
+    setRestrictToActivePaper(Boolean(stored.restrictToActivePaper));
     onPdfPageChange?.(
       stored.pdfPage && stored.pdfPage > 0 ? stored.pdfPage : 1,
     );
@@ -579,8 +724,10 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     setCitationDraft("");
     setCitations([]);
     setNotes([]);
+    setRestrictToActivePaper(false);
     onPdfPageChange?.(1);
     localStorage.removeItem(SESSION_KEY);
+    localStorage.removeItem(CHAT_SCOPE_KEY);
     onStatus("已清空当前会话。", "info", false);
   };
 
@@ -642,6 +789,32 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   };
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (shouldShowPaperMentionList && filteredPaperOptions.length > 0) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setSelectedMentionIndex((current) =>
+          Math.min(current + 1, filteredPaperOptions.length - 1),
+        );
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setSelectedMentionIndex((current) => Math.max(current - 1, 0));
+        return;
+      }
+      if (event.key === "Enter" && !event.shiftKey) {
+        const selected = filteredPaperOptions[selectedMentionIndex];
+        if (selected) {
+          event.preventDefault();
+          applyPaperMention(selected);
+          return;
+        }
+      }
+      if (event.key === "Escape") {
+        setPaperMentionQuery("");
+        return;
+      }
+    }
     if (event.nativeEvent.isComposing) return;
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
@@ -662,6 +835,63 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   const activeFileLabel = useMemo(
     () => (activeFilePath ? getFileName(activeFilePath) : "未选中文件"),
     [activeFilePath],
+  );
+  const parsedScope = useMemo(
+    () => parsePaperScopedQuestion(inputValue),
+    [inputValue],
+  );
+  const activeChatScopeLabel = parsedScope.scopePaper
+    ? `@paper ${parsedScope.scopePaper}`
+    : restrictToActivePaper && activeFilePath
+      ? `当前文献：${getFileName(activeFilePath)}`
+      : null;
+  const filteredPaperOptions = useMemo(() => {
+    const query = paperMentionQuery.trim().toLowerCase();
+    const base = paperOptions.filter((paper) => paper.chunkCount > 0);
+    if (!query) {
+      return base.slice(0, 8);
+    }
+    return base
+      .filter((paper) => {
+        const title = paper.title.toLowerCase();
+        const path = paper.path.toLowerCase();
+        return title.includes(query) || path.includes(query);
+      })
+      .slice(0, 8);
+  }, [paperMentionQuery, paperOptions]);
+  const shouldShowPaperMentionList =
+    paperMentionQuery !== "" ||
+    extractActiveMentionQuery(
+      inputValue,
+      inputRef.current?.selectionStart ?? null,
+    ) !== null;
+
+  const applyPaperMention = useCallback(
+    (paper: ResearchPaperOption) => {
+      const textarea = inputRef.current;
+      const cursor = textarea?.selectionStart ?? inputValue.length;
+      const beforeCursor = inputValue.slice(0, cursor);
+      const afterCursor = inputValue.slice(cursor);
+      const match = beforeCursor.match(/(?:^|\s)@([^\n@]*)$/);
+      if (!match || match.index == null) {
+        setInputValue(`@paper ${paper.title}\n${inputValue}`.trim());
+        return;
+      }
+      const mentionStart = match.index + (match[0].startsWith(" ") ? 1 : 0);
+      const prefix = inputValue.slice(0, mentionStart);
+      const suffix = afterCursor.replace(/^\s*/, "");
+      const nextValue = `${prefix}@paper ${paper.title}\n${suffix}`.trimStart();
+      setInputValue(nextValue);
+      window.setTimeout(() => {
+        const node = inputRef.current;
+        if (!node) return;
+        const nextCursor = `${prefix}@paper ${paper.title}\n`.length;
+        node.focus();
+        node.setSelectionRange(nextCursor, nextCursor);
+      }, 0);
+      setPaperMentionQuery("");
+    },
+    [inputValue],
   );
 
   return (
@@ -745,13 +975,57 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
               )}
               <div className="chat-input-wrapper">
                 <textarea
+                  ref={inputRef}
                   className="chat-input"
-                  placeholder="输入消息"
+                  placeholder="输入消息。可用 @paper 论文标题 换行后提问"
                   value={inputValue}
-                  onChange={(event) => setInputValue(event.target.value)}
+                  onChange={(event) => {
+                    setInputValue(event.target.value);
+                    const mentionQuery = extractActiveMentionQuery(
+                      event.target.value,
+                      event.target.selectionStart,
+                    );
+                    setPaperMentionQuery(mentionQuery ?? "");
+                  }}
                   onKeyDown={handleKeyDown}
                   rows={1}
                 />
+              </div>
+
+              <div className="chat-scope-row">
+                <button
+                  style={{
+                    ...TOOL_BUTTON_STYLE,
+                    background:
+                      restrictToActivePaper && activeFilePath
+                        ? "rgba(31, 62, 107, 0.14)"
+                        : "var(--bg-primary)",
+                    borderColor:
+                      restrictToActivePaper && activeFilePath
+                        ? "rgba(31, 62, 107, 0.28)"
+                        : "var(--border-color)",
+                    color:
+                      restrictToActivePaper && activeFilePath
+                        ? "var(--text-accent)"
+                        : "var(--text-secondary)",
+                  }}
+                  onClick={() =>
+                    setRestrictToActivePaper((current) => !current)
+                  }
+                  disabled={!activeFilePath}
+                  title={
+                    activeFilePath
+                      ? "只在当前选中文献中检索 RAG 上下文"
+                      : "当前没有选中文献"
+                  }
+                >
+                  仅当前文献
+                </button>
+                {activeChatScopeLabel && (
+                  <span className="chat-scope-chip">
+                    {activeChatScopeLabel}
+                  </span>
+                )}
               </div>
 
               <div className="chat-input-actions">
@@ -963,6 +1237,38 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
           </button>
         </div>
       )}
+
+      {shouldShowPaperMentionList &&
+        filteredPaperOptions.length > 0 &&
+        paperMentionMenuRect &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <div
+            className="chat-paper-mention-list portal"
+            style={{
+              left: `${paperMentionMenuRect.left}px`,
+              width: `${paperMentionMenuRect.width}px`,
+              top: `${Math.max(12, paperMentionMenuRect.top - 260)}px`,
+            }}
+          >
+            {filteredPaperOptions.map((paper, index) => (
+              <button
+                key={paper.paperId}
+                className={`chat-paper-mention-item ${index === selectedMentionIndex ? "active" : ""}`}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  applyPaperMention(paper);
+                }}
+              >
+                <span className="chat-paper-mention-title">{paper.title}</span>
+                <span className="chat-paper-mention-meta">
+                  {paper.chunkCount} chunks · {paper.candidateCount} 候选
+                </span>
+              </button>
+            ))}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 };

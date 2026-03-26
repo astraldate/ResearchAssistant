@@ -42,6 +42,8 @@ interface PdfReaderProps {
   ensureTranslationReady?: () => Promise<string>;
   isFocused?: boolean;
   requestedPage?: number;
+  requestedAnchorText?: string;
+  requestedAnchorKey?: string;
   toolbarActions?: React.ReactNode;
   isToolbarCollapsed?: boolean;
   lookupMode: LookupMode;
@@ -155,7 +157,7 @@ const FLOATING_BUTTON_WIDTH = 84;
 const FLOATING_BUTTON_HEIGHT = 36;
 const POPOVER_ANCHOR_GAP = 14;
 const TOOL_MODE_STORAGE_KEY = "ra_pdf_reader_tool_mode_v1";
-const MAX_TRANSLATE_SELECTION_CHARS = 800;
+const MAX_TRANSLATE_SELECTION_CHARS = 2400;
 const TRANSLATION_TOAST_EXIT_MS = 240;
 const TRANSLATION_INFO_TOAST_MS = 1800;
 const TRANSLATION_SUCCESS_TOAST_MS = 2400;
@@ -189,6 +191,12 @@ const buildPageTranslationCacheKey = (
 ) => `ra_pdf_translate_page_v2:${pdfPath}:${page}:${model}`;
 const normalizeSelectedText = (value: string) =>
   value.replace(/\s+/g, " ").trim();
+const normalizeAnchorText = (value: string) =>
+  value
+    .replace(/\s+/g, " ")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .toLowerCase()
+    .trim();
 const clamp = (value: number, min: number, max: number) =>
   Math.min(Math.max(value, min), max);
 const readStoredToolMode = (): ReaderToolMode =>
@@ -200,6 +208,66 @@ const formatPdfRenderError = (message: string) => {
     return "PDF 内嵌字体映射异常，已切换到兼容预览。这个文件的划词解释和整页翻译可能不可用。";
   }
   return `PDF 页面渲染失败，已切换为兼容模式：${message}`;
+};
+
+const buildSelectionTranslationCacheKey = (
+  pdfPath: string,
+  page: number,
+  text: string,
+) => `ra_pdf_translate_selection_v2:${pdfPath}:${page}:${text}`;
+
+const splitPageTextIntoSegments = (pageText: string) => {
+  const normalized = pageText.replace(/\r\n/g, "\n");
+  const primary = normalized
+    .split(/\n\s*\n/)
+    .map((block) => block.trim())
+    .filter(Boolean);
+
+  if (primary.length > 0) {
+    return primary.flatMap((block) => {
+      if (block.length <= 900) return [block];
+      const lines = block
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean);
+      const chunks: string[] = [];
+      let current = "";
+      for (const line of lines) {
+        const next = current ? `${current}\n${line}` : line;
+        if (next.length > 900 && current) {
+          chunks.push(current);
+          current = line;
+        } else {
+          current = next;
+        }
+      }
+      if (current) chunks.push(current);
+      return chunks;
+    });
+  }
+
+  const fallback = normalized.trim();
+  return fallback ? [fallback] : [];
+};
+
+const findSelectionSegmentIndex = (
+  segments: string[],
+  selectedText: string,
+) => {
+  if (!selectedText) return -1;
+  const lowerSelected = selectedText.toLowerCase();
+  return segments.findIndex(
+    (segment) =>
+      segment.includes(selectedText) ||
+      segment.toLowerCase().includes(lowerSelected),
+  );
+};
+
+const extractAnchorNeedle = (snippet: string) => {
+  const normalized = normalizeAnchorText(snippet);
+  if (!normalized) return "";
+  const tokens = normalized.split(" ").filter((token) => token.length >= 3);
+  return tokens.slice(0, 10).join(" ").trim();
 };
 
 const resolveOutlinePageNumber = async (
@@ -588,6 +656,8 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
   ensureTranslationReady,
   isFocused = false,
   requestedPage,
+  requestedAnchorText,
+  requestedAnchorKey,
   toolbarActions,
   isToolbarCollapsed = false,
   lookupMode,
@@ -614,6 +684,10 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
   const translationToastTimersRef = useRef<
     Map<number, { hide: number; remove: number }>
   >(new Map());
+  const pageTextCacheRef = useRef<Map<string, string>>(new Map());
+  const prefetchInFlightRef = useRef<Set<string>>(new Set());
+  const latestPrefetchTokenRef = useRef(0);
+  const lastAnchorRequestKeyRef = useRef<string | null>(null);
   const onStatusRef = useRef(onStatus);
   const onPageChangeRef = useRef(onPageChange);
 
@@ -661,6 +735,167 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
     onPageChangeRef.current = onPageChange;
   }, [onPageChange, onStatus]);
 
+  const getCachedPageText = useCallback(
+    async (pdfPath: string, page: number) => {
+      const cacheKey = `${pdfPath}:${page}`;
+      const cached = pageTextCacheRef.current.get(cacheKey);
+      if (cached) return cached;
+      const extracted = await invoke<string>("extract_pdf_page_text", {
+        path: pdfPath,
+        page,
+      });
+      pageTextCacheRef.current.set(cacheKey, extracted);
+      return extracted;
+    },
+    [],
+  );
+
+  const locateAnchorOnPage = useCallback(
+    async (pageNumber: number, snippet: string) => {
+      const stageElement = stageRef.current;
+      const pageElement = pageRefs.current.get(pageNumber);
+      if (!stageElement || !pageElement || !snippet.trim()) return false;
+
+      const anchorNeedle = extractAnchorNeedle(snippet);
+      if (!anchorNeedle) return false;
+
+      const textLayer = pageElement.querySelector(
+        ".pdfjs-text-layer",
+      ) as HTMLDivElement | null;
+      if (textLayer) {
+        const spans = Array.from(textLayer.querySelectorAll("span")).filter(
+          (span) => normalizeAnchorText(span.textContent || "").length > 0,
+        );
+        for (let index = 0; index < spans.length; index += 1) {
+          let combined = "";
+          for (
+            let windowSize = 0;
+            windowSize < 8 && index + windowSize < spans.length;
+            windowSize += 1
+          ) {
+            combined =
+              `${combined} ${normalizeAnchorText(spans[index + windowSize].textContent || "")}`.trim();
+            if (
+              combined.includes(anchorNeedle) ||
+              anchorNeedle.includes(
+                combined.slice(
+                  0,
+                  Math.min(combined.length, anchorNeedle.length),
+                ),
+              )
+            ) {
+              const target = spans[index] as HTMLElement;
+              const top =
+                pageElement.offsetTop +
+                target.offsetTop -
+                Math.max(48, stageElement.clientHeight * 0.18);
+              stageElement.scrollTo({
+                top: Math.max(0, top),
+                behavior: "auto",
+              });
+              return true;
+            }
+          }
+        }
+      }
+
+      try {
+        const pageText = await getCachedPageText(activePdfPath, pageNumber);
+        const segments = splitPageTextIntoSegments(pageText);
+        const selectedIndex = findSelectionSegmentIndex(segments, snippet);
+        if (selectedIndex === -1 || segments.length === 0) return false;
+        const ratio = selectedIndex / Math.max(segments.length, 1);
+        const top =
+          pageElement.offsetTop +
+          pageElement.clientHeight * ratio -
+          Math.max(48, stageElement.clientHeight * 0.18);
+        stageElement.scrollTo({
+          top: Math.max(0, top),
+          behavior: "auto",
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [activePdfPath, getCachedPageText],
+  );
+
+  const handleSelectionTranslateResolved = useCallback(
+    async (
+      selectedText: string,
+      page: number,
+      payload: { model_used: string },
+    ) => {
+      const normalizedSelection = normalizeSelectedText(selectedText);
+      if (!normalizedSelection || !activePdfPath) return;
+
+      const prefetchToken = Date.now();
+      latestPrefetchTokenRef.current = prefetchToken;
+
+      try {
+        const pageText = await getCachedPageText(activePdfPath, page);
+        if (latestPrefetchTokenRef.current !== prefetchToken) return;
+
+        const segments = splitPageTextIntoSegments(pageText);
+        const selectedIndex = findSelectionSegmentIndex(
+          segments,
+          normalizedSelection,
+        );
+        if (selectedIndex === -1) return;
+
+        const candidates = [selectedIndex - 1, selectedIndex + 1]
+          .filter((index) => index >= 0 && index < segments.length)
+          .map((index) => normalizeSelectedText(segments[index]))
+          .filter(
+            (text) =>
+              text &&
+              text !== normalizedSelection &&
+              text.length <= MAX_TRANSLATE_SELECTION_CHARS,
+          );
+
+        for (const candidateText of candidates) {
+          if (latestPrefetchTokenRef.current !== prefetchToken) return;
+          const cacheKey = buildSelectionTranslationCacheKey(
+            activePdfPath,
+            page,
+            candidateText,
+          );
+          if (sessionStorage.getItem(cacheKey)) continue;
+          if (prefetchInFlightRef.current.has(cacheKey)) continue;
+
+          prefetchInFlightRef.current.add(cacheKey);
+          void invoke<{
+            original_text: string;
+            translated_text: string;
+            page: number;
+            generated_at: string;
+            model_used: string;
+          }>("translate_pdf_selection", {
+            request: {
+              text: candidateText,
+              pdf_path: activePdfPath,
+              page,
+              model: payload.model_used || translationModel,
+            },
+          })
+            .then((result) => {
+              sessionStorage.setItem(cacheKey, JSON.stringify(result));
+            })
+            .catch(() => {
+              // Silent prefetch: ignore background failures.
+            })
+            .finally(() => {
+              prefetchInFlightRef.current.delete(cacheKey);
+            });
+        }
+      } catch {
+        // Silent prefetch: ignore background failures.
+      }
+    },
+    [activePdfPath, getCachedPageText, translationModel],
+  );
+
   useEffect(() => {
     localStorage.setItem(TOOL_MODE_STORAGE_KEY, readerToolMode);
   }, [readerToolMode]);
@@ -668,6 +903,12 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
   useEffect(() => {
     currentPageRef.current = currentPage;
   }, [currentPage]);
+
+  useEffect(() => {
+    latestPrefetchTokenRef.current = Date.now();
+    prefetchInFlightRef.current.clear();
+    pageTextCacheRef.current.clear();
+  }, [activePdfPath]);
 
   useEffect(() => {
     zoomPercentRef.current = zoomPercent;
@@ -1430,6 +1671,30 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
     pdfDocument,
     requestedPage,
     scrollToPage,
+    viewerMode,
+  ]);
+
+  useEffect(() => {
+    if (!requestedAnchorKey || !requestedAnchorText?.trim()) return;
+    if (lastAnchorRequestKeyRef.current === requestedAnchorKey) return;
+    if (viewerMode !== "pdfjs" || !pdfDocument || pageCount <= 0) return;
+    const safePage = clamp(
+      requestedPage || currentPageRef.current || 1,
+      1,
+      pageCount,
+    );
+    lastAnchorRequestKeyRef.current = requestedAnchorKey;
+    const timer = window.setTimeout(() => {
+      void locateAnchorOnPage(safePage, requestedAnchorText);
+    }, 220);
+    return () => window.clearTimeout(timer);
+  }, [
+    locateAnchorOnPage,
+    pageCount,
+    pdfDocument,
+    requestedAnchorKey,
+    requestedAnchorText,
+    requestedPage,
     viewerMode,
   ]);
 
@@ -2424,6 +2689,7 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
                 page={selection.page}
                 translationModel={translationModel}
                 ensureTranslationReady={ensureTranslationReady}
+                onTranslateSuccess={handleSelectionTranslateResolved}
                 onClose={handleClosePopover}
                 onStatus={onStatus}
                 style={popoverStyle}

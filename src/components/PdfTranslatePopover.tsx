@@ -27,6 +27,11 @@ interface PdfTranslatePopoverProps {
   style?: React.CSSProperties;
   onClose: () => void;
   onStatus: (message: string, tone?: StatusTone, persistent?: boolean) => void;
+  onTranslateSuccess?: (
+    selectedText: string,
+    page: number,
+    payload: TranslatePdfSelectionResult,
+  ) => void;
 }
 
 const POPOVER_MARGIN = 16;
@@ -62,6 +67,7 @@ export const PdfTranslatePopover: React.FC<PdfTranslatePopoverProps> = ({
   style,
   onClose,
   onStatus,
+  onTranslateSuccess,
 }) => {
   const popoverRef = useRef<HTMLDivElement | null>(null);
   const dragStateRef = useRef<{
@@ -167,6 +173,7 @@ export const PdfTranslatePopover: React.FC<PdfTranslatePopoverProps> = ({
         const parsed = JSON.parse(cached) as TranslatePdfSelectionResult;
         setResult(parsed);
         setPhase("success");
+        onTranslateSuccess?.(normalizedText, page, parsed);
         return;
       } catch {
         sessionStorage.removeItem(cacheKey);
@@ -198,6 +205,7 @@ export const PdfTranslatePopover: React.FC<PdfTranslatePopoverProps> = ({
         sessionStorage.setItem(cacheKey, JSON.stringify(payload));
         setResult(payload);
         setPhase("success");
+        onTranslateSuccess?.(normalizedText, page, payload);
       } catch (invokeError) {
         if (cancelled) return;
         const message = String(invokeError);
@@ -217,6 +225,7 @@ export const PdfTranslatePopover: React.FC<PdfTranslatePopoverProps> = ({
     page,
     pdfPath,
     translationModel,
+    onTranslateSuccess,
   ]);
 
   const handleHeaderMouseDown = (event: React.MouseEvent<HTMLDivElement>) => {
