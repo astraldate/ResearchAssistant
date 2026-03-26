@@ -1,7 +1,6 @@
-import React, { useEffect, useState } from "react";
+import React, { Suspense, lazy, useEffect, useState } from "react";
 import { ChevronDown, ChevronUp, Maximize2, Minimize2, X } from "lucide-react";
 import { LookupMode } from "./TermExplainPopover";
-import { PdfReader } from "./PdfReader";
 
 type StatusTone = "info" | "error";
 
@@ -12,6 +11,8 @@ interface PdfDockProps {
   translationModel: string;
   ensureTranslationReady?: () => Promise<string>;
   currentPage: number;
+  requestedAnchorText?: string;
+  requestedAnchorKey?: string;
   onPageChange: (page: number) => void;
   onStatus: (message: string, tone?: StatusTone, persistent?: boolean) => void;
   onCardSaved: () => void;
@@ -22,6 +23,12 @@ interface PdfDockProps {
 
 const LOOKUP_MODE_KEY = "ra_term_lookup_mode_v1";
 
+const PdfReader = lazy(() =>
+  import("./PdfReader").then((module) => ({
+    default: module.PdfReader,
+  })),
+);
+
 export const PdfDock: React.FC<PdfDockProps> = ({
   activePdfPath,
   currentModel,
@@ -29,6 +36,8 @@ export const PdfDock: React.FC<PdfDockProps> = ({
   translationModel,
   ensureTranslationReady,
   currentPage,
+  requestedAnchorText,
+  requestedAnchorKey,
   onPageChange,
   onStatus,
   onCardSaved,
@@ -81,39 +90,50 @@ export const PdfDock: React.FC<PdfDockProps> = ({
       </div>
 
       <div className="pdf-dock-body">
-        <PdfReader
-          activePdfPath={activePdfPath}
-          currentModel={currentModel}
-          ensureAiReady={ensureAiReady}
-          translationModel={translationModel}
-          ensureTranslationReady={ensureTranslationReady}
-          isFocused
-          lookupMode={lookupMode}
-          onLookupModeChange={setLookupMode}
-          onStatus={onStatus}
-          onSaveCardSuccess={onCardSaved}
-          onPageChange={onPageChange}
-          requestedPage={currentPage}
-          isToolbarCollapsed={isToolbarCollapsed}
-          toolbarActions={
-            <div className="pdf-dock-actions">
-              <button
-                className="action-button pdf-toolbar-icon-button"
-                onClick={onToggleFocusMode}
-                aria-label={
-                  isFocusMode ? "Exit focus mode" : "Enter focus mode"
-                }
-                title={isFocusMode ? "Exit focus mode" : "Enter focus mode"}
-              >
-                {isFocusMode ? (
-                  <Minimize2 size={14} />
-                ) : (
-                  <Maximize2 size={14} />
-                )}
-              </button>
+        <Suspense
+          fallback={
+            <div className="pdf-empty-state">
+              <h2>Loading PDF Reader</h2>
+              <p>正在按需加载 PDF 引擎和阅读器组件...</p>
             </div>
           }
-        />
+        >
+          <PdfReader
+            activePdfPath={activePdfPath}
+            currentModel={currentModel}
+            ensureAiReady={ensureAiReady}
+            translationModel={translationModel}
+            ensureTranslationReady={ensureTranslationReady}
+            isFocused
+            lookupMode={lookupMode}
+            onLookupModeChange={setLookupMode}
+            onStatus={onStatus}
+            onSaveCardSuccess={onCardSaved}
+            onPageChange={onPageChange}
+            requestedPage={currentPage}
+            requestedAnchorText={requestedAnchorText}
+            requestedAnchorKey={requestedAnchorKey}
+            isToolbarCollapsed={isToolbarCollapsed}
+            toolbarActions={
+              <div className="pdf-dock-actions">
+                <button
+                  className="action-button pdf-toolbar-icon-button"
+                  onClick={onToggleFocusMode}
+                  aria-label={
+                    isFocusMode ? "Exit focus mode" : "Enter focus mode"
+                  }
+                  title={isFocusMode ? "Exit focus mode" : "Enter focus mode"}
+                >
+                  {isFocusMode ? (
+                    <Minimize2 size={14} />
+                  ) : (
+                    <Maximize2 size={14} />
+                  )}
+                </button>
+              </div>
+            }
+          />
+        </Suspense>
       </div>
     </div>
   );

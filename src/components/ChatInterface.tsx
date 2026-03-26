@@ -504,7 +504,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     try {
       const activeModel = ensureAiReady
         ? await ensureAiReady()
-        : currentModel || "qwen2.5:0.5b";
+        : currentModel || "qwen3.5:9b";
       let context = "";
       try {
         const docs = await invoke<DocumentResult[]>("query_knowledge_base", {

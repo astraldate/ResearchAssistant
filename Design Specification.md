@@ -1,10 +1,11 @@
 # Design Specification
 
-更新日期：2026-03-14
+更新日期：2026-03-24
 
 ## 1. 目标
 
 ResearchAssistant 当前的产品目标是把桌面端资料处理能力和移动端随手采集能力连接成一条闭环：
+
 - 桌面端负责知识库、PDF 阅读、知识卡片、待处理收件箱和复习状态的主存储。
 - 移动端负责局域网配对、随手采集、离线复习和轻量卡片浏览。
 - 桌面端与移动端共享协议类型，保持版本联动和接口收敛。
@@ -17,6 +18,7 @@ ResearchAssistant 当前的产品目标是把桌面端资料处理能力和移�
 - 后端：`src-tauri`
 - 关键能力：
   - 资料导入与知识库检索
+  - Research Memory：论文索引、审核流、图谱与 Idea 推荐
   - PDF 阅读、术语解释、知识卡片保存
   - 移动端配对面板
   - 待处理收件箱视图
@@ -85,6 +87,7 @@ ResearchAssistant 当前的产品目标是把桌面端资料处理能力和移�
 ### 5.1 基本约束
 
 Windows + monorepo + Expo / React Native 原生构建链，主要风险来自：
+
 - `node_modules` 深路径导致的 CMake / Ninja 路径长度膨胀
 - Expo / React Native 在 Windows 下的 Hermes 命令行兼容问题
 - 自动链接过程产生的绝对路径和本机差异
@@ -113,18 +116,100 @@ Windows + monorepo + Expo / React Native 原生构建链，主要风险来自：
 - 原始路径：`mobile-app/android/app/build/outputs/apk/release/app-release.apk`
 - 稳定命名副本：`mobile-app/dist/android/researchassistant-mobile-release.apk`
 
-## 6. 验收基线
+## 6. Research Memory 设计
+
+### 6.1 存储分层
+
+- `SQLite` 是唯一事实来源，保存：
+  - `papers / pages / sections / chunks / extraction_candidates / review_queue`
+  - `graph_nodes / graph_edges / evidence_refs`
+  - `node_stats / orphan_nodes / method_paths / problem_paths / challenge_method_links / idea_candidates`
+- `LanceDB` 只保存派生向量索引：
+  - `chunk_vectors`
+  - `page_vectors`
+  - `concept_vectors`
+
+### 6.2 抽取模型职责
+
+- 聊天默认模型：`qwen3.5:9b`
+- 快速候选抽取：`nuextract`
+- 关系抽取与失败兜底：`qwen3:8b`
+- embedding 与聊天、抽取模型分离管理
+
+### 6.3 抽取流水线
+
+当前论文索引固定为：
+
+```text
+prepare_ingest
+-> prepare_models
+-> scan
+-> parse_pages
+-> build_map_units
+-> candidate_extract
+-> relation_extract
+-> rust_reduce
+-> canonicalize
+-> review_queue
+-> materialize_stats
+-> index_vectors
+```
+
+设计约束：
+
+- 不允许整篇论文单次大 JSON 抽取
+- `candidate_extract` 只抽 `Task / Module / Challenge / Insight`
+- `relation_extract` 只在候选非空时补 `Pipeline` 和三类边
+- 低信息片段直接过滤，减少无效模型调用
+
+### 6.4 图谱约束
+
+主干图谱固定为两棵 DAG：
+
+```text
+Task -> Pipeline -> Module
+Challenge -> Insight
+```
+
+不会创建：
+
+- `sub-module`
+- 无限嵌套子树
+- 跨层主干边
+
+### 6.5 UI 入口
+
+- 工作区文件树支持右键：
+  - `建立索引`
+  - `解除索引`
+- `Knowledge` 面板包含：
+  - `Search`
+  - `Graph`
+  - `Review`
+  - `Ideas`
+- 面板顶部会显示：
+  - 当前聊天模型
+  - 当前快速抽取模型
+  - 当前回退抽取模型
+  - 当前索引阶段
+
+## 7. 验收基线
 
 - `pnpm install --force`
 - `pnpm exec tsc --noEmit`
 - `pnpm --dir mobile-app exec tsc --noEmit`
 - `cargo check --manifest-path src-tauri/Cargo.toml`
+- `pnpm build`
 - `cd mobile-app/android && .\gradlew.bat clean assembleRelease --console=plain`
 - 真机或模拟器可完成配对、采集、收件箱显示和复习状态同步
+- 桌面端可完成论文导入、候选抽取、审核入图与向量检索
 
-## 7. 已知限制
+## 8. 已知限制
 
 - 若系统级 Windows 长路径策略未开启，构建日志仍可能出现 CMake 路径 warning，但当前已不阻断 release 构建。
 - `mobile-app/android/autolink-*.json` 含有本机绝对路径，因此只作为本地缓存，不入库。
 - 没有 `keystore.properties` 时，release 仍使用 debug keystore，本质上是“可安装 release 包”，不是可对外分发的正式签名包。
 - Expo / React Native 升级后，需要同步更新 `patches/` 与 Android 构建脚本。
+- `Research Memory` 的 `Graph` 仍是轻量 lane 视图，不是 Cytoscape 交互图。
+- `analyze_pdf_page_visual` 当前仍是页文本回退，不是真正的视觉模型解析。
+- `compare_papers` 已有后端实现，但前端完整工作流仍待补齐。
