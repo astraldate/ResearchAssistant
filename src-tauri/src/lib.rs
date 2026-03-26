@@ -2741,8 +2741,19 @@ async fn unindex_research_path(
 async fn query_knowledge_base(
     query: String,
     app: AppHandle,
+    scope_path: Option<String>,
+    scope_paper: Option<String>,
 ) -> Result<Vec<DocumentResult>, String> {
-    research_memory::query_knowledge_base(&app, &query, 5, None)
+    research_memory::query_knowledge_base(
+        &app,
+        &query,
+        5,
+        None,
+        research_memory::ResearchSearchScope {
+            path: scope_path.as_deref(),
+            paper_query: scope_paper.as_deref(),
+        },
+    )
         .await
         .map_err(|e| e.to_string())
 }
@@ -2752,8 +2763,19 @@ async fn search_research_memory(
     app: AppHandle,
     query: String,
     limit: Option<usize>,
+    scope_path: Option<String>,
+    scope_paper: Option<String>,
 ) -> Result<Vec<ResearchSearchHit>, String> {
-    research_memory::search_research_memory(&app, &query, limit.unwrap_or(8), None)
+    research_memory::search_research_memory(
+        &app,
+        &query,
+        limit.unwrap_or(8),
+        None,
+        research_memory::ResearchSearchScope {
+            path: scope_path.as_deref(),
+            paper_query: scope_paper.as_deref(),
+        },
+    )
         .await
         .map_err(|e| e.to_string())
 }
@@ -3733,12 +3755,12 @@ async fn chat_via_ollama(
     image_path: Option<&str>,
 ) -> Result<String, String> {
     let system_prompt = if thinking_capable_model(model) {
-        "你是科研助手。除非用户明确要求其他语言，否则必须始终使用中文 Markdown 回答。对于较复杂的问题，可以先给出简短思考过程，再给出最终答案。思考过程优先中文，也允许英文；内容精炼且相关。"
+        "你是科研助手。除非用户明确要求其他语言，否则必须始终使用中文 Markdown 回答。对于较复杂的问题，可以先给出简短思考过程，再给出最终答案。思考过程优先中文，也允许英文；内容精炼且相关。优先利用检索上下文与用户当前文档作答，但不要被其机械束缚；如果上下文不足，可以结合你已有的通用知识补充回答，并明确区分哪些结论来自上下文、哪些是基于通用知识的补充或推断。不要因为上下文不完整就直接拒答。"
     } else {
-        "你是科研助手。除非用户明确要求其他语言，否则必须始终使用中文 Markdown 回答。"
+        "你是科研助手。除非用户明确要求其他语言，否则必须始终使用中文 Markdown 回答。优先利用检索上下文与用户当前文档作答，但如果上下文不足，可以结合通用知识补充回答，并明确区分哪些内容来自上下文、哪些是补充说明或推断。不要因为上下文不完整就直接拒答。"
     };
     let prompt = format!(
-        "请基于下面的上下文回答问题。如果上下文里没有答案，请明确说明。\n\n上下文：\n{}\n\n问题：\n{}",
+        "请回答下面的问题。\n\n要求：\n1. 优先使用检索上下文中的证据。\n2. 如果上下文不足以完整回答，可以结合你的通用知识继续回答，但要在答案里明确说明“根据上下文”与“补充说明/推断”的区别。\n3. 如果上下文为空，也不要机械地说无法回答；应尽量先直接解释问题，再指出当前上下文未提供哪些特定证据。\n4. 如果给出了具体论文或片段范围，优先围绕该范围作答。\n\n检索上下文：\n{}\n\n问题：\n{}",
         context, query
     );
 

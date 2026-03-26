@@ -136,6 +136,12 @@ pub struct DocumentResult {
     pub content: String,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct ResearchSearchScope<'a> {
+    pub path: Option<&'a str>,
+    pub paper_query: Option<&'a str>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ResearchSearchHit {
@@ -724,17 +730,18 @@ pub async fn search_research_memory(
     query: &str,
     limit: usize,
     embedding_model: Option<&str>,
+    scope: ResearchSearchScope<'_>,
 ) -> Result<Vec<ResearchSearchHit>> {
     initialize(app).await?;
     let conn = open_sqlite(app)?;
     let mut merged: HashMap<String, ResearchSearchHit> = HashMap::new();
-    for hit in search_chunks_keyword(&conn, query, limit * 2)? {
+    for hit in search_chunks_keyword(&conn, query, limit * 3, &scope)? {
         merged.insert(hit.id.clone(), hit);
     }
 
     let embedding_model = resolve_embedding_model(embedding_model).await?;
     if let Ok(vector) = embed_text(query, &embedding_model).await {
-        for hit in search_chunks_vector(app, &vector, limit * 3).await? {
+        for hit in search_chunks_vector(app, &vector, limit * 8, &scope).await? {
             merged
                 .entry(hit.id.clone())
                 .and_modify(|existing| existing.score = existing.score.max(hit.score))
@@ -758,8 +765,9 @@ pub async fn query_knowledge_base(
     query: &str,
     limit: usize,
     embedding_model: Option<&str>,
+    scope: ResearchSearchScope<'_>,
 ) -> Result<Vec<DocumentResult>> {
-    let hits = search_research_memory(app, query, limit, embedding_model).await?;
+    let hits = search_research_memory(app, query, limit, embedding_model, scope).await?;
     Ok(hits
         .into_iter()
         .map(|hit| DocumentResult {
@@ -2724,6 +2732,7 @@ async fn search_chunks_vector(
     app: &AppHandle,
     query_vector: &[f32],
     limit: usize,
+    scope: &ResearchSearchScope<'_>,
 ) -> Result<Vec<ResearchSearchHit>> {
     let db = open_lancedb(app).await?;
     let table = match db.open_table(CHUNK_VECTOR_TABLE).execute().await {
@@ -2743,6 +2752,14 @@ async fn search_chunks_vector(
     for batch in batches {
         hits.extend(parse_chunk_search_batch(&batch, &conn)?);
     }
+    hits.retain(|hit| hit_matches_scope(hit, scope));
+    hits.sort_by(|left, right| {
+        right
+            .score
+            .partial_cmp(&left.score)
+            .unwrap_or(Ordering::Equal)
+    });
+    hits.truncate(limit.max(1));
     Ok(hits)
 }
 
@@ -3794,20 +3811,69 @@ fn related_graph_nodes_for_paper(conn: &SqliteConnection, paper_id: &str, limit:
     Ok(result)
 }
 
-fn search_chunks_keyword(conn: &SqliteConnection, query: &str, limit: usize) -> Result<Vec<ResearchSearchHit>> {
+fn hit_matches_scope(hit: &ResearchSearchHit, scope: &ResearchSearchScope<'_>) -> bool {
+    if let Some(path) = scope.path {
+        if hit.path != path {
+            return false;
+        }
+    }
+    if let Some(paper_query) = scope.paper_query {
+        let query = paper_query.trim().to_lowercase();
+        if query.is_empty() {
+            return true;
+        }
+        let title = hit.title.to_lowercase();
+        let path = hit.path.to_lowercase();
+        if !title.contains(&query) && !path.contains(&query) {
+            return false;
+        }
+    }
+    true
+}
+
+fn search_chunks_keyword(
+    conn: &SqliteConnection,
+    query: &str,
+    limit: usize,
+    scope: &ResearchSearchScope<'_>,
+) -> Result<Vec<ResearchSearchHit>> {
     let tokens = sanitize_fts_query(query);
     if tokens.is_empty() {
         return Ok(Vec::new());
     }
-    let mut stmt = conn.prepare(
+    let mut sql = String::from(
         "SELECT c.chunk_id, c.paper_id, p.path, p.title, c.page_start, c.page_end, c.content
          FROM chunk_fts f
          JOIN chunks c ON c.chunk_id = f.chunk_id
          JOIN papers p ON p.paper_id = c.paper_id
-         WHERE chunk_fts MATCH ?1
-         LIMIT ?2",
-    )?;
-    let rows = stmt.query_map(params![tokens, limit as i64], |row| {
+         WHERE chunk_fts MATCH ?1",
+    );
+    let mut params_values: Vec<rusqlite::types::Value> =
+        vec![rusqlite::types::Value::from(tokens)];
+    if let Some(path) = scope.path {
+        sql.push_str(" AND p.path = ?");
+        sql.push_str(&(params_values.len() + 1).to_string());
+        params_values.push(rusqlite::types::Value::from(path.to_string()));
+    }
+    if let Some(paper_query) = scope.paper_query {
+        let trimmed = paper_query.trim();
+        if !trimmed.is_empty() {
+            sql.push_str(" AND (LOWER(p.title) LIKE ?");
+            sql.push_str(&(params_values.len() + 1).to_string());
+            sql.push_str(" OR LOWER(p.path) LIKE ?");
+            sql.push_str(&(params_values.len() + 2).to_string());
+            sql.push(')');
+            let pattern = format!("%{}%", trimmed.to_lowercase());
+            params_values.push(rusqlite::types::Value::from(pattern.clone()));
+            params_values.push(rusqlite::types::Value::from(pattern));
+        }
+    }
+    sql.push_str(" LIMIT ?");
+    sql.push_str(&(params_values.len() + 1).to_string());
+    params_values.push(rusqlite::types::Value::from(limit as i64));
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(params_values.iter()), |row| {
         let paper_id: String = row.get(1)?;
         Ok(ResearchSearchHit {
             id: row.get(0)?,
