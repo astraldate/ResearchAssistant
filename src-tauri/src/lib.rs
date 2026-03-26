@@ -94,6 +94,13 @@ pub struct ChatStreamEvent {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct BriefProgressEvent {
+    pub request_id: String,
+    pub phase: String,
+    pub message: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct HfResolveResult {
     pub url: String,
     pub filename: String,
@@ -157,6 +164,12 @@ impl Default for InferenceMode {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct InferenceSettings {
     pub mode: InferenceMode,
+    #[serde(default = "default_thinking_enabled")]
+    pub thinking_enabled: bool,
+}
+
+fn default_thinking_enabled() -> bool {
+    true
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -217,10 +230,22 @@ pub struct TranslatePdfPageResult {
     pub model_used: String,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerateBriefReportRequest {
+    pub request_id: String,
+    pub paper_path: Option<String>,
+    pub scope_paper: Option<String>,
+    pub active_pdf_path: Option<String>,
+    pub user_instruction: Option<String>,
+    pub model: String,
+}
+
 impl Default for InferenceSettings {
     fn default() -> Self {
         Self {
             mode: InferenceMode::SingleMm,
+            thinking_enabled: true,
         }
     }
 }
@@ -249,6 +274,15 @@ impl InferenceSettingsState {
             .lock()
             .map_err(|e| format!("Failed to lock inference settings: {}", e))?;
         guard.mode = mode;
+        Ok(guard.clone())
+    }
+
+    pub fn set_thinking_enabled(&self, thinking_enabled: bool) -> Result<InferenceSettings, String> {
+        let mut guard = self
+            .settings
+            .lock()
+            .map_err(|e| format!("Failed to lock inference settings: {}", e))?;
+        guard.thinking_enabled = thinking_enabled;
         Ok(guard.clone())
     }
 
@@ -1437,6 +1471,17 @@ async fn set_inference_mode(
     app: AppHandle,
 ) -> Result<InferenceSettings, String> {
     let updated = state.set_mode(mode)?;
+    save_inference_settings_to_disk(&app, &updated)?;
+    Ok(updated)
+}
+
+#[tauri::command]
+async fn set_thinking_enabled(
+    thinking_enabled: bool,
+    state: State<'_, InferenceSettingsState>,
+    app: AppHandle,
+) -> Result<InferenceSettings, String> {
+    let updated = state.set_thinking_enabled(thinking_enabled)?;
     save_inference_settings_to_disk(&app, &updated)?;
     Ok(updated)
 }
@@ -3402,11 +3447,16 @@ fn sanitize_translation_output(original_text: &str, translated_text: &str) -> Op
     }
 }
 
-async fn run_ollama_chat(model: &str, messages: Vec<serde_json::Value>) -> Result<String, String> {
+async fn run_ollama_chat(
+    model: &str,
+    messages: Vec<serde_json::Value>,
+    think_enabled: bool,
+) -> Result<String, String> {
     let client = reqwest::Client::new();
     let body = serde_json::json!({
         "model": model,
         "messages": messages,
+        "think": think_enabled,
         "stream": false
     });
 
@@ -3464,11 +3514,13 @@ async fn run_ollama_chat_stream(
     request_id: &str,
     model: &str,
     messages: Vec<serde_json::Value>,
+    think_enabled: bool,
 ) -> Result<String, String> {
     let client = reqwest::Client::new();
     let body = serde_json::json!({
         "model": model,
         "messages": messages,
+        "think": think_enabled,
         "stream": true
     });
 
@@ -3742,6 +3794,7 @@ async fn run_translation_model(
                 "content": user_prompt
             }),
         ],
+        false,
     )
     .await
 }
@@ -3753,8 +3806,9 @@ async fn chat_via_ollama(
     context: &str,
     model: &str,
     image_path: Option<&str>,
+    thinking_enabled: bool,
 ) -> Result<String, String> {
-    let system_prompt = if thinking_capable_model(model) {
+    let system_prompt = if thinking_enabled && thinking_capable_model(model) {
         "你是科研助手。除非用户明确要求其他语言，否则必须始终使用中文 Markdown 回答。对于较复杂的问题，可以先给出简短思考过程，再给出最终答案。思考过程优先中文，也允许英文；内容精炼且相关。优先利用检索上下文与用户当前文档作答，但不要被其机械束缚；如果上下文不足，可以结合你已有的通用知识补充回答，并明确区分哪些结论来自上下文、哪些是基于通用知识的补充或推断。不要因为上下文不完整就直接拒答。"
     } else {
         "你是科研助手。除非用户明确要求其他语言，否则必须始终使用中文 Markdown 回答。优先利用检索上下文与用户当前文档作答，但如果上下文不足，可以结合通用知识补充回答，并明确区分哪些内容来自上下文、哪些是补充说明或推断。不要因为上下文不完整就直接拒答。"
@@ -3791,6 +3845,7 @@ async fn chat_via_ollama(
             }),
             user_message,
         ],
+        thinking_enabled,
     )
     .await
 }
@@ -3820,6 +3875,7 @@ async fn translate_pdf_selection_text(
                 "content": user_prompt
             }),
         ],
+        false,
     )
     .await
     .and_then(|text| trim_non_empty_model_output(text, "模型返回了空翻译。"))
@@ -3842,6 +3898,7 @@ async fn translate_pdf_page_markdown(page_text: &str, model: &str) -> Result<Str
                 "content": user_prompt
             }),
         ],
+        false,
     )
     .await
     .and_then(|text| trim_non_empty_model_output(text, "模型返回了空翻译。"))
@@ -3971,6 +4028,7 @@ async fn summarize_term_for_beginner(
                 "content": user_prompt
             }),
         ],
+        false,
     )
     .await
     .map(|text| text.trim().to_string())
@@ -4219,6 +4277,270 @@ async fn translate_pdf_page(
     })
 }
 
+fn normalize_lookup_text(value: &str) -> String {
+    value.trim().to_lowercase()
+}
+
+fn choose_best_paper_match(
+    papers: &[ResearchPaperRecord],
+    scope_paper: Option<&str>,
+    fallback_path: Option<&str>,
+) -> Result<ResearchPaperRecord, String> {
+    let normalized_scope = scope_paper
+        .map(normalize_lookup_text)
+        .filter(|value| !value.is_empty());
+    let normalized_path = fallback_path
+        .map(normalize_lookup_text)
+        .filter(|value| !value.is_empty());
+
+    if let Some(scope_query) = normalized_scope.as_deref() {
+        if let Some(exact) = papers.iter().find(|paper| {
+            normalize_lookup_text(&paper.title) == scope_query
+                || normalize_lookup_text(&paper.path) == scope_query
+        }) {
+            return Ok(exact.clone());
+        }
+
+        let fuzzy_matches = papers
+            .iter()
+            .filter(|paper| {
+                normalize_lookup_text(&paper.title).contains(scope_query)
+                    || normalize_lookup_text(&paper.path).contains(scope_query)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if fuzzy_matches.len() == 1 {
+            return Ok(fuzzy_matches[0].clone());
+        }
+        if fuzzy_matches.len() > 1 {
+            return Err(format!(
+                "匹配到多篇论文：'{}'。请从 @paper 列表中明确选择目标论文。",
+                scope_paper.unwrap_or_default().trim()
+            ));
+        }
+        return Err(format!(
+            "未找到目标论文：'{}'。请确认论文已导入并从 @paper 列表中选择。",
+            scope_paper.unwrap_or_default().trim()
+        ));
+    }
+
+    if let Some(path_query) = normalized_path.as_deref() {
+        if let Some(exact) = papers
+            .iter()
+            .find(|paper| normalize_lookup_text(&paper.path) == path_query)
+        {
+            return Ok(exact.clone());
+        }
+    }
+
+    Err("当前没有可用的目标论文。请先选中文献，或使用 @paper 指定论文。".to_string())
+}
+
+async fn resolve_brief_target_paper(
+    app: &AppHandle,
+    request: &GenerateBriefReportRequest,
+) -> Result<ResearchPaperRecord, String> {
+    let papers = research_memory::list_research_papers(app)
+        .await
+        .map_err(|e| e.to_string())?;
+    let fallback_path = request
+        .paper_path
+        .as_deref()
+        .or(request.active_pdf_path.as_deref());
+    let paper =
+        choose_best_paper_match(&papers, request.scope_paper.as_deref(), fallback_path)?;
+    if paper.chunk_count == 0 {
+        return Err(format!(
+            "目标论文“{}”尚未建立可检索内容，请先完成 ingest。",
+            paper.title
+        ));
+    }
+    Ok(paper)
+}
+
+fn format_brief_hits_section(title: &str, hits: &[ResearchSearchHit]) -> String {
+    if hits.is_empty() {
+        return format!("### {title}\n- 当前未检索到直接证据。");
+    }
+
+    let items = hits
+        .iter()
+        .map(|hit| {
+            format!(
+                "- [p.{}-{} | score {:.2}] {}",
+                hit.page_start,
+                hit.page_end,
+                hit.score,
+                truncate_chars(hit.snippet.trim(), 360)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("### {title}\n{items}")
+}
+
+async fn build_brief_context(
+    app: &AppHandle,
+    paper: &ResearchPaperRecord,
+) -> Result<(String, usize), String> {
+    let scoped_queries = [
+        ("Abstract / Summary", "abstract summary overview main idea"),
+        ("Task / Challenge / Motivation", "task challenge motivation problem limitation bottleneck"),
+        ("Contribution / Innovation", "contribution innovation propose proposed novelty"),
+        ("Method / Pipeline / Module", "method pipeline framework module architecture algorithm"),
+        ("Experiments / Baseline / Dataset", "experiment baseline dataset sota benchmark"),
+        ("Ablation", "ablation ablation study component removal"),
+        ("Limitation / Future Work", "limitation future work discussion weakness"),
+    ];
+    let scope = research_memory::ResearchSearchScope {
+        path: Some(paper.path.as_str()),
+        paper_query: None,
+    };
+
+    let mut unique_hits = HashMap::<String, ResearchSearchHit>::new();
+    let mut section_blocks = Vec::new();
+
+    for (section_title, query) in scoped_queries {
+        let hits = research_memory::search_research_memory(app, query, 4, None, scope.clone())
+            .await
+            .map_err(|e| e.to_string())?;
+        for hit in &hits {
+            unique_hits
+                .entry(hit.id.clone())
+                .or_insert_with(|| hit.clone());
+        }
+        section_blocks.push(format_brief_hits_section(section_title, &hits));
+    }
+
+    let mut graph_node_counts = HashMap::<String, usize>::new();
+    for hit in unique_hits.values() {
+        for node in &hit.related_graph_nodes {
+            *graph_node_counts.entry(node.clone()).or_insert(0) += 1;
+        }
+    }
+
+    let mut graph_nodes = graph_node_counts.into_iter().collect::<Vec<_>>();
+    graph_nodes.sort_by(|left, right| {
+        right
+            .1
+            .cmp(&left.1)
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    graph_nodes.truncate(10);
+
+    let graph_summary = if graph_nodes.is_empty() {
+        "图谱线索不足，当前主要依赖论文检索片段。".to_string()
+    } else {
+        graph_nodes
+            .iter()
+            .map(|(label, count)| format!("- {} ({} 条命中关联)", label, count))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let evidence_count = unique_hits.len();
+    let evidence_hint = if evidence_count < 6 {
+        "当前证据有限，部分栏目可能只能标注为“未明确说明”或“检索证据不足”。"
+    } else {
+        "当前证据覆盖尚可，但仍需避免超出原文证据的推断。"
+    };
+
+    let context = format!(
+        "## 目标论文\n- 标题：{}\n- 路径：{}\n- Chunk 数：{}\n- 候选概念数：{}\n- 图谱状态：{}\n- 更新时间：{}\n\n## 证据覆盖提示\n{}\n\n## 图谱线索\n{}\n\n## 分主题检索证据\n{}",
+        paper.title,
+        paper.path,
+        paper.chunk_count,
+        paper.candidate_count,
+        if paper.is_in_graph {
+            "已有图谱候选"
+        } else {
+            "暂无稳定图谱候选"
+        },
+        paper.updated_at,
+        evidence_hint,
+        graph_summary,
+        section_blocks.join("\n\n")
+    );
+
+    Ok((context, evidence_count))
+}
+
+fn build_brief_prompt(
+    paper: &ResearchPaperRecord,
+    context: &str,
+    evidence_count: usize,
+    user_instruction: Option<&str>,
+) -> String {
+    let instruction_block = user_instruction
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("## 用户附加要求\n{}\n", value))
+        .unwrap_or_default();
+    let evidence_notice = if evidence_count < 6 {
+        "请在简报开头补一句：当前证据有限，部分栏目可能缺失。"
+    } else {
+        "无需额外强调证据稀少，但仍要保留缺失说明规则。"
+    };
+
+    format!(
+        "你需要为一篇论文生成“核心 Markdown 简报”。\n\n要求：\n1. 全文用中文输出，但保留必要英文标签辅助定位。\n2. 必须严格按下面模板输出，不得改一级标题顺序。\n3. 优先依据“图谱线索”和“分主题检索证据”填写内容。\n4. 如果论文没有明确说明某项信息，保留该栏目并写“论文未明确说明”或“当前检索证据不足”。\n5. 不要虚构年份、会议、数据集、baseline、提升幅度、消融数值。\n6. “作者承认的局限”与“基于证据的谨慎推断”要区分表述。\n7. 如果论文未明确拆分多个 challenge 或 module，也要保留对应栏目并说明“未明确拆分”。\n8. 若没有可核验消融结果，明确写“论文未给出可核验的定量变化”。\n9. 不要输出 JSON，不要输出额外前言。\n10. {evidence_notice}\n\n{instruction_block}## 论文上下文\n{context}\n\n## 输出模板\n# Core Brief\n\n> 只在证据有限时加入一句提示：当前证据有限，部分栏目可能缺失。\n\n## 文献基础信息\n- 论文标题：{title}\n- 发表年份与会议/期刊：\n\n## 1. Abstract\n- Task (研究任务)：\n- Technical Challenge (前人面临的技术挑战)：\n- Key Insight / Motivation (核心洞察)：\n- Technical Contributions (具体技术贡献)：\n  - Contribution 1： -> 好处：\n  - Contribution 2： -> 好处：\n\n## 2. Introduction\n- Technical Challenge 1 的前世今生：\n  - Previous Method (前人方法)：\n  - Failure Cases / Limitation (缺陷)：\n  - Technical Reason (深层技术原因)：\n- Technical Challenge 2 的前世今生：\n  - Previous Method：\n  - Failure Cases / Limitation：\n  - Technical Reason：\n- Our Pipeline (我们的解决方案)：\n  - Key Innovation：\n  - 针对 Challenge 1 的解法：\n  - 针对 Challenge 2 的解法：\n\n## 3. Method\n- Overview (全局概览)：任务输入是 []，输出是 []，整体分为 [] 个步骤。\n- Pipeline Module 1：\n  - Motivation：\n  - 做法：\n  - 为什么能 work (Technical Advantage)：\n- Pipeline Module 2：\n  - Motivation：\n  - 做法：\n  - 为什么能 work (Technical Advantage)：\n\n## 4. Experiments\n- Comparison (对比实验)：\n- Ablation Studies (消融实验)：\n  - 模块 A 对性能的影响：\n  - 模块 B 对性能的影响：\n\n## 5. Limitation\n- 作者承认的缺陷：\n- 基于证据的谨慎推断：",
+        title = paper.title
+    )
+}
+
+#[tauri::command]
+async fn generate_brief_report(
+    window: Window,
+    app: AppHandle,
+    request: GenerateBriefReportRequest,
+    settings_state: State<'_, InferenceSettingsState>,
+) -> Result<String, String> {
+    let emit_progress = |phase: &str, message: &str| {
+        let _ = window.emit(
+            "brief-progress",
+            &BriefProgressEvent {
+                request_id: request.request_id.clone(),
+                phase: phase.to_string(),
+                message: message.to_string(),
+            },
+        );
+    };
+
+    emit_progress("locating", "正在定位目标论文...");
+    let paper = resolve_brief_target_paper(&app, &request).await?;
+    emit_progress("retrieving", "正在检索图谱与摘要证据...");
+    let (context, evidence_count) = build_brief_context(&app, &paper).await?;
+    emit_progress("generating", "正在生成核心简报...");
+    let prompt = build_brief_prompt(
+        &paper,
+        &context,
+        evidence_count,
+        request.user_instruction.as_deref(),
+    );
+
+    let settings = settings_state.get()?;
+    run_ollama_chat(
+        &request.model,
+        vec![
+            serde_json::json!({
+                "role": "system",
+                "content": "你是科研论文精读助手。你的职责是根据检索证据生成结构化核心简报。你必须保守、可核验、禁止编造缺失事实。"
+            }),
+            serde_json::json!({
+                "role": "user",
+                "content": prompt
+            }),
+        ],
+        settings.thinking_enabled,
+    )
+    .await
+    .and_then(|text| trim_non_empty_model_output(text, "模型返回了空简报。"))
+    .map(|text| {
+        emit_progress("done", "核心简报已生成。");
+        text
+    })
+}
+
 async fn route_chat_completion(
     window: &Window,
     request_id: &str,
@@ -4227,15 +4549,16 @@ async fn route_chat_completion(
     model: &str,
     image_path: Option<&str>,
     mode: InferenceMode,
+    thinking_enabled: bool,
 ) -> Result<String, String> {
     match mode {
         InferenceMode::SingleMm => {
-            chat_via_ollama(window, request_id, query, context, model, image_path).await
+            chat_via_ollama(window, request_id, query, context, model, image_path, thinking_enabled).await
         }
         InferenceMode::DualPipeline => {
             // Skeleton only: dual pipeline currently falls back to single-model chat.
             // Future implementation can split text and vision inference, then merge evidence.
-            chat_via_ollama(window, request_id, query, context, model, image_path).await
+            chat_via_ollama(window, request_id, query, context, model, image_path, thinking_enabled).await
         }
     }
 }
@@ -4260,6 +4583,7 @@ async fn chat_with_llm(
         &model,
         normalized_image_path.as_deref(),
         settings.mode,
+        settings.thinking_enabled,
     )
     .await
 }
@@ -4389,7 +4713,9 @@ pub fn run() {
             resolve_hf_gguf,
             get_inference_settings,
             set_inference_mode,
+            set_thinking_enabled,
             chat_with_llm,
+            generate_brief_report,
             explain_pdf_selection,
             reveal_in_explorer,
             open_file,

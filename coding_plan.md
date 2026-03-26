@@ -1,6 +1,6 @@
 ﻿# ResearchAssistant Coding Plan
 
-更新日期：2026-03-24
+更新日期：2026-03-26
 
 ## 当前路线
 
@@ -54,6 +54,7 @@
   - `建立索引`
   - `解除索引`
 - 进度面板与 `Knowledge` 面板顶部已能显示当前聊天模型、快速抽取模型、回退模型和实际索引阶段。
+- 聊天输入框新增 `@paper` 论文 scope mention 与 `/brief` 核心 Markdown 简报指令。
 
 ## 仍需继续推进
 
@@ -71,6 +72,7 @@
 - `Research Memory` 仍缺少真正的抽取模型设置页，目前默认值已写死到代码和本地持久化状态里。
 - `Graph` 仍是轻量 lane 视图，不是 Cytoscape 的可交互 DAG。
 - `compare_papers` 后端已具备，但前端完整入口仍需补齐。
+- `/brief` 已能生成单论文简报，但还缺少更稳定的证据排序、字段后处理和多文献命令扩展。
 
 ### P2
 
@@ -101,6 +103,7 @@
 - 手机端复习事件能回传并更新桌面端状态
 - 桌面端可对选中文件 / 文件夹建立索引并进入 `Review`
 - `Knowledge` 面板可查看双 DAG、Review 队列和 Rule 1/2/3 Idea 候选
+- Chat 输入框可用 `/brief` 生成当前论文简报，或配合 `@paper` 指定目标论文
 
 ## 风险与约束
 
@@ -108,6 +111,7 @@
 - `mobile-app/android/autolink-*.json` 包含本机绝对路径，必须忽略，不适合作为仓库输入。
 - 如果 Windows 未开启系统级长路径支持，构建 warning 会更多，但当前路径压缩方案已经能稳定出包。
 - 目前的 release APK 更适合本地安装测试，不等于可直接分发的正式签名包。
+- Research Memory 说明已并入 `Design Specification.md`，后续不要再维护独立的 `RESEARCH_MEMORY_MANUAL.md`。
 
 ResearchMemoryPanel 按需加载
 PdfDock 按需加载

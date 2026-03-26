@@ -52,6 +52,11 @@ interface ResearchPaperOption {
   candidateCount: number;
 }
 
+interface InferenceSettings {
+  mode: "single_mm" | "dual_pipeline";
+  thinking_enabled: boolean;
+}
+
 interface SessionPayload {
   messages: Message[];
   inputValue: string;
@@ -69,11 +74,27 @@ interface SelectionMenuState {
   y: number;
 }
 
+type SlashCommandName = "brief";
+
+interface ParsedSlashCommand {
+  name: SlashCommandName;
+  scopePaper: string | null;
+  userInstruction: string;
+}
+
+const buildBriefProgressContent = (message: string) => `_${message}_`;
+
 interface ChatStreamEvent {
   request_id: string;
   phase: "thinking" | "answer" | "done";
   reasoning: string;
   answer: string;
+}
+
+interface BriefProgressEvent {
+  request_id: string;
+  phase: "locating" | "retrieving" | "generating" | "done";
+  message: string;
 }
 
 interface ChatInterfaceProps {
@@ -145,6 +166,60 @@ const extractActiveMentionQuery = (value: string, cursor: number | null) => {
   return match[1] ?? "";
 };
 
+const SUPPORTED_SLASH_COMMANDS: Array<{
+  name: SlashCommandName;
+  title: string;
+  description: string;
+}> = [
+  {
+    name: "brief",
+    title: "⚡ /brief",
+    description: "生成当前文献的核心 Markdown 简报 (基于图谱与摘要)",
+  },
+];
+
+const parseSlashCommand = (value: string): ParsedSlashCommand | null => {
+  const trimmed = value.trim();
+  const match = trimmed.match(/^\/([a-zA-Z][\w-]*)(?:\s+([\s\S]*))?$/);
+  if (!match) return null;
+  const name = match[1].toLowerCase();
+  if (name !== "brief") return null;
+  const rawBody = (match[2] ?? "").trim();
+  const inlinePaperMatch = rawBody.match(
+    /^@paper\s+(.+?)(?:\r?\n+|$)([\s\S]*)/i,
+  );
+  if (inlinePaperMatch) {
+    const scopePaper = inlinePaperMatch[1].trim();
+    const remainder = (inlinePaperMatch[2] ?? "").trim();
+    return {
+      name: "brief",
+      scopePaper: scopePaper || null,
+      userInstruction: remainder,
+    };
+  }
+  return {
+    name: "brief",
+    scopePaper: null,
+    userInstruction: rawBody,
+  };
+};
+
+const extractSlashCommandDraft = (value: string) => {
+  const trimmed = value.trim();
+  const match = trimmed.match(/^\/([a-zA-Z]*)$/);
+  if (!match) return null;
+  return match[1].toLowerCase();
+};
+
+const extractUnsupportedSlashCommand = (value: string) => {
+  const trimmed = value.trim();
+  const match = trimmed.match(/^\/([a-zA-Z][\w-]*)(?:\s|$)/);
+  if (!match) return null;
+  const name = match[1].toLowerCase();
+  if (name === "brief") return null;
+  return name;
+};
+
 const buildStreamingContent = (reasoning: string, answer: string) => {
   const sanitizeStreamingText = (value: string) =>
     [
@@ -206,6 +281,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   const [restrictToActivePaper, setRestrictToActivePaper] = useState(() => {
     return localStorage.getItem(CHAT_SCOPE_KEY) === "1";
   });
+  const [thinkingEnabled, setThinkingEnabled] = useState(true);
+  const [isThinkingToggleLoading, setIsThinkingToggleLoading] = useState(false);
   const [paperOptions, setPaperOptions] = useState<ResearchPaperOption[]>([]);
   const [isPaperOptionsLoaded, setIsPaperOptionsLoaded] = useState(false);
   const [paperMentionQuery, setPaperMentionQuery] = useState("");
@@ -215,6 +292,15 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     top: number;
     width: number;
   } | null>(null);
+  const [slashCommandMenuRect, setSlashCommandMenuRect] = useState<{
+    left: number;
+    top: number;
+    width: number;
+  } | null>(null);
+  const [isInputFocused, setIsInputFocused] = useState(false);
+  const [dismissedSlashValue, setDismissedSlashValue] = useState<string | null>(
+    null,
+  );
   const [selectionMenu, setSelectionMenu] = useState<SelectionMenuState | null>(
     null,
   );
@@ -228,6 +314,11 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     requestId: string;
     messageId: string;
   } | null>(null);
+  const activeBriefRef = useRef<{
+    requestId: string;
+    messageId: string;
+  } | null>(null);
+  const cancelledRequestIdsRef = useRef<Set<string>>(new Set());
   const shouldAutoScrollRef = useRef(true);
   const activePdfPath =
     activeFilePath && isPdfFile(activeFilePath) ? activeFilePath : null;
@@ -287,6 +378,22 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       localStorage.removeItem(CHAT_SCOPE_KEY);
     }
   }, [restrictToActivePaper]);
+
+  useEffect(() => {
+    let cancelled = false;
+    invoke<InferenceSettings>("get_inference_settings")
+      .then((settings) => {
+        if (cancelled) return;
+        setThinkingEnabled(settings.thinking_enabled !== false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setThinkingEnabled(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!shouldAutoScrollRef.current) return;
@@ -394,6 +501,36 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                   event.payload.reasoning,
                   event.payload.answer,
                 ),
+              }
+            : message,
+        ),
+      );
+    }).then((unlisten) => {
+      unlistenFn = unlisten;
+    });
+
+    return () => {
+      if (unlistenFn) {
+        unlistenFn();
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    let unlistenFn: (() => void) | null = null;
+
+    listen<BriefProgressEvent>("brief-progress", (event) => {
+      const activeBrief = activeBriefRef.current;
+      if (!activeBrief || activeBrief.requestId !== event.payload.request_id) {
+        return;
+      }
+
+      setMessages((previous) =>
+        previous.map((message) =>
+          message.id === activeBrief.messageId
+            ? {
+                ...message,
+                content: buildBriefProgressContent(event.payload.message),
               }
             : message,
         ),
@@ -610,13 +747,39 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     if (!question) return;
     const { cleanQuestion, scopePaper } = parsePaperScopedQuestion(question);
     const effectiveQuestion = cleanQuestion || question;
+    const slashCommand = parseSlashCommand(effectiveQuestion);
+    const effectiveScopePaper = slashCommand?.scopePaper ?? scopePaper;
+    const unsupportedSlashCommand =
+      extractUnsupportedSlashCommand(effectiveQuestion);
     const scopePath =
-      !scopePaper && restrictToActivePaper && activeFilePath
+      !effectiveScopePaper && restrictToActivePaper && activeFilePath
         ? activeFilePath
         : undefined;
     const startedAt = Date.now();
     const assistantMessageId = `${startedAt}-ai`;
     const requestId = `${startedAt}-${Math.random().toString(36).slice(2, 10)}`;
+    cancelledRequestIdsRef.current.delete(requestId);
+
+    if (unsupportedSlashCommand) {
+      setMessages((previous) => [
+        ...previous,
+        {
+          id: `${startedAt}-user`,
+          role: "user",
+          content: question,
+          timestamp: startedAt,
+        },
+        {
+          id: assistantMessageId,
+          role: "ai",
+          content: `暂不支持该指令：\`/${unsupportedSlashCommand}\`\n\n当前可用指令：\`/brief\``,
+          timestamp: startedAt,
+        },
+      ]);
+      setInputValue("");
+      onStatus(`暂不支持 /${unsupportedSlashCommand}。`, "error", true);
+      return;
+    }
 
     setMessages((previous) => [
       ...previous,
@@ -631,28 +794,66 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       {
         id: assistantMessageId,
         role: "ai",
-        content: "",
+        content:
+          slashCommand?.name === "brief"
+            ? buildBriefProgressContent("正在准备核心简报...")
+            : "",
         timestamp: startedAt,
       },
     ]);
     setInputValue("");
     setIsLoading(true);
     shouldAutoScrollRef.current = true;
-    activeStreamRef.current = {
-      requestId,
-      messageId: assistantMessageId,
-    };
+    activeStreamRef.current =
+      slashCommand?.name === "brief"
+        ? null
+        : {
+            requestId,
+            messageId: assistantMessageId,
+          };
+    activeBriefRef.current =
+      slashCommand?.name === "brief"
+        ? {
+            requestId,
+            messageId: assistantMessageId,
+          }
+        : null;
 
     try {
       const activeModel = ensureAiReady
         ? await ensureAiReady()
         : currentModel || "qwen3.5:9b";
+      if (slashCommand?.name === "brief") {
+        const response = await invoke<string>("generate_brief_report", {
+          request: {
+            requestId,
+            scopePaper: effectiveScopePaper ?? undefined,
+            paperPath: scopePath,
+            activePdfPath: activePdfPath ?? undefined,
+            userInstruction: slashCommand.userInstruction || undefined,
+            model: activeModel,
+          },
+        });
+        if (cancelledRequestIdsRef.current.has(requestId)) {
+          return;
+        }
+
+        setMessages((previous) => [
+          ...previous.map((message) =>
+            message.id === assistantMessageId
+              ? { ...message, content: response, timestamp: Date.now() }
+              : message,
+          ),
+        ]);
+        setImagePath(null);
+        return;
+      }
       let context = "";
       try {
         const docs = await invoke<DocumentResult[]>("query_knowledge_base", {
           query: effectiveQuestion,
           scopePath,
-          scopePaper: scopePaper ?? undefined,
+          scopePaper: effectiveScopePaper ?? undefined,
         });
         context = docs.map((doc) => doc.content).join("\n\n");
       } catch {
@@ -666,6 +867,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         imagePath,
         requestId,
       });
+      if (cancelledRequestIdsRef.current.has(requestId)) {
+        return;
+      }
 
       setMessages((previous) => [
         ...previous.map((message) =>
@@ -676,6 +880,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       ]);
       setImagePath(null);
     } catch (error) {
+      if (cancelledRequestIdsRef.current.has(requestId)) {
+        return;
+      }
       setMessages((previous) => [
         ...previous.map((message) =>
           message.id === assistantMessageId
@@ -688,8 +895,15 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         ),
       ]);
     } finally {
-      activeStreamRef.current = null;
-      setIsLoading(false);
+      if (
+        activeStreamRef.current?.requestId === requestId ||
+        activeBriefRef.current?.requestId === requestId
+      ) {
+        activeStreamRef.current = null;
+        activeBriefRef.current = null;
+        setIsLoading(false);
+      }
+      cancelledRequestIdsRef.current.delete(requestId);
     }
   };
 
@@ -789,6 +1003,21 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   };
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (shouldShowSlashCommandList) {
+      const trimmedCommandBody = parsedScope.cleanQuestion.trim();
+      if (event.key === "Enter" && !event.shiftKey) {
+        if (trimmedCommandBody !== "/brief") {
+          event.preventDefault();
+          applySlashCommand("brief");
+          return;
+        }
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setDismissedSlashValue(parsedScope.cleanQuestion.trim());
+        return;
+      }
+    }
     if (shouldShowPaperMentionList && filteredPaperOptions.length > 0) {
       if (event.key === "ArrowDown") {
         event.preventDefault();
@@ -832,6 +1061,53 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     setNotes((previous) => previous.filter((note) => note.id !== noteId));
   };
 
+  const handleToggleThinking = async () => {
+    const nextValue = !thinkingEnabled;
+    setIsThinkingToggleLoading(true);
+    try {
+      const settings = await invoke<InferenceSettings>("set_thinking_enabled", {
+        thinkingEnabled: nextValue,
+      });
+      setThinkingEnabled(settings.thinking_enabled !== false);
+      onStatus(
+        settings.thinking_enabled !== false
+          ? "已开启思考模式。"
+          : "已关闭思考模式。",
+        "info",
+        false,
+      );
+    } catch (error) {
+      onStatus(`切换思考模式失败：${String(error)}`, "error", true);
+    } finally {
+      setIsThinkingToggleLoading(false);
+    }
+  };
+
+  const handleAbortCurrentConversation = () => {
+    const activeRequest =
+      activeBriefRef.current?.requestId ?? activeStreamRef.current?.requestId;
+    const activeMessageId =
+      activeBriefRef.current?.messageId ?? activeStreamRef.current?.messageId;
+    if (!activeRequest || !activeMessageId) return;
+
+    cancelledRequestIdsRef.current.add(activeRequest);
+    activeStreamRef.current = null;
+    activeBriefRef.current = null;
+    setIsLoading(false);
+    setMessages((previous) =>
+      previous.map((message) =>
+        message.id === activeMessageId
+          ? {
+              ...message,
+              content: "已中止当前对话。",
+              timestamp: Date.now(),
+            }
+          : message,
+      ),
+    );
+    onStatus("已中止当前对话。", "info", false);
+  };
+
   const activeFileLabel = useMemo(
     () => (activeFilePath ? getFileName(activeFilePath) : "未选中文件"),
     [activeFilePath],
@@ -865,6 +1141,43 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       inputValue,
       inputRef.current?.selectionStart ?? null,
     ) !== null;
+  const slashCommandDraft = useMemo(
+    () => extractSlashCommandDraft(parsedScope.cleanQuestion),
+    [parsedScope.cleanQuestion],
+  );
+  const filteredSlashCommands = useMemo(() => {
+    if (slashCommandDraft === null) return [];
+    return SUPPORTED_SLASH_COMMANDS.filter((command) =>
+      command.name.includes(slashCommandDraft),
+    );
+  }, [slashCommandDraft]);
+  const shouldShowSlashCommandList =
+    isInputFocused &&
+    filteredSlashCommands.length > 0 &&
+    parsedScope.cleanQuestion.trim() !== dismissedSlashValue;
+
+  useEffect(() => {
+    if (!shouldShowSlashCommandList || !inputRef.current) {
+      setSlashCommandMenuRect(null);
+      return;
+    }
+    const updateRect = () => {
+      const rect = inputRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      setSlashCommandMenuRect({
+        left: rect.left,
+        top: rect.top - 10,
+        width: rect.width,
+      });
+    };
+    updateRect();
+    window.addEventListener("resize", updateRect);
+    window.addEventListener("scroll", updateRect, true);
+    return () => {
+      window.removeEventListener("resize", updateRect);
+      window.removeEventListener("scroll", updateRect, true);
+    };
+  }, [shouldShowSlashCommandList]);
 
   const applyPaperMention = useCallback(
     (paper: ResearchPaperOption) => {
@@ -892,6 +1205,23 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       setPaperMentionQuery("");
     },
     [inputValue],
+  );
+  const applySlashCommand = useCallback(
+    (name: SlashCommandName) => {
+      const prefix = parsedScope.scopePaper
+        ? `@paper ${parsedScope.scopePaper}\n`
+        : "";
+      const nextValue = `${prefix}/${name}`;
+      setInputValue(nextValue);
+      setDismissedSlashValue(null);
+      window.setTimeout(() => {
+        const node = inputRef.current;
+        if (!node) return;
+        node.focus();
+        node.setSelectionRange(nextValue.length, nextValue.length);
+      }, 0);
+    },
+    [parsedScope.scopePaper],
   );
 
   return (
@@ -979,8 +1309,11 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                   className="chat-input"
                   placeholder="输入消息。可用 @paper 论文标题 换行后提问"
                   value={inputValue}
+                  onFocus={() => setIsInputFocused(true)}
+                  onBlur={() => setIsInputFocused(false)}
                   onChange={(event) => {
                     setInputValue(event.target.value);
+                    setDismissedSlashValue(null);
                     const mentionQuery = extractActiveMentionQuery(
                       event.target.value,
                       event.target.selectionStart,
@@ -1026,6 +1359,21 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                     {activeChatScopeLabel}
                   </span>
                 )}
+                <button
+                  className={`chat-thinking-switch ${thinkingEnabled ? "enabled" : ""}`}
+                  onClick={() => void handleToggleThinking()}
+                  disabled={isThinkingToggleLoading || isLoading}
+                  title={
+                    thinkingEnabled
+                      ? "关闭思考模式，减少推理等待时间"
+                      : "开启思考模式，允许模型输出推理过程"
+                  }
+                >
+                  <span className="chat-thinking-switch-label">思考模式</span>
+                  <span className="chat-thinking-switch-track">
+                    <span className="chat-thinking-switch-thumb" />
+                  </span>
+                </button>
               </div>
 
               <div className="chat-input-actions">
@@ -1037,6 +1385,16 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 >
                   <ImagePlus size={18} />
                 </button>
+
+                {isLoading && (
+                  <button
+                    className="send-button abort-action"
+                    onClick={handleAbortCurrentConversation}
+                    title="中止当前对话"
+                  >
+                    <X size={18} />
+                  </button>
+                )}
 
                 <ModelSelector
                   currentModel={currentModel || ""}
@@ -1263,6 +1621,39 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 <span className="chat-paper-mention-title">{paper.title}</span>
                 <span className="chat-paper-mention-meta">
                   {paper.chunkCount} chunks · {paper.candidateCount} 候选
+                </span>
+              </button>
+            ))}
+          </div>,
+          document.body,
+        )}
+
+      {shouldShowSlashCommandList &&
+        slashCommandMenuRect &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <div
+            className="chat-slash-command-list portal"
+            style={{
+              left: `${slashCommandMenuRect.left}px`,
+              width: `${slashCommandMenuRect.width}px`,
+              top: `${Math.max(12, slashCommandMenuRect.top - 96)}px`,
+            }}
+          >
+            {filteredSlashCommands.map((command) => (
+              <button
+                key={command.name}
+                className="chat-slash-command-item active"
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  applySlashCommand(command.name);
+                }}
+              >
+                <span className="chat-slash-command-title">
+                  {command.title}
+                </span>
+                <span className="chat-slash-command-meta">
+                  {command.description}
                 </span>
               </button>
             ))}

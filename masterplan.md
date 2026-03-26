@@ -1,6 +1,6 @@
 # ResearchAssistant Master Plan
 
-更新日期：2026-03-24
+更新日期：2026-03-26
 
 ## 1. 总目标
 
@@ -24,6 +24,7 @@
 
 - 资料导入与知识库检索
 - Research Memory：论文索引、图谱、审核和 Idea 推荐
+- Chat：`@paper` 论文 scope 与 `/brief` 核心简报指令
 - PDF 阅读、术语解释、知识卡片
 - 待处理收件箱
 - 移动 companion service
@@ -49,6 +50,7 @@
 - 补齐桌面端 / 移动端联调验收清单
 - 继续完善待处理收件箱的后续处理动作
 - 稳定 `Research Memory` 的审核流和图谱可视化，补齐论文比较前端入口
+- 打磨 `/brief` 的单论文简报质量与命令交互，再决定是否扩到 `/diff`
 
 ### P1
 
@@ -60,7 +62,6 @@
 
 ### P2
 
-- iOS 安装链路
 - OCR 扫描 PDF
 - 卡片编辑、标签和更完整的复习计划
 - 多模态 Research Memory：真实 VL 页分析、图表理解与更强的跨文献比较
@@ -86,6 +87,9 @@
   - `Graph`
   - `Review`
   - `Ideas`
+- Chat 快捷入口先保持极简：
+  - `@paper`
+  - `/brief`
 
 ## 6. 工程规则
 
@@ -98,4 +102,3 @@
   - `coding_plan.md`
   - `Design Specification.md`
   - `masterplan.md`
-  - `RESEARCH_MEMORY_MANUAL.md`

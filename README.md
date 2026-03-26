@@ -151,5 +151,6 @@ git push origin v0.1.1
 - [Design Specification](./Design%20Specification.md)
 - [coding_plan.md](./coding_plan.md)
 - [masterplan.md](./masterplan.md)
-- [RESEARCH_MEMORY_MANUAL.md](./RESEARCH_MEMORY_MANUAL.md)
 - [COPYRIGHT_NOTICE.md](./COPYRIGHT_NOTICE.md)
+
+`Research Memory` 的实现说明、运维约定和限制已经并入 `Design Specification.md`，不再单独维护 `RESEARCH_MEMORY_MANUAL.md`。
