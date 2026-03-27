@@ -1,5 +1,6 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { Suspense, lazy } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
@@ -27,16 +28,32 @@ import {
   type TreeMutationPayload,
 } from "./components/FileTree";
 import { ChatInterface } from "./components/ChatInterface";
-import { CardLibrary } from "./components/CardLibrary";
-import { PdfDock } from "./components/PdfDock";
+import { ModelSelector } from "./components/ModelSelector";
 import { resolveMirrorModel } from "./utils/modelMirrors";
 import "./App.css";
+
+const CardLibrary = lazy(() =>
+  import("./components/CardLibrary").then((module) => ({
+    default: module.CardLibrary,
+  })),
+);
+const PdfDock = lazy(() =>
+  import("./components/PdfDock").then((module) => ({
+    default: module.PdfDock,
+  })),
+);
+const ResearchMemoryPanel = lazy(() =>
+  import("./components/ResearchMemoryPanel").then((module) => ({
+    default: module.ResearchMemoryPanel,
+  })),
+);
 
 type InferenceMode = "single_mm" | "dual_pipeline";
 type IngestMode = "overwrite" | "incremental";
 type SidebarTool = "workspace" | "citations" | "notes" | "knowledge" | "cards";
 type StatusTone = "info" | "error";
 type AiRequirement = "chat" | "index" | "translate";
+type SettingsTab = "general" | "models" | "mobile";
 
 interface InferenceSettings {
   mode: InferenceMode;
@@ -47,12 +64,16 @@ interface IngestProgress {
   current: number;
   total: number;
   message: string;
+  noCandidateCount?: number;
+  fallbackSuccessCount?: number;
+  doubleFailureCount?: number;
 }
 
 interface StatusBanner {
   message: string;
   tone: StatusTone;
   progress?: number;
+  details?: string[];
   action?: StatusBannerAction;
 }
 
@@ -71,6 +92,19 @@ interface WorkspaceImportResult {
 interface WorkspaceSnapshot {
   workspace_path: string;
   tree: FileNode;
+}
+
+interface PdfOpenAnchorRequest {
+  key: string;
+  path: string;
+  page: number;
+  snippet?: string;
+}
+
+interface WorkspaceSelection {
+  path: string;
+  type_name: FileNode["type_name"];
+  name: string;
 }
 
 interface ZoteroStorageCandidate {
@@ -140,6 +174,8 @@ interface OllamaRuntimeProgress {
 
 interface PullProgress {
   status: string;
+  modelName?: string;
+  sourceUrl?: string;
   digest?: string;
   total?: number;
   completed?: number;
@@ -179,20 +215,28 @@ interface DocumentResult {
 
 const REQUIRED_MODELS = {
   embedding: "nomic-embed-text",
-  chat: "qwen2.5:0.5b",
+  extractFast: "qwen3:8b",
+  extractFallback: "qwen3.5:9b",
+  chat: "qwen3.5:9b",
   translation: "MedAIBase/Tencent-HY-MT1.5:1.8b-q4_K_M",
 };
 
 const OLLAMA_MIN_RECOMMENDED_VERSION = "0.17.7";
 const CHAT_MODEL_KEY = "ra_chat_model_v1";
+const EXTRACT_MODEL_KEY = "ra_extract_fast_model_v3";
+const EXTRACT_FALLBACK_MODEL_KEY = "ra_extract_fallback_model_v2";
 const TRANSLATION_MODEL_KEY = "ra_translation_model_v1";
 const SIDEBAR_COLLAPSED_WIDTH_PX = 58;
 
 const STAGE_LABELS: Record<string, string> = {
+  prepare_ingest: "准备导入",
+  prepare_models: "检查模型",
   scan: "扫描文件",
-  chunk: "切分文本",
-  summarize: "生成摘要",
-  embed: "建立向量",
+  parse_pages: "解析页面",
+  candidate_extract: "抽取候选概念",
+  relation_extract: "补全关系与 Pipeline",
+  canonicalize: "归并候选概念",
+  index_vectors: "重建向量索引",
   finalize: "保存索引",
 };
 
@@ -265,6 +309,64 @@ const compareOllamaVersions = (
 const getErrorMessage = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
 
+const formatByteSize = (value: number | null | undefined) => {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return "";
+  }
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let size = value;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+  const digits = size >= 100 || unitIndex === 0 ? 0 : size >= 10 ? 1 : 2;
+  return `${size.toFixed(digits)} ${units[unitIndex]}`;
+};
+
+const isWeakExtractionModel = (name: string | null | undefined) => {
+  const normalized = name?.trim().toLowerCase();
+  if (!normalized) return true;
+  if (
+    normalized.includes("embed") ||
+    normalized.includes("tencent-hy-mt") ||
+    normalized.includes("medaibase")
+  ) {
+    return true;
+  }
+  return (
+    normalized.includes(":0.5b") ||
+    normalized.includes(":1b") ||
+    normalized.includes(":1.5b") ||
+    normalized.includes(":1.8b") ||
+    normalized.endsWith("0.5b") ||
+    normalized.endsWith("1b") ||
+    normalized.endsWith("1.5b") ||
+    normalized.endsWith("1.8b")
+  );
+};
+
+const sanitizeExtractFastModel = (name: string | null | undefined) => {
+  const normalized = name?.trim();
+  if (!normalized || isWeakExtractionModel(normalized)) {
+    return REQUIRED_MODELS.extractFast;
+  }
+  return normalized;
+};
+
+const resolveInstalledModelName = (
+  names: string[],
+  preferred: string | null | undefined,
+) => {
+  const normalized = preferred?.trim();
+  if (!normalized) return "";
+  return (
+    names.find((name) => name === normalized) ||
+    names.find((name) => name.startsWith(`${normalized.split(":")[0]}:`)) ||
+    ""
+  );
+};
+
 const isOllamaUpgradeRequiredError = (message: string) => {
   const normalized = message.toLowerCase();
   const mentionsOllama =
@@ -285,12 +387,27 @@ function App() {
   const [files, setFiles] = useState<FileNode[]>([]);
   const [workspacePath, setWorkspacePath] = useState<string | null>(null);
   const [activeFilePath, setActiveFilePath] = useState<string | null>(null);
+  const [workspaceSelection, setWorkspaceSelection] =
+    useState<WorkspaceSelection | null>(null);
   const [pdfPage, setPdfPage] = useState(1);
+  const [pdfOpenAnchorRequest, setPdfOpenAnchorRequest] =
+    useState<PdfOpenAnchorRequest | null>(null);
   const [isPdfDockVisible, setIsPdfDockVisible] = useState(false);
   const [isPdfFocusMode, setIsPdfFocusMode] = useState(false);
   const [currentModel, setCurrentModel] = useState(() => {
     const stored = localStorage.getItem(CHAT_MODEL_KEY)?.trim();
     return stored || REQUIRED_MODELS.chat;
+  });
+  const [extractModel, setExtractModel] = useState(() => {
+    const stored = localStorage.getItem(EXTRACT_MODEL_KEY)?.trim();
+    if (!stored || stored === REQUIRED_MODELS.extractFallback) {
+      return REQUIRED_MODELS.extractFast;
+    }
+    return sanitizeExtractFastModel(stored);
+  });
+  const [extractFallbackModel, setExtractFallbackModel] = useState(() => {
+    const stored = localStorage.getItem(EXTRACT_FALLBACK_MODEL_KEY)?.trim();
+    return stored || REQUIRED_MODELS.extractFallback;
   });
   const [translationModel, setTranslationModel] = useState(() => {
     const stored = localStorage.getItem(TRANSLATION_MODEL_KEY)?.trim();
@@ -306,6 +423,8 @@ function App() {
   const [isIngesting, setIsIngesting] = useState(false);
   const [statusBanner, setStatusBanner] = useState<StatusBanner | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [activeSettingsTab, setActiveSettingsTab] =
+    useState<SettingsTab>("general");
   const [inferenceMode, setInferenceMode] =
     useState<InferenceMode>("single_mm");
   const [isSavingInferenceMode, setIsSavingInferenceMode] = useState(false);
@@ -326,12 +445,6 @@ function App() {
   const [isStatusBannerExpanded, setIsStatusBannerExpanded] = useState(false);
   const [sidebarCitations, setSidebarCitations] = useState<CitationItem[]>([]);
   const [sidebarNotes, setSidebarNotes] = useState<NoteItem[]>([]);
-  const [knowledgeQuery, setKnowledgeQuery] = useState("");
-  const [knowledgeResults, setKnowledgeResults] = useState<DocumentResult[]>(
-    [],
-  );
-  const [isKnowledgeSearching, setIsKnowledgeSearching] = useState(false);
-  const [lastKnowledgeQuery, setLastKnowledgeQuery] = useState("");
 
   const statusTimerRef = useRef<number | null>(null);
   const previousPdfPathRef = useRef<string | null>(null);
@@ -379,10 +492,17 @@ function App() {
       tone: StatusTone = "info",
       timeoutMs?: number,
       progress?: number,
+      details?: string[],
       action?: StatusBannerAction,
     ) => {
       clearStatusTimer();
-      const nextBanner: StatusBanner = { message, tone, progress, action };
+      const nextBanner: StatusBanner = {
+        message,
+        tone,
+        progress,
+        details,
+        action,
+      };
       const startsExpanded = Boolean(
         (timeoutMs && timeoutMs > 0) || tone === "error" || action,
       );
@@ -410,13 +530,27 @@ function App() {
       tone: StatusTone = "info",
       timeoutMs = 3200,
       progressOrAction?: number | StatusBannerAction,
+      detailsOrAction?: string[] | StatusBannerAction,
       action?: StatusBannerAction,
     ) => {
       const progress =
         typeof progressOrAction === "number" ? progressOrAction : undefined;
       const resolvedAction =
         typeof progressOrAction === "number" ? action : progressOrAction;
-      showStatus(message, tone, timeoutMs, progress, resolvedAction);
+      const details = Array.isArray(detailsOrAction)
+        ? detailsOrAction
+        : undefined;
+      const resolvedActionWithDetails = Array.isArray(detailsOrAction)
+        ? action
+        : (detailsOrAction ?? resolvedAction);
+      showStatus(
+        message,
+        tone,
+        timeoutMs,
+        progress,
+        details,
+        resolvedActionWithDetails,
+      );
     },
     [showStatus],
   );
@@ -426,13 +560,27 @@ function App() {
       message: string,
       tone: StatusTone = "info",
       progressOrAction?: number | StatusBannerAction,
+      detailsOrAction?: string[] | StatusBannerAction,
       action?: StatusBannerAction,
     ) => {
       const progress =
         typeof progressOrAction === "number" ? progressOrAction : undefined;
       const resolvedAction =
         typeof progressOrAction === "number" ? action : progressOrAction;
-      showStatus(message, tone, undefined, progress, resolvedAction);
+      const details = Array.isArray(detailsOrAction)
+        ? detailsOrAction
+        : undefined;
+      const resolvedActionWithDetails = Array.isArray(detailsOrAction)
+        ? action
+        : (detailsOrAction ?? resolvedAction);
+      showStatus(
+        message,
+        tone,
+        undefined,
+        progress,
+        details,
+        resolvedActionWithDetails,
+      );
     },
     [showStatus],
   );
@@ -582,7 +730,11 @@ function App() {
             ? preparedState.translate
             : preparedState.chat;
       const activeModelForRequirement =
-        requirement === "translate" ? translationModel : currentModel;
+        requirement === "index"
+          ? extractModel
+          : requirement === "translate"
+            ? translationModel
+            : currentModel;
       if (alreadyPrepared && activeModelForRequirement) {
         return activeModelForRequirement;
       }
@@ -652,16 +804,32 @@ function App() {
         const pullModel = async (name: string) => {
           const mirror = resolveMirrorModel(name);
           if (mirror) {
-            try {
-              showPersistentStatus(`正在通过镜像拉取 ${name}...`);
-              await invoke("pull_model_from_modelscope", {
-                name,
-                url: mirror.url,
-                filename: mirror.filename,
-              });
-              return;
-            } catch (error) {
-              console.error("Mirror pull failed:", error);
+            const candidates = mirror.candidates?.length
+              ? mirror.candidates
+              : [{ url: mirror.url, filename: mirror.filename }];
+            for (const candidate of candidates) {
+              try {
+                showPersistentStatus(
+                  `正在通过镜像拉取 ${name}...`,
+                  "info",
+                  undefined,
+                  [`下载地址：${candidate.url}`],
+                );
+                await invoke("pull_model_from_modelscope", {
+                  name,
+                  url: candidate.url,
+                  filename: candidate.filename,
+                });
+                return;
+              } catch (error) {
+                console.error("Mirror pull failed:", candidate.url, error);
+                showPersistentStatus(
+                  `镜像拉取失败，正在尝试下一个源：${name}`,
+                  "error",
+                  undefined,
+                  [`失败地址：${candidate.url}`],
+                );
+              }
             }
           }
           showPersistentStatus(`正在拉取模型 ${name}...`);
@@ -671,70 +839,95 @@ function App() {
         let models = await getInstalledModels();
         let names = models.map((model) => model.name);
 
+        let didFallbackToExtractFallback = false;
         if (
           requirement === "index" &&
-          !names.some((name) => name.includes(REQUIRED_MODELS.embedding))
+          !resolveInstalledModelName(
+            names,
+            extractModel || REQUIRED_MODELS.extractFast,
+          )
+        ) {
+          try {
+            await pullModel(extractModel || REQUIRED_MODELS.extractFast);
+          } catch (error) {
+            console.warn("Fast extract model pull failed:", error);
+            didFallbackToExtractFallback = true;
+          }
+        }
+        if (
+          requirement === "index" &&
+          !resolveInstalledModelName(names, REQUIRED_MODELS.embedding)
         ) {
           await pullModel(REQUIRED_MODELS.embedding);
         }
         if (
           requirement === "translate" &&
-          !names.some((name) => name.includes(REQUIRED_MODELS.translation))
+          !resolveInstalledModelName(names, REQUIRED_MODELS.translation)
         ) {
           await pullModel(REQUIRED_MODELS.translation);
         }
         if (
           requirement !== "translate" &&
-          !names.some((name) => name.includes(REQUIRED_MODELS.chat))
+          !resolveInstalledModelName(
+            names,
+            currentModel || REQUIRED_MODELS.chat,
+          )
         ) {
-          await pullModel(REQUIRED_MODELS.chat);
+          await pullModel(currentModel || REQUIRED_MODELS.chat);
         }
 
         models = await getInstalledModels();
         names = models.map((model) => model.name);
-        const preferredChatModel =
-          currentModel &&
-          names.some(
-            (name) =>
-              name === currentModel ||
-              name.startsWith(`${currentModel.split(":")[0]}:`),
-          )
-            ? names.find((name) => name === currentModel) ||
-              names.find((name) =>
-                name.startsWith(`${currentModel.split(":")[0]}:`),
-              ) ||
-              currentModel
-            : "";
-        const preferredTranslationModel =
-          translationModel &&
-          names.some(
-            (name) =>
-              name === translationModel ||
-              name.startsWith(`${translationModel.split(":")[0]}:`),
-          )
-            ? names.find((name) => name === translationModel) ||
-              names.find((name) =>
-                name.startsWith(`${translationModel.split(":")[0]}:`),
-              ) ||
-              translationModel
-            : "";
+        const preferredChatModel = resolveInstalledModelName(
+          names,
+          currentModel,
+        );
+        const preferredTranslationModel = resolveInstalledModelName(
+          names,
+          translationModel,
+        );
+        const preferredExtractModel = resolveInstalledModelName(
+          names,
+          sanitizeExtractFastModel(extractModel),
+        );
+        const preferredExtractFallbackModel = resolveInstalledModelName(
+          names,
+          extractFallbackModel,
+        );
+        const resolvedFastExtractModel =
+          preferredExtractModel ||
+          resolveInstalledModelName(names, REQUIRED_MODELS.extractFast) ||
+          sanitizeExtractFastModel(extractModel) ||
+          REQUIRED_MODELS.extractFast;
+        const installedFallbackExtractModel =
+          preferredExtractFallbackModel ||
+          resolveInstalledModelName(names, REQUIRED_MODELS.extractFallback);
+        const resolvedFallbackExtractModel =
+          installedFallbackExtractModel || resolvedFastExtractModel;
         const selectedModel =
-          requirement === "translate"
-            ? preferredTranslationModel ||
-              names.find((name) => name === REQUIRED_MODELS.translation) ||
-              names.find((name) =>
-                name.includes(REQUIRED_MODELS.translation),
-              ) ||
-              translationModel ||
-              REQUIRED_MODELS.translation
-            : preferredChatModel ||
-              names.find((name) => name === REQUIRED_MODELS.chat) ||
-              names.find((name) => name.includes(REQUIRED_MODELS.chat)) ||
-              currentModel ||
-              names[0] ||
-              REQUIRED_MODELS.chat;
+          requirement === "index"
+            ? didFallbackToExtractFallback
+              ? resolvedFallbackExtractModel
+              : resolvedFastExtractModel || resolvedFallbackExtractModel
+            : requirement === "translate"
+              ? preferredTranslationModel ||
+                resolveInstalledModelName(names, REQUIRED_MODELS.translation) ||
+                translationModel ||
+                REQUIRED_MODELS.translation
+              : preferredChatModel ||
+                resolveInstalledModelName(names, REQUIRED_MODELS.chat) ||
+                currentModel ||
+                names[0] ||
+                REQUIRED_MODELS.chat;
 
-        if (requirement === "translate") {
+        if (requirement === "index") {
+          setExtractModel(resolvedFastExtractModel);
+          setExtractFallbackModel(
+            installedFallbackExtractModel ||
+              extractFallbackModel ||
+              REQUIRED_MODELS.extractFallback,
+          );
+        } else if (requirement === "translate") {
           setTranslationModel(selectedModel);
         } else {
           setCurrentModel(selectedModel);
@@ -782,6 +975,8 @@ function App() {
       showOllamaUpgradeStatus,
       showPersistentStatus,
       translationModel,
+      extractModel,
+      extractFallbackModel,
       waitForOllamaReady,
     ],
   );
@@ -833,6 +1028,35 @@ function App() {
       localStorage.removeItem(CHAT_MODEL_KEY);
     }
   }, [currentModel]);
+
+  useEffect(() => {
+    if (extractModel.trim()) {
+      localStorage.setItem(
+        EXTRACT_MODEL_KEY,
+        sanitizeExtractFastModel(extractModel),
+      );
+    } else {
+      localStorage.removeItem(EXTRACT_MODEL_KEY);
+    }
+  }, [extractModel]);
+
+  useEffect(() => {
+    const sanitized = sanitizeExtractFastModel(extractModel);
+    if (sanitized !== extractModel) {
+      setExtractModel(sanitized);
+    }
+  }, [extractModel]);
+
+  useEffect(() => {
+    if (extractFallbackModel.trim()) {
+      localStorage.setItem(
+        EXTRACT_FALLBACK_MODEL_KEY,
+        extractFallbackModel.trim(),
+      );
+    } else {
+      localStorage.removeItem(EXTRACT_FALLBACK_MODEL_KEY);
+    }
+  }, [extractFallbackModel]);
 
   useEffect(() => {
     if (translationModel.trim()) {
@@ -927,6 +1151,20 @@ function App() {
         await loadDirectoryChildren(path);
       }
 
+      if (payload.rebasedPath && workspaceSelection) {
+        const { from, to } = payload.rebasedPath;
+        if (
+          workspaceSelection.path === from ||
+          workspaceSelection.path.startsWith(`${from}\\`) ||
+          workspaceSelection.path.startsWith(`${from}/`)
+        ) {
+          setWorkspaceSelection({
+            ...workspaceSelection,
+            path: workspaceSelection.path.replace(from, to),
+          });
+        }
+      }
+
       if (payload.rebasedPath && activeFilePath) {
         const { from, to } = payload.rebasedPath;
         if (
@@ -950,8 +1188,19 @@ function App() {
           setIsPdfDockVisible(false);
         }
       }
+
+      if (payload.removedPath && workspaceSelection) {
+        const removedPath = payload.removedPath;
+        if (
+          workspaceSelection.path === removedPath ||
+          workspaceSelection.path.startsWith(`${removedPath}\\`) ||
+          workspaceSelection.path.startsWith(`${removedPath}/`)
+        ) {
+          setWorkspaceSelection(null);
+        }
+      }
     },
-    [activeFilePath, loadDirectoryChildren],
+    [activeFilePath, loadDirectoryChildren, workspaceSelection],
   );
 
   useEffect(() => {
@@ -983,6 +1232,29 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (!isIngesting || !ingestProgress) return;
+    const hasTotal =
+      typeof ingestProgress.total === "number" && ingestProgress.total > 0;
+    const percent = hasTotal
+      ? Math.max(
+          0,
+          Math.min(
+            100,
+            Math.round((ingestProgress.current / ingestProgress.total) * 100),
+          ),
+        )
+      : undefined;
+    const stageText =
+      STAGE_LABELS[ingestProgress.stage] || ingestProgress.stage;
+    const detail = ingestProgress.message?.trim();
+    showPersistentStatus(
+      detail ? `${stageText} · ${detail}` : stageText,
+      "info",
+      percent,
+    );
+  }, [ingestProgress, isIngesting, showPersistentStatus]);
+
+  useEffect(() => {
     let unlistenFn: (() => void) | null = null;
     listen<OllamaRuntimeProgress>("ollama-runtime-progress", (event) => {
       const { status, total, completed } = event.payload;
@@ -1011,12 +1283,41 @@ function App() {
   useEffect(() => {
     let unlistenFn: (() => void) | null = null;
     listen<PullProgress>("pull-progress", (event) => {
-      const { status, total, completed } = event.payload;
+      const { status, total, completed, modelName, sourceUrl } = event.payload;
       if (!status) return;
+
+      const normalizedStatusText = status.trim();
+      const sourceLabel = sourceUrl?.includes("modelscope.cn")
+        ? "ModelScope 镜像"
+        : sourceUrl?.includes("hf-mirror.com")
+          ? "HF Mirror"
+          : sourceUrl?.includes("ollama.com")
+            ? "Ollama 官方"
+            : "";
+      const mainStatus =
+        modelName &&
+        (/^pulling\b/i.test(normalizedStatusText) ||
+          /^downloading\b/i.test(normalizedStatusText) ||
+          /^importing\b/i.test(normalizedStatusText))
+          ? `正在拉取模型 ${modelName}`
+          : normalizedStatusText;
+
+      const sizeDetail =
+        typeof total === "number" && total > 0 && typeof completed === "number"
+          ? `已下载 ${formatByteSize(completed)} / ${formatByteSize(total)}`
+          : typeof completed === "number" && completed > 0
+            ? `已下载 ${formatByteSize(completed)}`
+            : "";
+      const details = [
+        modelName ? `模型：${modelName}` : "",
+        sourceLabel ? `来源：${sourceLabel}` : "",
+        sourceUrl ? `下载地址：${sourceUrl}` : "",
+        sizeDetail,
+      ].filter(Boolean);
 
       const normalizedStatus = status.trim().toLowerCase();
       if (normalizedStatus === "success") {
-        showTemporaryStatus("模型拉取完成。", "info", 2600, 100);
+        showTemporaryStatus("模型拉取完成。", "info", 2600, 100, details);
         return;
       }
 
@@ -1029,11 +1330,11 @@ function App() {
           0,
           Math.min(100, Math.round((completed / total) * 100)),
         );
-        showPersistentStatus(status, "info", percent);
+        showPersistentStatus(mainStatus, "info", percent, details);
         return;
       }
 
-      showPersistentStatus(status);
+      showPersistentStatus(mainStatus, "info", undefined, details);
     }).then((unlisten) => {
       unlistenFn = unlisten;
     });
@@ -1085,21 +1386,54 @@ function App() {
   }, [currentModel, getInstalledModels]);
 
   const ingestWorkspacePath = async (path: string) => {
+    setActiveSidebarTool("workspace");
     setIsIngesting(true);
     setIngestProgress({
-      stage: "scan",
+      stage: "prepare_ingest",
       current: 0,
-      total: 0,
-      message: "正在扫描文件...",
+      total: 1,
+      message: "正在准备论文导入...",
     });
+    showPersistentStatus("正在准备论文导入...", "info", 0);
     try {
-      const model = await ensureAiReady("index");
-      const count = await invoke<number>("ingest_knowledge_base", {
-        path,
-        model,
-        mode: ingestMode,
+      const fastModel = await ensureAiReady("index");
+      const installedFallbackModel = await invoke<OllamaModelSummary[]>(
+        "get_ollama_models",
+      ).then((models) => {
+        const names = models.map((model) => model.name);
+        return (
+          resolveInstalledModelName(
+            names,
+            extractFallbackModel || REQUIRED_MODELS.extractFallback,
+          ) || fastModel
+        );
       });
-      showTemporaryStatus(`索引完成，已处理 ${count} 个片段。`);
+      setIngestProgress({
+        stage: "prepare_models",
+        current: 0,
+        total: 1,
+        message: `索引模型已就绪：候选 ${fastModel} / 回退 ${installedFallbackModel}`,
+      });
+      const count = await invoke<number>("ingest_research_corpus", {
+        options: {
+          extractFastModel: fastModel,
+          extractFallbackModel: installedFallbackModel,
+          allowAutoPullExtractModel: true,
+          extractionMode: "balanced",
+          embeddingModel: null,
+          visionModel: null,
+          mode: ingestMode,
+        },
+        path,
+      });
+      if (count === 0) {
+        showPersistentStatus(
+          "未发现可处理文献。当前只会自动处理 pdf、md、txt 文件。",
+          "error",
+        );
+      } else {
+        showTemporaryStatus(`索引完成，已处理 ${count} 篇文献。`);
+      }
     } catch (error) {
       showPersistentStatus(`建立索引失败：${String(error)}`, "error");
     } finally {
@@ -1111,6 +1445,7 @@ function App() {
     imported: WorkspaceImportResult,
     successMessage?: string,
   ) => {
+    setActiveSidebarTool("workspace");
     setWorkspacePath(imported.workspace_path);
     setFiles([imported.tree]);
     setActiveFilePath(null);
@@ -1120,6 +1455,7 @@ function App() {
   };
 
   const applyImportedZotero = async (imported: ZoteroImportResult) => {
+    setActiveSidebarTool("workspace");
     setWorkspacePath(imported.workspace_path);
     setFiles([imported.tree]);
     setActiveFilePath(null);
@@ -1249,6 +1585,11 @@ function App() {
   };
 
   const handleFileSelect = async (node: FileNode) => {
+    setWorkspaceSelection({
+      path: node.path,
+      type_name: node.type_name,
+      name: node.name,
+    });
     if (node.type_name !== "file") return;
     setActiveFilePath(node.path);
     if (node.path.toLowerCase().endsWith(".pdf")) {
@@ -1282,6 +1623,33 @@ function App() {
       setIsSidebarCollapsed(false);
     },
     [activeSidebarTool, isSidebarCollapsed],
+  );
+
+  const handleOpenPathInApp = useCallback(
+    (path: string, page?: number, snippet?: string) => {
+      const name = path.split(/[\\/]/).pop() || path;
+      setActiveSidebarTool("workspace");
+      setWorkspaceSelection({
+        path,
+        type_name: "file",
+        name,
+      });
+      setActiveFilePath(path);
+      if (path.toLowerCase().endsWith(".pdf")) {
+        const nextPage = Math.max(1, page || 1);
+        setPdfPage(nextPage);
+        setPdfOpenAnchorRequest({
+          key: `${path}:${nextPage}:${Date.now()}`,
+          path,
+          page: nextPage,
+          snippet,
+        });
+        setIsPdfDockVisible(true);
+      } else {
+        setPdfOpenAnchorRequest(null);
+      }
+    },
+    [],
   );
 
   useEffect(() => {
@@ -1409,27 +1777,6 @@ function App() {
     });
   }, [isPdfFocusMode]);
 
-  const handleKnowledgeSearch = useCallback(async () => {
-    const query = knowledgeQuery.trim();
-    if (!query) return;
-    setIsKnowledgeSearching(true);
-    setLastKnowledgeQuery(query);
-    try {
-      const docs = await invoke<DocumentResult[]>("query_knowledge_base", {
-        query,
-      });
-      setKnowledgeResults(docs);
-    } catch (error) {
-      showPersistentStatus(
-        `Knowledge search failed: ${String(error)}`,
-        "error",
-      );
-      setKnowledgeResults([]);
-    } finally {
-      setIsKnowledgeSearching(false);
-    }
-  }, [knowledgeQuery, showPersistentStatus]);
-
   const handleInferenceModeChange = async (nextMode: InferenceMode) => {
     setIsSavingInferenceMode(true);
     try {
@@ -1543,9 +1890,37 @@ function App() {
         )}
         <FileTree
           data={files.length > 0 ? files : undefined}
-          activePath={activeFilePath}
+          activePath={workspaceSelection?.path ?? activeFilePath}
           workspacePath={workspacePath}
           onSelect={handleFileSelect}
+          onIndexPath={async (node) => {
+            setWorkspaceSelection({
+              path: node.path,
+              type_name: node.type_name,
+              name: node.name,
+            });
+            await ingestWorkspacePath(node.path);
+          }}
+          onUnindexPath={async (node) => {
+            setWorkspaceSelection({
+              path: node.path,
+              type_name: node.type_name,
+              name: node.name,
+            });
+            try {
+              showPersistentStatus(`正在解除索引：${node.name}`);
+              const removed = await invoke<number>("unindex_research_path", {
+                path: node.path,
+              });
+              if (removed === 0) {
+                showTemporaryStatus("选中项当前没有已建立的索引记录。");
+              } else {
+                showTemporaryStatus(`已解除 ${removed} 条论文索引记录。`);
+              }
+            } catch (error) {
+              showPersistentStatus(`解除索引失败：${String(error)}`, "error");
+            }
+          }}
           onLoadChildren={loadDirectoryChildren}
           onTreeChanged={handleTreeChanged}
           onStatus={handleChildStatus}
@@ -1554,11 +1929,15 @@ function App() {
     ) : activeSidebarTool === "cards" ? (
       <div className="sidebar-tool-scroll">
         <div className="sidebar-tool-title">Knowledge Cards</div>
-        <CardLibrary
-          refreshToken={cardsRefreshToken}
-          activeRoot={cardSettings?.active_root}
-          onStatus={handleChildStatus}
-        />
+        <Suspense
+          fallback={<div className="support-empty">Loading cards...</div>}
+        >
+          <CardLibrary
+            refreshToken={cardsRefreshToken}
+            activeRoot={cardSettings?.active_root}
+            onStatus={handleChildStatus}
+          />
+        </Suspense>
       </div>
     ) : activeSidebarTool === "citations" ? (
       <div className="sidebar-tool-scroll">
@@ -1592,60 +1971,29 @@ function App() {
         </div>
       </div>
     ) : (
-      <div className="sidebar-tool-scroll">
-        <div className="sidebar-tool-title">Knowledge Search</div>
-        <div className="knowledge-search-row">
-          <input
-            className="knowledge-search-input"
-            value={knowledgeQuery}
-            onChange={(event) => setKnowledgeQuery(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                void handleKnowledgeSearch();
-              }
-            }}
-            placeholder="Search imported knowledge"
-          />
-          <button
-            className="action-button"
-            onClick={() => void handleKnowledgeSearch()}
-            disabled={isKnowledgeSearching || !knowledgeQuery.trim()}
-          >
-            {isKnowledgeSearching ? "Searching" : "Search"}
-          </button>
-        </div>
-        <div className="support-panel-body">
-          {!lastKnowledgeQuery && !isKnowledgeSearching && (
-            <div className="support-empty">
-              Enter keywords to search local knowledge base.
-            </div>
-          )}
-          {lastKnowledgeQuery &&
-            !isKnowledgeSearching &&
-            knowledgeResults.length === 0 && (
-              <div className="support-empty">No related results found.</div>
-            )}
-          {knowledgeResults.map((doc, index) => (
-            <div key={doc.id} className="support-item">
-              <div className="support-item-title">
-                {index + 1}. {doc.path.split(/[\/\\]/).pop()}
-              </div>
-              <div className="support-item-text">
-                {doc.content.replace(/\s+/g, " ").trim().slice(0, 220)}...
-              </div>
-              <div className="support-item-actions">
-                <button
-                  className="action-button"
-                  onClick={() => void invoke("open_file", { path: doc.path })}
-                >
-                  Open file
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
+      <Suspense
+        fallback={
+          <div className="support-empty">Loading research memory...</div>
+        }
+      >
+        <ResearchMemoryPanel
+          chatModel={currentModel || REQUIRED_MODELS.chat}
+          extractFastModel={extractModel || REQUIRED_MODELS.extractFast}
+          extractFallbackModel={
+            extractFallbackModel || REQUIRED_MODELS.extractFallback
+          }
+          translationModel={translationModel || REQUIRED_MODELS.translation}
+          onOpenPathInApp={handleOpenPathInApp}
+          ingestProgress={ingestProgress}
+          onStatus={(message, tone = "info") => {
+            if (tone === "error") {
+              showPersistentStatus(message, "error");
+              return;
+            }
+            showTemporaryStatus(message, "info", 2600);
+          }}
+        />
+      </Suspense>
     );
 
   const mobileSettingsSection = (
@@ -1752,6 +2100,163 @@ function App() {
     </div>
   );
 
+  const generalSettingsSection = (
+    <>
+      <div className="settings-section">
+        <label htmlFor="inference-mode-select">推理模式</label>
+        <select
+          id="inference-mode-select"
+          value={inferenceMode}
+          onChange={(event) =>
+            void handleInferenceModeChange(event.target.value as InferenceMode)
+          }
+          disabled={isSavingInferenceMode}
+        >
+          <option value="single_mm">单模型原生多模态优先</option>
+          <option value="dual_pipeline">双模型作为性能 / 精度备选</option>
+        </select>
+        <p className="settings-help-text">
+          `single_mm` 走单模型图文理解；`dual_pipeline`
+          目前保留为后续双路由扩展骨架。
+        </p>
+        {settingsError && (
+          <p className="settings-error-text">{settingsError}</p>
+        )}
+      </div>
+
+      <div className="settings-section">
+        <label htmlFor="ingest-mode-select">导入索引模式</label>
+        <select
+          id="ingest-mode-select"
+          value={ingestMode}
+          onChange={(event) => setIngestMode(event.target.value as IngestMode)}
+        >
+          <option value="overwrite">覆盖导入</option>
+          <option value="incremental">增量导入</option>
+        </select>
+        <p className="settings-help-text">
+          覆盖导入会重建当前导入目标的索引；增量导入会尽量保留已存在内容。
+        </p>
+      </div>
+
+      <div className="settings-section">
+        <label>知识卡片路径</label>
+        <div className="settings-path-box">
+          {cardSettings?.active_root || "尚未加载"}
+        </div>
+        <div className="settings-button-row">
+          <button
+            className="action-button"
+            onClick={() => void handlePickCardRoot()}
+          >
+            选择路径
+          </button>
+          <button
+            className="action-button"
+            onClick={() => void handleResetCardRoot()}
+          >
+            恢复默认
+          </button>
+          <button
+            className="action-button"
+            onClick={() => void handleOpenCardRoot()}
+          >
+            打开目录
+          </button>
+        </div>
+        <p className="settings-help-text">
+          {cardSettings?.using_custom_root
+            ? "当前使用自定义卡片目录。"
+            : "当前使用应用默认卡片目录。"}
+        </p>
+        {cardSettingsError && (
+          <p className="settings-error-text">{cardSettingsError}</p>
+        )}
+      </div>
+    </>
+  );
+
+  const modelSettingsSection = (
+    <div className="settings-model-grid">
+      <div className="settings-section">
+        <label>模型运行时</label>
+        <div className="settings-runtime-summary">
+          <div className="settings-runtime-row">
+            <span>下载优先级</span>
+            <strong>HF Mirror / ModelScope，可用时不直连官方</strong>
+          </div>
+          <div className="settings-runtime-row">
+            <span>索引策略</span>
+            <strong>优先准备快速抽取模型；回退模型仅在已安装时启用</strong>
+          </div>
+        </div>
+      </div>
+
+      <div className="settings-section">
+        <label>聊天模型</label>
+        <p className="settings-help-text">
+          默认对话模型，当前建议使用 `qwen3.5:9b`。
+        </p>
+        <ModelSelector
+          currentModel={currentModel}
+          onModelChange={setCurrentModel}
+          onStatus={handleChildStatus}
+          label="聊天模型"
+          variant="compact"
+        />
+      </div>
+
+      <div className="settings-section">
+        <label>抽取模型</label>
+        <p className="settings-help-text">
+          `快速抽取` 优先用于候选概念；`回退抽取` 只在本机已安装时用于关系补全。
+        </p>
+        <div className="settings-model-stack">
+          <div className="settings-model-card">
+            <div className="settings-model-card-head">
+              <strong>快速抽取模型</strong>
+              <span>候选 Task / Module / Challenge / Insight</span>
+            </div>
+            <ModelSelector
+              currentModel={extractModel}
+              onModelChange={setExtractModel}
+              onStatus={handleChildStatus}
+              label="快速抽取模型"
+              variant="compact"
+            />
+          </div>
+          <div className="settings-model-card">
+            <div className="settings-model-card-head">
+              <strong>回退抽取模型</strong>
+              <span>关系补全与复杂片段兜底</span>
+            </div>
+            <ModelSelector
+              currentModel={extractFallbackModel}
+              onModelChange={setExtractFallbackModel}
+              onStatus={handleChildStatus}
+              label="回退抽取模型"
+              variant="compact"
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="settings-section">
+        <label>翻译模型</label>
+        <p className="settings-help-text">
+          用于选区翻译和整页翻译，建议选更稳定的中英翻译模型。
+        </p>
+        <ModelSelector
+          currentModel={translationModel}
+          onModelChange={setTranslationModel}
+          onStatus={handleChildStatus}
+          label="翻译模型"
+          variant="compact"
+        />
+      </div>
+    </div>
+  );
+
   const statusBannerSummary = statusBanner
     ? statusBanner.action
       ? "需要处理的状态"
@@ -1787,15 +2292,26 @@ function App() {
 
           {isStatusBannerExpanded && (
             <div className={`status-banner ${statusBanner.tone}`}>
-              <div className="status-banner-text">{statusBanner.message}</div>
-              {typeof statusBanner.progress === "number" && (
-                <div className="status-banner-progress-track">
-                  <div
-                    className="status-banner-progress-fill"
-                    style={{ width: `${statusBanner.progress}%` }}
-                  />
-                </div>
-              )}
+              <div className="status-banner-content">
+                <div className="status-banner-text">{statusBanner.message}</div>
+                {statusBanner.details && statusBanner.details.length > 0 && (
+                  <div className="status-banner-details">
+                    {statusBanner.details.map((detail) => (
+                      <div key={detail} className="status-banner-detail-line">
+                        {detail}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {typeof statusBanner.progress === "number" && (
+                  <div className="status-banner-progress-track">
+                    <div
+                      className="status-banner-progress-fill"
+                      style={{ width: `${statusBanner.progress}%` }}
+                    />
+                  </div>
+                )}
+              </div>
               <div className="status-banner-controls">
                 {statusBanner.action && (
                   <button
@@ -1949,22 +2465,41 @@ function App() {
           >
             <div className="pdf-center-shell">
               {activePdfPath && isPdfDockVisible ? (
-                <PdfDock
-                  activePdfPath={activePdfPath}
-                  currentModel={currentModel || REQUIRED_MODELS.chat}
-                  ensureAiReady={ensureAiReady}
-                  translationModel={
-                    translationModel || REQUIRED_MODELS.translation
+                <Suspense
+                  fallback={
+                    <div className="pdf-empty-state">
+                      <h2>Loading PDF Reader</h2>
+                      <p>正在按需加载 PDF 阅读器...</p>
+                    </div>
                   }
-                  ensureTranslationReady={ensureTranslationReady}
-                  currentPage={pdfPage}
-                  onPageChange={setPdfPage}
-                  onStatus={handleChildStatus}
-                  onCardSaved={handleCardSaved}
-                  isFocusMode={isPdfFocusMode}
-                  onToggleFocusMode={handleTogglePdfFocusMode}
-                  onClose={handleClosePdfDock}
-                />
+                >
+                  <PdfDock
+                    activePdfPath={activePdfPath}
+                    currentModel={currentModel || REQUIRED_MODELS.chat}
+                    ensureAiReady={ensureAiReady}
+                    translationModel={
+                      translationModel || REQUIRED_MODELS.translation
+                    }
+                    ensureTranslationReady={ensureTranslationReady}
+                    currentPage={pdfPage}
+                    requestedAnchorText={
+                      pdfOpenAnchorRequest?.path === activePdfPath
+                        ? pdfOpenAnchorRequest.snippet
+                        : undefined
+                    }
+                    requestedAnchorKey={
+                      pdfOpenAnchorRequest?.path === activePdfPath
+                        ? pdfOpenAnchorRequest.key
+                        : undefined
+                    }
+                    onPageChange={setPdfPage}
+                    onStatus={handleChildStatus}
+                    onCardSaved={handleCardSaved}
+                    isFocusMode={isPdfFocusMode}
+                    onToggleFocusMode={handleTogglePdfFocusMode}
+                    onClose={handleClosePdfDock}
+                  />
+                </Suspense>
               ) : (
                 <div className="pdf-empty-state">
                   <h2>PDF Reader</h2>
@@ -2021,83 +2556,34 @@ function App() {
               </button>
             </div>
 
-            <div className="settings-section">
-              <label htmlFor="inference-mode-select">推理模式</label>
-              <select
-                id="inference-mode-select"
-                value={inferenceMode}
-                onChange={(event) =>
-                  void handleInferenceModeChange(
-                    event.target.value as InferenceMode,
-                  )
-                }
-                disabled={isSavingInferenceMode}
+            <div className="settings-tabs">
+              <button
+                className={`settings-tab ${activeSettingsTab === "general" ? "active" : ""}`}
+                onClick={() => setActiveSettingsTab("general")}
               >
-                <option value="single_mm">单模型原生多模态优先</option>
-                <option value="dual_pipeline">双模型作为性能 / 精度备选</option>
-              </select>
-              <p className="settings-help-text">
-                `single_mm` 走单模型图文理解；`dual_pipeline`
-                目前保留为后续双路由扩展骨架。
-              </p>
-              {settingsError && (
-                <p className="settings-error-text">{settingsError}</p>
-              )}
-            </div>
-
-            <div className="settings-section">
-              <label htmlFor="ingest-mode-select">导入索引模式</label>
-              <select
-                id="ingest-mode-select"
-                value={ingestMode}
-                onChange={(event) =>
-                  setIngestMode(event.target.value as IngestMode)
-                }
+                General
+              </button>
+              <button
+                className={`settings-tab ${activeSettingsTab === "models" ? "active" : ""}`}
+                onClick={() => setActiveSettingsTab("models")}
               >
-                <option value="overwrite">覆盖导入</option>
-                <option value="incremental">增量导入</option>
-              </select>
-              <p className="settings-help-text">
-                覆盖导入会重建当前导入目标的索引；增量导入会尽量保留已存在内容。
-              </p>
+                Models
+              </button>
+              <button
+                className={`settings-tab ${activeSettingsTab === "mobile" ? "active" : ""}`}
+                onClick={() => setActiveSettingsTab("mobile")}
+              >
+                Mobile
+              </button>
             </div>
 
-            <div className="settings-section">
-              <label>知识卡片路径</label>
-              <div className="settings-path-box">
-                {cardSettings?.active_root || "尚未加载"}
-              </div>
-              <div className="settings-button-row">
-                <button
-                  className="action-button"
-                  onClick={() => void handlePickCardRoot()}
-                >
-                  选择路径
-                </button>
-                <button
-                  className="action-button"
-                  onClick={() => void handleResetCardRoot()}
-                >
-                  恢复默认
-                </button>
-                <button
-                  className="action-button"
-                  onClick={() => void handleOpenCardRoot()}
-                >
-                  打开目录
-                </button>
-              </div>
-              <p className="settings-help-text">
-                {cardSettings?.using_custom_root
-                  ? "当前使用自定义卡片目录。"
-                  : "当前使用应用默认卡片目录。"}
-              </p>
-              {cardSettingsError && (
-                <p className="settings-error-text">{cardSettingsError}</p>
-              )}
+            <div className="settings-tab-body">
+              {activeSettingsTab === "general"
+                ? generalSettingsSection
+                : activeSettingsTab === "models"
+                  ? modelSettingsSection
+                  : mobileSettingsSection}
             </div>
-
-            {mobileSettingsSection}
           </div>
         </div>
       )}

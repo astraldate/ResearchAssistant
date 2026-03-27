@@ -25,6 +25,8 @@ interface FileTreeProps {
   activePath?: string | null;
   workspacePath?: string | null;
   onSelect?: (file: FileNode) => void;
+  onIndexPath?: (node: FileNode) => Promise<void> | void;
+  onUnindexPath?: (node: FileNode) => Promise<void> | void;
   onLoadChildren?: (path: string) => Promise<FileNode[]>;
   onTreeChanged?: (payload: TreeMutationPayload) => Promise<void> | void;
   onStatus?: (
@@ -159,6 +161,7 @@ const TreeNode: React.FC<{
   }, [hasLoadedChildren, isOpen, node.type_name]);
 
   const handleClick = () => {
+    onSelect?.(node);
     if (node.type_name === "folder") {
       const nextOpen = !isOpen;
       setIsOpen(nextOpen);
@@ -167,7 +170,6 @@ const TreeNode: React.FC<{
       }
       return;
     }
-    onSelect?.(node);
   };
 
   const hasVisibleChildren = !!children && children.length > 0;
@@ -234,6 +236,8 @@ export const FileTree: React.FC<FileTreeProps> = ({
   activePath,
   workspacePath,
   onSelect,
+  onIndexPath,
+  onUnindexPath,
   onLoadChildren,
   onTreeChanged,
   onStatus,
@@ -304,6 +308,24 @@ export const FileTree: React.FC<FileTreeProps> = ({
       onStatus?.(`已复制路径：${relativePath}`);
     } catch (error) {
       onStatus?.(`复制路径失败：${String(error)}`, "error", true);
+    } finally {
+      closeMenus();
+    }
+  };
+
+  const handleIndexPath = async () => {
+    if (!contextMenu?.node || !onIndexPath) return;
+    try {
+      await onIndexPath(contextMenu.node);
+    } finally {
+      closeMenus();
+    }
+  };
+
+  const handleUnindexPath = async () => {
+    if (!contextMenu?.node || !onUnindexPath) return;
+    try {
+      await onUnindexPath(contextMenu.node);
     } finally {
       closeMenus();
     }
@@ -469,6 +491,20 @@ export const FileTree: React.FC<FileTreeProps> = ({
         label: "在资源管理器中显示",
         onClick: handleReveal,
       });
+      if (onIndexPath) {
+        actions.push({
+          key: "index",
+          label: "建立索引",
+          onClick: () => void handleIndexPath(),
+        });
+      }
+      if (onUnindexPath) {
+        actions.push({
+          key: "unindex",
+          label: "解除索引",
+          onClick: () => void handleUnindexPath(),
+        });
+      }
       actions.push({
         key: "copy-relative",
         label: "复制工作空间路径",
@@ -521,7 +557,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
     }
 
     return actions;
-  }, [clipboardState, contextMenu, workspacePath]);
+  }, [clipboardState, contextMenu, onIndexPath, onUnindexPath, workspacePath]);
 
   return (
     <div

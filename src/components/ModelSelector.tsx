@@ -8,13 +8,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
-  BrainCircuit,
   ChevronDown,
   ChevronUp,
-  Code2,
   Download,
   ExternalLink,
-  Image,
   RefreshCw,
   Sparkles,
   Waypoints,
@@ -47,12 +44,7 @@ interface ModelSelectorProps {
   label?: string;
 }
 
-type ModelCategory =
-  | "general"
-  | "reasoning"
-  | "coding"
-  | "vision"
-  | "embedding";
+type ModelCategory = "general" | "translation" | "embedding";
 
 interface RecommendedModel {
   name: string;
@@ -85,17 +77,13 @@ const ZH = {
   installed: "\uff08\u5df2\u5b89\u88c5\uff09",
   mirrorAvailable: "\uff08\u53ef\u8d70\u955c\u50cf\uff09",
   general: "\u901a\u7528",
-  reasoning: "\u63a8\u7406",
-  coding: "\u4ee3\u7801",
-  vision: "\u89c6\u89c9",
+  translation: "\u7ffb\u8bd1",
   embedding: "\u5411\u91cf",
 };
 
 const CATEGORY_LABELS: Record<ModelCategory, string> = {
   general: ZH.general,
-  reasoning: ZH.reasoning,
-  coding: ZH.coding,
-  vision: ZH.vision,
+  translation: ZH.translation,
   embedding: ZH.embedding,
 };
 
@@ -111,78 +99,15 @@ const RECOMMENDED_MODELS: RecommendedModel[] = [
   {
     name: "qwen3:8b",
     category: "general",
-    summary: "Balanced Chinese/English general model for Q&A and reasoning.",
+    summary:
+      "Fast extraction and balanced Chinese/English local indexing model.",
     approxSize: "~5GB",
     sourceUrl: "https://ollama.com/library/qwen3",
     checkedAt: "2026-03-05",
   },
   {
-    name: "gemma3:4b",
-    category: "general",
-    summary: "Lightweight multimodal model for local use.",
-    approxSize: "~3.3GB",
-    sourceUrl: "https://www.ollama.com/library/gemma3",
-    checkedAt: "2026-03-05",
-  },
-  {
-    name: "deepseek-r1",
-    category: "general",
-    summary: "Reasoning-focused model for math, logic, and analysis.",
-    approxSize: "~5GB (default distilled variant)",
-    sourceUrl: "https://ollama.com/library/deepseek-r1",
-    checkedAt: "2026-03-05",
-  },
-  {
-    name: "llama3.3",
-    category: "general",
-    summary: "Large general model for long-form and multilingual chat.",
-    approxSize: "~43GB",
-    sourceUrl: "https://ollama.com/library/llama3.3",
-    checkedAt: "2026-03-05",
-  },
-  {
-    name: "qwen3-coder:30b",
-    category: "general",
-    summary: "Long-context coding model for repo-level reasoning.",
-    approxSize: "~19GB",
-    sourceUrl: "https://ollama.com/library/qwen3-coder",
-    checkedAt: "2026-03-05",
-  },
-  {
-    name: "qwen2.5-coder:7b",
-    category: "general",
-    summary: "Balanced coding model for local development.",
-    approxSize: "~4.7GB",
-    sourceUrl: "https://ollama.com/library/qwen2.5-coder",
-    checkedAt: "2026-03-05",
-  },
-  {
-    name: "qwen2.5vl:7b",
-    category: "general",
-    summary: "Vision-language model for image understanding and VQA.",
-    approxSize: "~6GB",
-    sourceUrl: "https://ollama.com/library/qwen2.5vl",
-    checkedAt: "2026-03-05",
-  },
-  {
-    name: "mistral-small3.1",
-    category: "general",
-    summary: "Vision-capable model with longer context.",
-    approxSize: "~15GB",
-    sourceUrl: "https://ollama.com/library/mistral-small3.1",
-    checkedAt: "2026-03-05",
-  },
-  {
-    name: "minicpm-v",
-    category: "general",
-    summary: "Lightweight vision model often used for OCR and image QA.",
-    approxSize: "~8GB",
-    sourceUrl: "https://ollama.com/library/minicpm-v",
-    checkedAt: "2026-03-05",
-  },
-  {
     name: "nomic-embed-text",
-    category: "general",
+    category: "embedding",
     summary: "Embedding model for local RAG indexing and search.",
     approxSize: "~274MB",
     sourceUrl: "https://ollama.com/library/nomic-embed-text",
@@ -190,30 +115,30 @@ const RECOMMENDED_MODELS: RecommendedModel[] = [
   },
   {
     name: "mxbai-embed-large",
-    category: "general",
+    category: "embedding",
     summary: "Stronger embedding model for higher recall.",
     approxSize: "~670MB",
     sourceUrl: "https://ollama.com/library/mxbai-embed-large",
     checkedAt: "2026-03-05",
   },
+  {
+    name: "MedAIBase/Tencent-HY-MT1.5:1.8b-q4_K_M",
+    category: "translation",
+    summary:
+      "Current default translation model for PDF selection and page translation.",
+    approxSize: "~1.8GB",
+    sourceUrl:
+      "https://www.modelscope.cn/models/MedAIBase/Tencent-HY-MT1.5-GGUF",
+    checkedAt: "2026-03-24",
+  },
 ];
 
-const CATEGORY_ORDER: ModelCategory[] = [
-  "general",
-  "reasoning",
-  "coding",
-  "vision",
-  "embedding",
-];
+const CATEGORY_ORDER: ModelCategory[] = ["general", "translation", "embedding"];
 
 const renderCategoryIcon = (category: ModelCategory) => {
   switch (category) {
-    case "reasoning":
-      return <BrainCircuit size={14} />;
-    case "coding":
-      return <Code2 size={14} />;
-    case "vision":
-      return <Image size={14} />;
+    case "translation":
+      return <Sparkles size={14} />;
     case "embedding":
       return <Waypoints size={14} />;
     case "general":
@@ -265,6 +190,9 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
     RECOMMENDED_MODELS[0]?.category ?? "general",
   );
   const [isPulling, setIsPulling] = useState(false);
+  const [deletingModelName, setDeletingModelName] = useState<string | null>(
+    null,
+  );
   const [pullProgress, setPullProgress] = useState<PullProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const manualInputRef = useRef<HTMLInputElement | null>(null);
@@ -396,11 +324,26 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
     try {
       const mirror = resolveMirrorModel(requestedName);
       if (mirror) {
-        await invoke("pull_model_from_modelscope", {
-          name: requestedName,
-          url: mirror.url,
-          filename: mirror.filename,
-        });
+        const candidates = mirror.candidates?.length
+          ? mirror.candidates
+          : [{ url: mirror.url, filename: mirror.filename }];
+        let pulledFromMirror = false;
+        for (const candidate of candidates) {
+          try {
+            await invoke("pull_model_from_modelscope", {
+              name: requestedName,
+              url: candidate.url,
+              filename: candidate.filename,
+            });
+            pulledFromMirror = true;
+            break;
+          } catch (error) {
+            console.error("Mirror pull failed:", candidate.url, error);
+          }
+        }
+        if (!pulledFromMirror) {
+          await invoke("pull_ollama_model", { name: requestedName });
+        }
       } else {
         await invoke("pull_ollama_model", { name: requestedName });
       }
@@ -462,6 +405,52 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
       setIsOpen(false);
     },
     [onModelChange],
+  );
+
+  const handleDeleteInstalledModel = useCallback(
+    async (name: string) => {
+      if (!name.trim()) return;
+      if (
+        currentModel &&
+        (currentModel === name ||
+          name.startsWith(`${currentModel.split(":")[0]}:`) ||
+          currentModel.startsWith(`${name.split(":")[0]}:`))
+      ) {
+        onStatus?.(
+          "当前正在使用的模型不能直接卸载，请先切换到其他模型。",
+          "error",
+          true,
+        );
+        return;
+      }
+      setDeletingModelName(name);
+      setError(null);
+      try {
+        await invoke("delete_ollama_model", { name });
+        const latestList = await fetchModels();
+        if (
+          currentModel &&
+          !latestList.some(
+            (model) =>
+              model.name === currentModel ||
+              model.name.startsWith(`${currentModel.split(":")[0]}:`),
+          )
+        ) {
+          const fallback = RECOMMENDED_MODELS[0]?.name ?? "";
+          if (fallback) {
+            onModelChange(fallback);
+          }
+        }
+        onStatus?.(`已卸载模型：${name}`, "info");
+      } catch (err) {
+        const message = `卸载失败：${String(err)}`;
+        setError(message);
+        onStatus?.(message, "error", true);
+      } finally {
+        setDeletingModelName(null);
+      }
+    },
+    [currentModel, fetchModels, onModelChange, onStatus],
   );
 
   const handleApplyRecommended = useCallback(
@@ -622,17 +611,31 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
             <div className="model-installed-list">
               {models.length > 0 ? (
                 models.map((model) => (
-                  <button
+                  <div
                     key={model.name}
-                    type="button"
                     className={`model-installed-item ${currentModelSummary?.name === model.name ? "active" : ""}`}
-                    onClick={() => handleUseInstalledModel(model.name)}
                   >
-                    <span className="model-installed-name">{model.name}</span>
-                    <span className="model-installed-size">
-                      {formatBytes(model.size)}
-                    </span>
-                  </button>
+                    <button
+                      type="button"
+                      className="model-installed-main"
+                      onClick={() => handleUseInstalledModel(model.name)}
+                    >
+                      <span className="model-installed-name">{model.name}</span>
+                      <span className="model-installed-size">
+                        {formatBytes(model.size)}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      className="model-installed-delete"
+                      onClick={() =>
+                        void handleDeleteInstalledModel(model.name)
+                      }
+                      disabled={deletingModelName === model.name}
+                    >
+                      {deletingModelName === model.name ? "卸载中" : "卸载"}
+                    </button>
+                  </div>
                 ))
               ) : (
                 <div className="model-empty-state">{ZH.noModels}</div>

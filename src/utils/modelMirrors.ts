@@ -1,9 +1,43 @@
-export interface MirrorModelSpec {
+export interface MirrorCandidate {
   url: string;
   filename: string;
 }
 
+export interface MirrorModelSpec {
+  url: string;
+  filename: string;
+  candidates?: MirrorCandidate[];
+}
+
 export const MIRROR_MODELS: Record<string, MirrorModelSpec> = {
+  "qwen3:8b": {
+    url: "https://modelscope.cn/models/unsloth/Qwen3-8B-GGUF/resolve/master/Qwen3-8B-Q4_K_M.gguf",
+    filename: "Qwen3-8B-Q4_K_M.gguf",
+    candidates: [
+      {
+        url: "https://modelscope.cn/models/unsloth/Qwen3-8B-GGUF/resolve/master/Qwen3-8B-Q4_K_M.gguf",
+        filename: "Qwen3-8B-Q4_K_M.gguf",
+      },
+      {
+        url: "https://hf-mirror.com/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf",
+        filename: "Qwen3-8B-Q4_K_M.gguf",
+      },
+    ],
+  },
+  qwen3: {
+    url: "https://modelscope.cn/models/unsloth/Qwen3-8B-GGUF/resolve/master/Qwen3-8B-Q4_K_M.gguf",
+    filename: "Qwen3-8B-Q4_K_M.gguf",
+    candidates: [
+      {
+        url: "https://modelscope.cn/models/unsloth/Qwen3-8B-GGUF/resolve/master/Qwen3-8B-Q4_K_M.gguf",
+        filename: "Qwen3-8B-Q4_K_M.gguf",
+      },
+      {
+        url: "https://hf-mirror.com/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf",
+        filename: "Qwen3-8B-Q4_K_M.gguf",
+      },
+    ],
+  },
   "nomic-embed-text": {
     url: "https://modelscope.cn/models/AI-ModelScope/nomic-embed-text-v1.5-GGUF/resolve/master/nomic-embed-text-v1.5.Q4_K_M.gguf",
     filename: "nomic-embed-text-v1.5.Q4_K_M.gguf",

@@ -53,3 +53,5 @@ TEMP_app_slice.txt
 
 # Tauri sidecar binaries
 src-tauri/binaries/*.exe
+
+RESEARCH_MEMORY_MANUAL.md
