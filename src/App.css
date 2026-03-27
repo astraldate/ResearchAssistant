@@ -16,6 +16,18 @@
       transparent 28%
     ),
     #f6f4ef;
+  --app-background:
+    radial-gradient(
+      circle at top left,
+      rgba(91, 132, 177, 0.18),
+      transparent 26%
+    ),
+    radial-gradient(
+      circle at right bottom,
+      rgba(211, 169, 109, 0.16),
+      transparent 28%
+    ),
+    #f6f4ef;
 
   --bg-primary: rgba(255, 255, 255, 0.92);
   --bg-secondary: rgba(247, 245, 240, 0.92);
@@ -29,11 +41,105 @@
   --danger: #b42318;
   --shadow-soft: 0 12px 40px rgba(37, 48, 65, 0.12);
   --shadow-float: 0 10px 24px rgba(27, 36, 48, 0.14);
+  --input-surface: rgba(255, 255, 255, 0.95);
+  --focus-ring: rgba(38, 95, 155, 0.12);
+  --workspace-rail-bg: linear-gradient(
+    180deg,
+    rgba(244, 240, 231, 0.96),
+    rgba(236, 231, 221, 0.92)
+  );
+  --workspace-surface: linear-gradient(
+    180deg,
+    rgba(248, 246, 241, 0.97),
+    rgba(244, 240, 230, 0.94)
+  );
+  --workspace-rail-button-bg: rgba(255, 255, 255, 0.68);
+  --workspace-rail-button-hover-bg: rgba(255, 255, 255, 0.9);
+  --modal-surface: rgba(255, 255, 255, 0.98);
+  --settings-tab-bg: rgba(244, 242, 236, 0.9);
+  --settings-tab-active-bg: #21364f;
+  --settings-tab-active-shadow: 0 8px 18px rgba(33, 54, 79, 0.26);
+  --settings-runtime-bg: linear-gradient(
+    180deg,
+    rgba(248, 246, 241, 0.96),
+    rgba(241, 246, 249, 0.92)
+  );
+  --settings-theme-toggle-bg: rgba(246, 243, 236, 0.92);
+  --settings-theme-option-active-bg: rgba(48, 95, 151, 0.92);
+  --settings-theme-option-active-color: #fff;
+  --settings-theme-option-shadow: 0 10px 22px rgba(27, 36, 48, 0.14);
 
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+:root[data-theme="dark"] {
+  color: #e8eef8;
+  background:
+    radial-gradient(
+      circle at top left,
+      rgba(69, 112, 172, 0.2),
+      transparent 28%
+    ),
+    radial-gradient(
+      circle at right bottom,
+      rgba(198, 136, 72, 0.14),
+      transparent 30%
+    ),
+    #0f141c;
+  --app-background:
+    radial-gradient(
+      circle at top left,
+      rgba(69, 112, 172, 0.2),
+      transparent 28%
+    ),
+    radial-gradient(
+      circle at right bottom,
+      rgba(198, 136, 72, 0.14),
+      transparent 30%
+    ),
+    #0f141c;
+  --bg-primary: rgba(20, 27, 37, 0.92);
+  --bg-secondary: rgba(24, 31, 43, 0.9);
+  --bg-tertiary: rgba(33, 43, 58, 0.94);
+  --bg-accent: #162334;
+  --text-primary: #e8eef8;
+  --text-secondary: #9dadc4;
+  --text-accent: #82b6ff;
+  --border-color: rgba(135, 158, 194, 0.18);
+  --border-strong: rgba(130, 182, 255, 0.3);
+  --danger: #f06b6b;
+  --shadow-soft: 0 18px 46px rgba(1, 6, 14, 0.36);
+  --shadow-float: 0 14px 34px rgba(1, 6, 14, 0.42);
+  --input-surface: rgba(17, 23, 32, 0.95);
+  --focus-ring: rgba(130, 182, 255, 0.18);
+  --workspace-rail-bg: linear-gradient(
+    180deg,
+    rgba(20, 26, 35, 0.98),
+    rgba(15, 20, 28, 0.96)
+  );
+  --workspace-surface: linear-gradient(
+    180deg,
+    rgba(18, 25, 35, 0.98),
+    rgba(14, 20, 29, 0.96)
+  );
+  --workspace-rail-button-bg: rgba(255, 255, 255, 0.06);
+  --workspace-rail-button-hover-bg: rgba(130, 182, 255, 0.16);
+  --modal-surface: rgba(18, 25, 35, 0.98);
+  --settings-tab-bg: rgba(255, 255, 255, 0.05);
+  --settings-tab-active-bg: #2f4d75;
+  --settings-tab-active-shadow: 0 8px 18px rgba(8, 14, 26, 0.34);
+  --settings-runtime-bg: linear-gradient(
+    180deg,
+    rgba(24, 31, 43, 0.98),
+    rgba(19, 27, 38, 0.94)
+  );
+  --settings-theme-toggle-bg: rgba(255, 255, 255, 0.05);
+  --settings-theme-option-active-bg: rgba(130, 182, 255, 0.2);
+  --settings-theme-option-active-color: #f7fbff;
+  --settings-theme-option-shadow: 0 10px 22px rgba(5, 9, 18, 0.28);
 }
 
 * {
@@ -50,6 +156,8 @@ body,
 
 body {
   overflow: hidden;
+  background: var(--app-background);
+  color: var(--text-primary);
 }
 
 button,
@@ -67,7 +175,7 @@ input,
 select,
 textarea {
   border: 1px solid var(--border-color);
-  background: rgba(255, 255, 255, 0.95);
+  background: var(--input-surface);
   color: var(--text-primary);
 }
 
@@ -76,7 +184,7 @@ select:focus,
 textarea:focus {
   outline: none;
   border-color: var(--text-accent);
-  box-shadow: 0 0 0 3px rgba(38, 95, 155, 0.12);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 .app-shell {
@@ -104,11 +212,7 @@ textarea:focus {
   gap: 8px;
   padding: 10px 6px;
   border-right: 1px solid rgba(103, 117, 141, 0.18);
-  background: linear-gradient(
-    180deg,
-    rgba(244, 240, 231, 0.96),
-    rgba(236, 231, 221, 0.92)
-  );
+  background: var(--workspace-rail-bg);
   backdrop-filter: blur(16px);
   transition:
     width 0.28s ease,
@@ -122,7 +226,7 @@ textarea:focus {
   height: 34px;
   border: 1px solid rgba(103, 117, 141, 0.14);
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.68);
+  background: var(--workspace-rail-button-bg);
   box-shadow: 0 6px 18px rgba(27, 36, 48, 0.06);
   display: inline-flex;
   align-items: center;
@@ -140,7 +244,7 @@ textarea:focus {
 
 .workspace-rail-button:hover,
 .workspace-rail-button.active {
-  background: rgba(255, 255, 255, 0.9);
+  background: var(--workspace-rail-button-hover-bg);
   color: var(--text-accent);
   border-color: rgba(38, 95, 155, 0.22);
   box-shadow: 0 12px 28px rgba(27, 36, 48, 0.1);
@@ -413,11 +517,7 @@ textarea:focus {
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: linear-gradient(
-    180deg,
-    rgba(248, 246, 241, 0.97),
-    rgba(244, 240, 230, 0.94)
-  );
+  background: var(--workspace-surface);
   border-right: 1px solid var(--border-color);
   backdrop-filter: blur(16px);
   transition:
@@ -2458,7 +2558,7 @@ textarea:focus {
   padding: 12px;
   border-radius: 14px;
   border: 1px solid rgba(110, 124, 144, 0.24);
-  background: rgba(255, 255, 255, 0.98);
+  background: var(--modal-surface);
   box-shadow: 0 18px 42px rgba(27, 36, 48, 0.18);
   pointer-events: auto;
   backdrop-filter: blur(16px);
@@ -3498,7 +3598,7 @@ textarea:focus {
   gap: 12px;
   padding: 16px 18px;
   border-bottom: 1px solid var(--border-color);
-  background: rgba(255, 255, 255, 0.98);
+  background: var(--modal-surface);
 }
 
 .settings-modal-header h3 {
@@ -3509,12 +3609,12 @@ textarea:focus {
   display: flex;
   gap: 8px;
   padding: 14px 18px 0;
-  background: rgba(255, 255, 255, 0.98);
+  background: var(--modal-surface);
 }
 
 .settings-tab {
   border: 1px solid var(--border-color);
-  background: rgba(244, 242, 236, 0.9);
+  background: var(--settings-tab-bg);
   color: var(--text-secondary);
   border-radius: 999px;
   padding: 8px 14px;
@@ -3529,10 +3629,10 @@ textarea:focus {
 }
 
 .settings-tab.active {
-  background: #21364f;
-  border-color: #21364f;
+  background: var(--settings-tab-active-bg);
+  border-color: var(--settings-tab-active-bg);
   color: #fff;
-  box-shadow: 0 8px 18px rgba(33, 54, 79, 0.26);
+  box-shadow: var(--settings-tab-active-shadow);
 }
 
 .settings-tab-body {
@@ -3566,6 +3666,279 @@ textarea:focus {
   padding: 10px 12px;
 }
 
+.settings-theme-toggle {
+  display: inline-flex;
+  gap: 6px;
+  width: fit-content;
+  padding: 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: var(--settings-theme-toggle-bg);
+}
+
+.settings-theme-option {
+  border: none;
+  border-radius: 999px;
+  padding: 8px 14px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition:
+    background 0.18s ease,
+    color 0.18s ease,
+    box-shadow 0.18s ease,
+    transform 0.18s ease;
+}
+
+.settings-theme-option:hover {
+  color: var(--text-primary);
+}
+
+.settings-theme-option.active {
+  background: var(--settings-theme-option-active-bg);
+  color: var(--settings-theme-option-active-color);
+  box-shadow: var(--settings-theme-option-shadow);
+}
+
+:root[data-theme="dark"] .sidebar-rail {
+  background: rgba(14, 20, 29, 0.9);
+}
+
+:root[data-theme="dark"] .rail-button {
+  color: var(--text-secondary);
+}
+
+:root[data-theme="dark"] .rail-button:hover {
+  background: rgba(130, 182, 255, 0.12);
+  color: var(--text-accent);
+}
+
+:root[data-theme="dark"] .rail-button.active {
+  background: rgba(130, 182, 255, 0.18);
+  border-color: rgba(130, 182, 255, 0.22);
+  color: var(--text-accent);
+}
+
+:root[data-theme="dark"] .pdf-reader-toolbar {
+  border-color: rgba(135, 158, 194, 0.14);
+  background: rgba(20, 27, 37, 0.88);
+  box-shadow:
+    0 12px 22px rgba(1, 6, 14, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+:root[data-theme="dark"]
+  .pdf-reader-toolbar-shell.auto-hidden
+  .pdf-reader-toolbar {
+  background: rgba(20, 27, 37, 0.72);
+  box-shadow:
+    0 7px 16px rgba(1, 6, 14, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+:root[data-theme="dark"] .pdf-toolbar-page-chip,
+:root[data-theme="dark"] .pdf-toolbar-pill {
+  border-color: rgba(135, 158, 194, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-secondary);
+}
+
+:root[data-theme="dark"] .pdf-lookup-control select {
+  border-color: rgba(135, 158, 194, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+  color-scheme: dark;
+  background-color: rgba(22, 29, 39, 0.96);
+}
+
+:root[data-theme="dark"] .pdf-lookup-control select:focus {
+  border-color: rgba(130, 182, 255, 0.26);
+  box-shadow: 0 0 0 3px rgba(130, 182, 255, 0.12);
+}
+
+:root[data-theme="dark"] .pdf-toolbar-page-chip:focus-within {
+  border-color: rgba(130, 182, 255, 0.26);
+  box-shadow: 0 0 0 3px rgba(130, 182, 255, 0.12);
+}
+
+:root[data-theme="dark"] .pdf-toolbar-icon-button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+:root[data-theme="dark"] .pdf-toolbar-icon-button.primary {
+  background: rgba(130, 182, 255, 0.16);
+}
+
+:root[data-theme="dark"] .pdf-dock-panel {
+  background: linear-gradient(
+    180deg,
+    rgba(18, 25, 35, 0.98),
+    rgba(14, 20, 29, 0.98)
+  );
+}
+
+:root[data-theme="dark"] .pdf-dock-header {
+  background: rgba(18, 25, 35, 0.96);
+}
+
+:root[data-theme="dark"] .pdf-dock-topbar {
+  background: rgba(18, 25, 35, 0.92);
+}
+
+:root[data-theme="dark"] .pdf-dock-topbar-button {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(135, 158, 194, 0.16);
+  color: var(--text-secondary);
+  box-shadow: 0 4px 12px rgba(1, 6, 14, 0.18);
+}
+
+:root[data-theme="dark"] .pdf-dock-topbar-button:hover {
+  background: rgba(130, 182, 255, 0.12);
+  color: var(--text-accent);
+}
+
+:root[data-theme="dark"] .ai-right-panel {
+  background: rgba(18, 25, 35, 0.96);
+}
+
+:root[data-theme="dark"] .chat-tools-shell,
+:root[data-theme="dark"] .chat-pdf-shell,
+:root[data-theme="dark"] .pdf-workspace {
+  background: linear-gradient(
+    180deg,
+    rgba(18, 25, 35, 0.92),
+    rgba(14, 20, 29, 0.88)
+  );
+}
+
+:root[data-theme="dark"] .chat-header,
+:root[data-theme="dark"] .main-view-header {
+  background: rgba(18, 25, 35, 0.88);
+}
+
+:root[data-theme="dark"] .messages-list {
+  background: linear-gradient(
+    180deg,
+    rgba(18, 25, 35, 0.42),
+    rgba(14, 20, 29, 0)
+  );
+}
+
+:root[data-theme="dark"] .message.user {
+  background: rgba(130, 182, 255, 0.12);
+}
+
+:root[data-theme="dark"] .input-area {
+  background: rgba(16, 22, 31, 0.92);
+}
+
+:root[data-theme="dark"] .image-chip,
+:root[data-theme="dark"] .chat-scope-chip {
+  background: rgba(130, 182, 255, 0.1);
+  border-color: rgba(130, 182, 255, 0.16);
+  color: var(--text-accent);
+}
+
+:root[data-theme="dark"] .chat-input-wrapper {
+  border-color: rgba(135, 158, 194, 0.16);
+  background: rgba(22, 29, 39, 0.98);
+}
+
+:root[data-theme="dark"] .chat-input-wrapper:focus-within {
+  border-color: rgba(130, 182, 255, 0.28);
+  background: rgba(22, 29, 39, 1);
+  box-shadow:
+    0 0 0 1px rgba(130, 182, 255, 0.12),
+    0 0 0 4px rgba(130, 182, 255, 0.08),
+    0 0 18px rgba(80, 131, 195, 0.16),
+    0 0 24px rgba(205, 140, 69, 0.08);
+}
+
+:root[data-theme="dark"] .chat-paper-mention-list {
+  border-color: rgba(135, 158, 194, 0.14);
+  background: rgba(18, 25, 35, 0.98);
+  box-shadow: 0 18px 40px rgba(1, 6, 14, 0.28);
+}
+
+:root[data-theme="dark"] .chat-paper-mention-item:hover,
+:root[data-theme="dark"] .chat-paper-mention-item.active {
+  background: rgba(130, 182, 255, 0.1);
+  border-color: rgba(130, 182, 255, 0.16);
+}
+
+:root[data-theme="dark"] .send-button:hover {
+  background: rgba(130, 182, 255, 0.08);
+}
+
+:root[data-theme="dark"] .support-panel,
+:root[data-theme="dark"] .card-item,
+:root[data-theme="dark"] .reasoning-panel {
+  background: rgba(22, 29, 39, 0.86);
+  box-shadow: 0 8px 20px rgba(1, 6, 14, 0.16);
+}
+
+:root[data-theme="dark"] .card-library-header-icon {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(135, 158, 194, 0.16);
+  color: var(--text-secondary);
+}
+
+:root[data-theme="dark"] .card-library-header-icon:hover {
+  background: rgba(130, 182, 255, 0.1);
+  color: var(--text-accent);
+}
+
+:root[data-theme="dark"] .card-library-search-input,
+:root[data-theme="dark"] .knowledge-search-input,
+:root[data-theme="dark"] .selection-menu,
+:root[data-theme="dark"] .research-text-input {
+  background: rgba(22, 29, 39, 0.96);
+  border-color: rgba(135, 158, 194, 0.16);
+  color: var(--text-primary);
+}
+
+:root[data-theme="dark"] .research-panel-tab,
+:root[data-theme="dark"] .research-inline-tab {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(135, 158, 194, 0.16);
+  color: var(--text-secondary);
+}
+
+:root[data-theme="dark"] .research-panel-tab.active,
+:root[data-theme="dark"] .research-inline-tab.active {
+  border-color: rgba(130, 182, 255, 0.24);
+  background: rgba(130, 182, 255, 0.14);
+  color: var(--text-accent);
+}
+
+:root[data-theme="dark"] .research-card,
+:root[data-theme="dark"] .research-node-card {
+  border-color: rgba(130, 182, 255, 0.12);
+  background: linear-gradient(
+    180deg,
+    rgba(23, 31, 42, 0.96),
+    rgba(18, 25, 35, 0.92)
+  );
+  box-shadow: 0 10px 28px rgba(1, 6, 14, 0.18);
+}
+
+:root[data-theme="dark"] .research-tag {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+:root[data-theme="dark"] .model-compact-row select {
+  background: rgba(22, 29, 39, 0.96);
+}
+
+:root[data-theme="dark"] .model-compact-download {
+  border-color: var(--border-color);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+:root[data-theme="dark"] .pdf-empty-state {
+  background: rgba(18, 25, 35, 0.9);
+}
+
 .settings-model-grid {
   display: flex;
   flex-direction: column;
@@ -3578,11 +3951,7 @@ textarea:focus {
   padding: 14px 16px;
   border-radius: 16px;
   border: 1px solid rgba(93, 110, 132, 0.14);
-  background: linear-gradient(
-    180deg,
-    rgba(248, 246, 241, 0.96),
-    rgba(241, 246, 249, 0.92)
-  );
+  background: var(--settings-runtime-bg);
 }
 
 .settings-runtime-row {
@@ -4103,7 +4472,7 @@ textarea:focus {
 
 .research-panel-tabs {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
   gap: 6px;
   margin-bottom: 12px;
 }
@@ -4115,8 +4484,13 @@ textarea:focus {
   color: var(--text-secondary);
   border-radius: 10px;
   padding: 8px 10px;
+  min-height: 38px;
   font-size: 0.78rem;
   font-weight: 700;
+  line-height: 1.2;
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
   cursor: pointer;
 }
 
@@ -4817,4 +5191,129 @@ textarea:focus {
   gap: 8px;
   flex-wrap: wrap;
   flex-shrink: 0;
+}
+
+/* Final dark-theme overrides for late generic button rules */
+:root[data-theme="dark"] .settings-modal,
+:root[data-theme="dark"] .settings-modal-header,
+:root[data-theme="dark"] .settings-tabs {
+  background: var(--modal-surface);
+}
+
+:root[data-theme="dark"] .settings-tab {
+  background: var(--settings-tab-bg);
+  color: var(--text-secondary);
+  border-color: var(--border-color);
+}
+
+:root[data-theme="dark"] .settings-tab.active {
+  background: var(--settings-tab-active-bg);
+  border-color: var(--settings-tab-active-bg);
+  color: #fff;
+  box-shadow: var(--settings-tab-active-shadow);
+}
+
+:root[data-theme="dark"] .tab-button,
+:root[data-theme="dark"] .action-button,
+:root[data-theme="dark"] .card-library-header-icon,
+:root[data-theme="dark"] .research-toolbar .action-button,
+:root[data-theme="dark"] .research-graph-controls .action-button {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(135, 158, 194, 0.16);
+  color: var(--text-primary);
+}
+
+:root[data-theme="dark"] .tab-button:hover,
+:root[data-theme="dark"] .action-button:hover,
+:root[data-theme="dark"] .card-library-header-icon:hover,
+:root[data-theme="dark"] .research-toolbar .action-button:hover,
+:root[data-theme="dark"] .research-graph-controls .action-button:hover {
+  background: rgba(130, 182, 255, 0.1);
+  color: var(--text-accent);
+}
+
+:root[data-theme="dark"] .tab-button.active,
+:root[data-theme="dark"] .action-button.primary {
+  background: linear-gradient(135deg, #3768a5, #5f95d9);
+  border-color: transparent;
+  color: #fff;
+}
+
+:root[data-theme="dark"] .research-panel-tab,
+:root[data-theme="dark"] .research-inline-tab {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(135, 158, 194, 0.16);
+  color: var(--text-secondary);
+}
+
+:root[data-theme="dark"] .research-panel-tab.active,
+:root[data-theme="dark"] .research-inline-tab.active {
+  background: rgba(130, 182, 255, 0.14);
+  border-color: rgba(130, 182, 255, 0.24);
+  color: var(--text-accent);
+}
+
+:root[data-theme="dark"] .pdf-dock-topbar,
+:root[data-theme="dark"] .pdf-dock-topbar-button,
+:root[data-theme="dark"] .ghost-icon-button.pdf-dock-topbar-button {
+  background: rgba(18, 25, 35, 0.92);
+}
+
+:root[data-theme="dark"] .pdf-dock-topbar-button,
+:root[data-theme="dark"] .ghost-icon-button.pdf-dock-topbar-button {
+  border-color: rgba(135, 158, 194, 0.16);
+  color: var(--text-secondary);
+  box-shadow: 0 4px 12px rgba(1, 6, 14, 0.18);
+}
+
+:root[data-theme="dark"] .pdf-dock-topbar-button:hover,
+:root[data-theme="dark"] .ghost-icon-button.pdf-dock-topbar-button:hover {
+  background: rgba(130, 182, 255, 0.12);
+  color: var(--text-accent);
+}
+
+:root[data-theme="dark"] .settings-path-box {
+  background: rgba(22, 29, 39, 0.92);
+  border-color: rgba(135, 158, 194, 0.16);
+  color: var(--text-primary);
+}
+
+:root[data-theme="dark"] .settings-model-card {
+  border-color: rgba(135, 158, 194, 0.14);
+  background: rgba(22, 29, 39, 0.88);
+}
+
+:root[data-theme="dark"] .mobile-settings-panel {
+  border-color: rgba(135, 158, 194, 0.16);
+  background: linear-gradient(
+    180deg,
+    rgba(22, 29, 39, 0.96),
+    rgba(17, 23, 32, 0.92)
+  );
+}
+
+:root[data-theme="dark"] .mobile-settings-device-item {
+  border-color: rgba(135, 158, 194, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+:root[data-theme="dark"] .mobile-settings-code {
+  color: var(--text-accent);
+}
+
+:root[data-theme="dark"] .model-compact-row select {
+  background: rgba(22, 29, 39, 0.96);
+  border-color: rgba(135, 158, 194, 0.16);
+  color: var(--text-primary);
+}
+
+:root[data-theme="dark"] .model-compact-download {
+  border-color: rgba(135, 158, 194, 0.16);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-secondary);
+}
+
+:root[data-theme="dark"] .model-compact-download:hover:not(:disabled) {
+  background: rgba(130, 182, 255, 0.1);
+  color: var(--text-accent);
 }

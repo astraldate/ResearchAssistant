@@ -59,6 +59,7 @@ type SidebarTool = "workspace" | "citations" | "notes" | "knowledge" | "cards";
 type StatusTone = "info" | "error";
 type AiRequirement = "chat" | "index" | "translate";
 type SettingsTab = "general" | "models" | "mobile";
+type AppTheme = "default" | "dark";
 
 type SelectedCardView = {
   id: string;
@@ -339,6 +340,7 @@ const CHAT_MODEL_KEY = "ra_chat_model_v1";
 const EXTRACT_MODEL_KEY = "ra_extract_fast_model_v3";
 const EXTRACT_FALLBACK_MODEL_KEY = "ra_extract_fallback_model_v2";
 const TRANSLATION_MODEL_KEY = "ra_translation_model_v1";
+const APP_THEME_KEY = "ra_app_theme_v1";
 const SIDEBAR_COLLAPSED_WIDTH_PX = 58;
 
 const STAGE_LABELS: Record<string, string> = {
@@ -525,6 +527,10 @@ function App() {
   const [translationModel, setTranslationModel] = useState(() => {
     const stored = localStorage.getItem(TRANSLATION_MODEL_KEY)?.trim();
     return stored || REQUIRED_MODELS.translation;
+  });
+  const [appTheme, setAppTheme] = useState<AppTheme>(() => {
+    const stored = localStorage.getItem(APP_THEME_KEY)?.trim();
+    return stored === "dark" ? "dark" : "default";
   });
   const [activeSidebarTool, setActiveSidebarTool] =
     useState<SidebarTool>("workspace");
@@ -1140,6 +1146,13 @@ function App() {
       setIngestMode(storedMode);
     }
   }, []);
+
+  useEffect(() => {
+    localStorage.setItem(APP_THEME_KEY, appTheme);
+    document.documentElement.dataset.theme = appTheme;
+    document.documentElement.style.colorScheme =
+      appTheme === "dark" ? "dark" : "light";
+  }, [appTheme]);
 
   useEffect(() => {
     localStorage.setItem("ra_ingest_mode_v1", ingestMode);
@@ -2229,6 +2242,35 @@ function App() {
   const generalSettingsSection = (
     <>
       <div className="settings-section">
+        <label>主题配色</label>
+        <div
+          className="settings-theme-toggle"
+          role="tablist"
+          aria-label="主题配色"
+        >
+          <button
+            type="button"
+            className={`settings-theme-option ${appTheme === "default" ? "active" : ""}`}
+            onClick={() => setAppTheme("default")}
+            aria-pressed={appTheme === "default"}
+          >
+            默认配色
+          </button>
+          <button
+            type="button"
+            className={`settings-theme-option ${appTheme === "dark" ? "active" : ""}`}
+            onClick={() => setAppTheme("dark")}
+            aria-pressed={appTheme === "dark"}
+          >
+            深色配色
+          </button>
+        </div>
+        <p className="settings-help-text">
+          默认配色沿用当前界面的浅色工作台风格；深色配色更适合夜间阅读。
+        </p>
+      </div>
+
+      <div className="settings-section">
         <label htmlFor="inference-mode-select">推理模式</label>
         <select
           id="inference-mode-select"
@@ -2392,7 +2434,7 @@ function App() {
     : "";
 
   return (
-    <div className="app-shell">
+    <div className="app-shell" data-theme={appTheme}>
       {statusBanner && (
         <div
           className={`status-banner-shell ${statusBanner.tone} ${isStatusBannerExpanded ? "expanded" : "collapsed"}`}
