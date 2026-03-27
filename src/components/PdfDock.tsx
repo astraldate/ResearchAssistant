@@ -1,5 +1,5 @@
 import React, { Suspense, lazy, useEffect, useState } from "react";
-import { ChevronDown, ChevronUp, Maximize2, Minimize2, X } from "lucide-react";
+import { ChevronDown, ChevronUp, X } from "lucide-react";
 import { LookupMode } from "./TermExplainPopover";
 
 type StatusTone = "info" | "error";
@@ -41,8 +41,6 @@ export const PdfDock: React.FC<PdfDockProps> = ({
   onPageChange,
   onStatus,
   onCardSaved,
-  isFocusMode,
-  onToggleFocusMode,
   onClose,
 }) => {
   const [lookupMode, setLookupMode] = useState<LookupMode>(() => {

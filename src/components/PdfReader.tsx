@@ -12,7 +12,6 @@ import {
   CheckCircle2,
   List,
   LoaderCircle,
-  MoveHorizontal,
   X,
   ZoomIn,
   ZoomOut,
@@ -1880,12 +1879,6 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
     setContextMenu(null);
   };
 
-  const handleOpenExplainPopover = () => {
-    setSelection((previous) =>
-      previous ? { ...previous, overlay: "explain" } : previous,
-    );
-  };
-
   const handleClosePopover = () => {
     setSelection(null);
     window.getSelection()?.removeAllRanges();
@@ -2042,13 +2035,6 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
     window.getSelection()?.removeAllRanges();
     captureViewportAnchor();
     setZoomPercent((previous) => Math.min(MAX_ZOOM, previous + ZOOM_STEP));
-  };
-
-  const fitToWidth = () => {
-    setSelection(null);
-    window.getSelection()?.removeAllRanges();
-    captureViewportAnchor();
-    setZoomPercent(100);
   };
 
   const handlePageInputChange = (
@@ -2257,15 +2243,6 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
       event.currentTarget.blur();
     }
   };
-
-  const selectionStyle = useMemo<React.CSSProperties | undefined>(() => {
-    if (!selection) return undefined;
-    return {
-      position: "fixed",
-      left: `${selection.targetLeft}px`,
-      top: `${selection.targetTop}px`,
-    };
-  }, [selection]);
 
   const popoverStyle = useMemo<React.CSSProperties | undefined>(() => {
     if (!selection) return undefined;
