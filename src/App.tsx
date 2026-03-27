@@ -207,12 +207,6 @@ interface FocusRestoreLayout {
   sidebarCollapsed: boolean;
 }
 
-interface DocumentResult {
-  id: string;
-  path: string;
-  content: string;
-}
-
 const REQUIRED_MODELS = {
   embedding: "nomic-embed-text",
   extractFast: "qwen3:8b",
