@@ -2619,17 +2619,6 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
 
         {viewerMode === "pdfjs" && (
           <div className="pdf-selection-overlay" ref={selectionOverlayRef}>
-            {selection && selection.overlay === "button" && (
-              <button
-                className="pdf-selection-target"
-                style={selectionStyle}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={handleOpenExplainPopover}
-              >
-                解释
-              </button>
-            )}
-
             {contextMenu && selection && (
               <div
                 ref={contextMenuRef}
