@@ -2522,9 +2522,656 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
             return null;
           }
 
-  const handleClosePopover = () => {
+          const rects = group.rects
+            .map((rect) => ({
+              left: pageRect.left + rect.leftRatio * pageRect.width,
+              top: pageRect.top + rect.topRatio * pageRect.height,
+              width: rect.widthRatio * pageRect.width,
+              height: rect.heightRatio * pageRect.height,
+            }))
+            .filter((rect) => rect.width > 1 && rect.height > 1);
+
+          if (rects.length === 0) {
+            return null;
+          }
+
+          return {
+            page: group.page,
+            rects,
+          } satisfies PdfSelectionHighlightGroup;
+        })
+        .filter((group): group is PdfSelectionHighlightGroup => group !== null);
+
+      if (highlightGroups.length === 0) {
+        return null;
+      }
+
+      const lastGroup = highlightGroups[highlightGroups.length - 1];
+      const actionRect = lastGroup.rects[lastGroup.rects.length - 1];
+      if (!actionRect) {
+        return null;
+      }
+
+      const popoverWidth = Math.min(
+        POPOVER_ESTIMATED_WIDTH,
+        window.innerWidth - VIEWPORT_MARGIN_X * 2,
+      );
+      const selectionCenterX = actionRect.left + actionRect.width / 2;
+      const preferredPopoverLeft = selectionCenterX - popoverWidth / 2;
+      const popoverLeft = clamp(
+        preferredPopoverLeft,
+        VIEWPORT_MARGIN_X,
+        window.innerWidth - popoverWidth - VIEWPORT_MARGIN_X,
+      );
+      const actionRectBottom = actionRect.top + actionRect.height;
+      const canOpenBelow =
+        actionRectBottom + POPOVER_ANCHOR_GAP + POPOVER_ESTIMATED_HEIGHT <=
+        window.innerHeight - VIEWPORT_MARGIN_X;
+      const canOpenAbove =
+        actionRect.top - POPOVER_ANCHOR_GAP - POPOVER_ESTIMATED_HEIGHT >=
+        VIEWPORT_MARGIN_TOP;
+      const popoverTop = canOpenBelow
+        ? actionRectBottom + POPOVER_ANCHOR_GAP
+        : canOpenAbove
+          ? actionRect.top - POPOVER_ESTIMATED_HEIGHT - POPOVER_ANCHOR_GAP
+          : clamp(
+              actionRectBottom + 10,
+              VIEWPORT_MARGIN_TOP,
+              window.innerHeight - POPOVER_ESTIMATED_HEIGHT - VIEWPORT_MARGIN_X,
+            );
+      const targetLeft = clamp(
+        selectionCenterX - FLOATING_BUTTON_WIDTH / 2,
+        VIEWPORT_MARGIN_X,
+        window.innerWidth - FLOATING_BUTTON_WIDTH - VIEWPORT_MARGIN_X,
+      );
+      const targetTop = canOpenBelow
+        ? clamp(
+            actionRectBottom + 6,
+            VIEWPORT_MARGIN_TOP,
+            window.innerHeight - FLOATING_BUTTON_HEIGHT - VIEWPORT_MARGIN_X,
+          )
+        : clamp(
+            actionRect.top - FLOATING_BUTTON_HEIGHT - 6,
+            VIEWPORT_MARGIN_TOP,
+            window.innerHeight - FLOATING_BUTTON_HEIGHT - VIEWPORT_MARGIN_X,
+          );
+
+      return {
+        text: annotation.text,
+        page: lastGroup.page,
+        startPage: highlightGroups[0]?.page ?? lastGroup.page,
+        endPage: lastGroup.page,
+        targetLeft,
+        targetTop,
+        popoverLeft,
+        popoverTop,
+        highlightGroups,
+        overlay,
+      };
+    },
+    [],
+  );
+
+  const findAnnotationAtViewportPoint = useCallback(
+    (clientX: number, clientY: number) => {
+      for (let index = annotations.length - 1; index >= 0; index -= 1) {
+        const annotation = annotations[index];
+        for (const group of annotation.groups) {
+          const pageShell = pageRefs.current.get(group.page);
+          const pageContent =
+            pageShell?.querySelector<HTMLElement>(".pdfjs-page-content") ??
+            null;
+          const pageRect = pageContent?.getBoundingClientRect();
+          if (!pageRect) {
+            continue;
+          }
+
+          for (const rect of group.rects) {
+            const left = pageRect.left + rect.leftRatio * pageRect.width;
+            const top = pageRect.top + rect.topRatio * pageRect.height;
+            const width = rect.widthRatio * pageRect.width;
+            const height = rect.heightRatio * pageRect.height;
+            if (
+              clientX >= left - 2 &&
+              clientX <= left + width + 2 &&
+              clientY >= top - 2 &&
+              clientY <= top + height + 2
+            ) {
+              return annotation;
+            }
+          }
+        }
+      }
+
+      return null;
+    },
+    [annotations],
+  );
+
+  const closeAnnotationEditor = useCallback(() => {
+    setAnnotationEditor(null);
+  }, []);
+
+  const openAnnotationEditorForAnnotation = useCallback(
+    (annotation: PdfHighlightAnnotation, anchorRect: DOMRect) => {
+      const { left, top } = resolveFloatingPanelPosition(
+        anchorRect.left -
+          PDF_ANNOTATION_EDITOR_WIDTH / 2 +
+          anchorRect.width / 2,
+        anchorRect.bottom + 10,
+        PDF_ANNOTATION_EDITOR_WIDTH,
+        PDF_ANNOTATION_EDITOR_HEIGHT,
+      );
+      setAnnotationEditor({
+        mode: "edit",
+        annotationId: annotation.id,
+        left,
+        top,
+        color: annotation.color,
+        note: annotation.note,
+      });
+      setContextMenu(null);
+      selectionRangeRef.current = [];
+      setSelection(null);
+      window.getSelection()?.removeAllRanges();
+    },
+    [],
+  );
+
+  const openAnnotationEditorFromSelection = useCallback(() => {
+    if (!selection) {
+      return;
+    }
+
+    const { left, top } = resolveFloatingPanelPosition(
+      selection.popoverLeft,
+      selection.popoverTop,
+      PDF_ANNOTATION_EDITOR_WIDTH,
+      PDF_ANNOTATION_EDITOR_HEIGHT,
+    );
+    setAnnotationEditor({
+      mode: "create",
+      annotationId: null,
+      left,
+      top,
+      color: preferredAnnotationColor,
+      note: "",
+    });
+    setContextMenu(null);
+  }, [preferredAnnotationColor, selection]);
+
+  const handleApplyHighlight = useCallback(
+    (color: string) => {
+      const annotation = buildAnnotationFromSelection(color, "");
+      if (!annotation) {
+        return;
+      }
+      setAnnotations((previous) => [...previous, annotation]);
+      setPreferredAnnotationColor(color);
+      setContextMenu(null);
+      selectionRangeRef.current = [];
+      setSelection(null);
+      window.getSelection()?.removeAllRanges();
+      onStatusRef.current("已添加突出显示。", "info", false);
+    },
+    [buildAnnotationFromSelection],
+  );
+
+  const handleAnnotationEditorSave = useCallback(() => {
+    if (!annotationEditor) {
+      return;
+    }
+
+    if (annotationEditor.mode === "edit" && annotationEditor.annotationId) {
+      setAnnotations((previous) =>
+        previous.map((annotation) =>
+          annotation.id === annotationEditor.annotationId
+            ? {
+                ...annotation,
+                color: annotationEditor.color,
+                note: annotationEditor.note.trim(),
+                updatedAt: new Date().toISOString(),
+              }
+            : annotation,
+        ),
+      );
+      setPreferredAnnotationColor(annotationEditor.color);
+      setAnnotationEditor(null);
+      onStatusRef.current("已更新注释。", "info", false);
+      return;
+    }
+
+    const annotation = buildAnnotationFromSelection(
+      annotationEditor.color,
+      annotationEditor.note,
+    );
+    if (!annotation) {
+      return;
+    }
+    setAnnotations((previous) => [...previous, annotation]);
+    setPreferredAnnotationColor(annotationEditor.color);
+    setAnnotationEditor(null);
+    setContextMenu(null);
+    selectionRangeRef.current = [];
     setSelection(null);
     window.getSelection()?.removeAllRanges();
+    onStatusRef.current("已保存注释。", "info", false);
+  }, [annotationEditor, buildAnnotationFromSelection]);
+
+  const handleAnnotationNoteClick = useCallback(
+    (annotationId: string, anchorRect: DOMRect) => {
+      const annotation = annotations.find((item) => item.id === annotationId);
+      if (!annotation) {
+        return;
+      }
+      openAnnotationEditorForAnnotation(annotation, anchorRect);
+    },
+    [annotations, openAnnotationEditorForAnnotation],
+  );
+
+  const handleDeleteAnnotation = useCallback((annotationId: string) => {
+    setAnnotations((previous) =>
+      previous.filter((annotation) => annotation.id !== annotationId),
+    );
+    setContextMenu(null);
+    setAnnotationEditor((previous) =>
+      previous?.annotationId === annotationId ? null : previous,
+    );
+    onStatusRef.current("已删除突出显示。", "info", false);
+  }, []);
+
+  const handleDeleteAnnotationNote = useCallback((annotationId: string) => {
+    setAnnotations((previous) =>
+      previous.map((annotation) =>
+        annotation.id === annotationId
+          ? {
+              ...annotation,
+              note: "",
+              updatedAt: new Date().toISOString(),
+            }
+          : annotation,
+      ),
+    );
+    setContextMenu(null);
+    setAnnotationEditor((previous) =>
+      previous?.annotationId === annotationId
+        ? { ...previous, note: "" }
+        : previous,
+    );
+    onStatusRef.current("已删除注释。", "info", false);
+  }, []);
+
+  const handleContextEditAnnotation = useCallback(() => {
+    if (contextMenu?.mode !== "annotation") {
+      return;
+    }
+    const annotation = annotations.find(
+      (item) => item.id === contextMenu.annotationId,
+    );
+    if (!annotation) {
+      return;
+    }
+    const anchorRect = new DOMRect(contextMenu.x, contextMenu.y, 0, 0);
+    openAnnotationEditorForAnnotation(annotation, anchorRect);
+  }, [annotations, contextMenu, openAnnotationEditorForAnnotation]);
+
+  const handleContextAnnotationCopy = useCallback(async () => {
+    if (!selection?.text) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(selection.text);
+      onStatusRef.current("已复制选中文本。", "info", false);
+    } catch {
+      onStatusRef.current("复制失败，请手动复制。", "error", false);
+    }
+    setContextMenu(null);
+  }, [selection]);
+
+  const handleContextAnnotationExplain = useCallback(() => {
+    if (!selection) {
+      return;
+    }
+    setSelection((previous) =>
+      previous ? { ...previous, overlay: "explain" } : previous,
+    );
+    setContextMenu(null);
+  }, [selection]);
+
+  const handleContextAnnotationTranslate = useCallback(() => {
+    if (!selection) {
+      return;
+    }
+    if (selection.text.length > MAX_TRANSLATE_SELECTION_CHARS) {
+      onStatusRef.current("选中文本过长，请使用“整页翻译”。", "info", false);
+      return;
+    }
+    setSelection((previous) =>
+      previous ? { ...previous, overlay: "translate" } : previous,
+    );
+    setContextMenu(null);
+  }, [selection]);
+
+  const clampSelectionRangesToBlankLine = useCallback(
+    (
+      ranges: Range[],
+      event?:
+        | SelectionPointerState
+        | React.MouseEvent<HTMLDivElement>
+        | MouseEvent,
+    ) => {
+      if (!event || ranges.length === 0) return ranges;
+      if (resolveSelectionTargetElement(event.target)) return ranges;
+
+      const pageNumber = resolvePageFromViewportPoint(
+        event.clientX,
+        event.clientY,
+      );
+      const pageElement = pageRefs.current.get(pageNumber);
+      const textLayer =
+        pageElement?.querySelector<HTMLElement>(".pdfjs-text-layer") ?? null;
+      if (!textLayer) return ranges;
+
+      const spanCandidates = Array.from(
+        textLayer.querySelectorAll<HTMLElement>("span"),
+      )
+        .filter(
+          (span) =>
+            !span.classList.contains("markedContent") &&
+            span.textContent?.trim(),
+        )
+        .flatMap((span) => {
+          const textNode = getFirstSelectableTextNode(span);
+          if (!textNode) return [];
+          return Array.from(span.getClientRects())
+            .filter((rect) => rect.width >= 1 && rect.height >= 1)
+            .map((rect) => ({ rect, textNode }));
+        });
+
+      if (spanCandidates.length === 0) return ranges;
+
+      const verticalDistanceToRect = (rect: DOMRect) =>
+        event.clientY < rect.top
+          ? rect.top - event.clientY
+          : event.clientY > rect.bottom
+            ? event.clientY - rect.bottom
+            : 0;
+
+      const nearest = spanCandidates.reduce(
+        (best, candidate) => {
+          const candidateDistance = verticalDistanceToRect(candidate.rect);
+          if (!best) {
+            return { ...candidate, distance: candidateDistance };
+          }
+          if (candidateDistance < best.distance) {
+            return { ...candidate, distance: candidateDistance };
+          }
+          if (
+            Math.abs(candidateDistance - best.distance) < 0.5 &&
+            Math.abs(
+              getSelectionRectCenterY({
+                left: candidate.rect.left,
+                top: candidate.rect.top,
+                right: candidate.rect.right,
+                bottom: candidate.rect.bottom,
+              }) - event.clientY,
+            ) <
+              Math.abs(
+                getSelectionRectCenterY({
+                  left: best.rect.left,
+                  top: best.rect.top,
+                  right: best.rect.right,
+                  bottom: best.rect.bottom,
+                }) - event.clientY,
+              )
+          ) {
+            return { ...candidate, distance: candidateDistance };
+          }
+          return best;
+        },
+        null as ((typeof spanCandidates)[number] & { distance: number }) | null,
+      );
+
+      if (!nearest) return ranges;
+
+      const referenceRect: SelectionClientRect = {
+        left: nearest.rect.left,
+        top: nearest.rect.top,
+        right: nearest.rect.right,
+        bottom: nearest.rect.bottom,
+      };
+      const sameRowCandidates = spanCandidates.filter((candidate) =>
+        isSameSelectionRow(referenceRect, {
+          left: candidate.rect.left,
+          top: candidate.rect.top,
+          right: candidate.rect.right,
+          bottom: candidate.rect.bottom,
+        }),
+      );
+
+      if (sameRowCandidates.length === 0) return ranges;
+
+      const leftSideCandidates = sameRowCandidates
+        .filter((candidate) => candidate.rect.left <= event.clientX + 1)
+        .sort((left, right) => right.rect.right - left.rect.right);
+
+      const boundaryCandidate =
+        leftSideCandidates[0] ??
+        sameRowCandidates.sort(
+          (left, right) => left.rect.left - right.rect.left,
+        )[0];
+      if (!boundaryCandidate?.textNode) return ranges;
+
+      const useRowStartBoundary = leftSideCandidates.length === 0;
+      const boundaryOffset = useRowStartBoundary
+        ? 0
+        : (boundaryCandidate.textNode.textContent?.length ?? 0);
+
+      const adjustedRanges = ranges.map((range) => range.cloneRange());
+      const lastRangeIndex = adjustedRanges.length - 1;
+      const candidateRange = adjustedRanges[lastRangeIndex].cloneRange();
+      candidateRange.setEnd(boundaryCandidate.textNode, boundaryOffset);
+      if (candidateRange.collapsed) {
+        return ranges;
+      }
+      adjustedRanges[lastRangeIndex] = candidateRange;
+      return adjustedRanges;
+    },
+    [resolvePageFromViewportPoint],
+  );
+
+  const clearActiveTextLayerSelections = useCallback(() => {
+    const textLayers =
+      stageRef.current?.querySelectorAll<HTMLElement>(".pdfjs-text-layer") ??
+      [];
+    textLayers.forEach((textLayer) => {
+      const endOfContent = ensureTextLayerEndOfContent(textLayer);
+      textLayer.append(endOfContent);
+      endOfContent.style.top = "";
+      endOfContent.classList.remove("active");
+      textLayer.classList.remove("selecting");
+    });
+  }, []);
+
+  const handleSelectionStart = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      if (!resolveSelectionTargetElement(event.target)) {
+        event.preventDefault();
+        isSelectionDraggingRef.current = false;
+        selectionRangeRef.current = [];
+        clearActiveTextLayerSelections();
+        setSelection(null);
+        return;
+      }
+
+      isSelectionDraggingRef.current = true;
+      selectionPointerRef.current = {
+        clientX: event.clientX,
+        clientY: event.clientY,
+        target: event.target,
+      };
+      const textLayer = event.currentTarget;
+      const endOfContent = ensureTextLayerEndOfContent(textLayer);
+      let adjustTop = event.target !== textLayer;
+      adjustTop &&=
+        getComputedStyle(endOfContent).getPropertyValue("-moz-user-select") !==
+        "none";
+      if (adjustTop) {
+        const textLayerBounds = textLayer.getBoundingClientRect();
+        const ratio = clamp(
+          (event.clientY - textLayerBounds.top) /
+            Math.max(textLayerBounds.height, 1),
+          0,
+          1,
+        );
+        endOfContent.style.top = `${(ratio * 100).toFixed(2)}%`;
+      } else {
+        endOfContent.style.top = "";
+      }
+      endOfContent.classList.add("active");
+      textLayer.classList.add("selecting");
+      selectionRangeRef.current = [];
+      selectionPointerRef.current = null;
+      setContextMenu(null);
+      setAnnotationEditor(null);
+      setSelection(null);
+    },
+    [clearActiveTextLayerSelections],
+  );
+
+  const handleSelectionCapture = useCallback(
+    (event?: React.MouseEvent<HTMLDivElement> | MouseEvent) => {
+      if (viewerMode !== "pdfjs" || !isSelectionDraggingRef.current) return;
+      const capturedRanges = clampSelectionRangesToBlankLine(
+        cloneCurrentSelectionRanges(),
+        selectionPointerRef.current ?? event,
+      );
+      clearActiveTextLayerSelections();
+      isSelectionDraggingRef.current = false;
+      selectionPointerRef.current = null;
+
+      window.requestAnimationFrame(() => {
+        const fallbackRanges =
+          capturedRanges.length > 0
+            ? capturedRanges
+            : selectionRangeRef.current;
+        const nextSelection = buildSelectionState(
+          "button",
+          false,
+          fallbackRanges,
+        );
+        selectionRangeRef.current = nextSelection
+          ? fallbackRanges.map((range) => range.cloneRange())
+          : [];
+        setSelection((previous) => nextSelection ?? previous);
+      });
+    },
+    [
+      buildSelectionState,
+      clampSelectionRangesToBlankLine,
+      clearActiveTextLayerSelections,
+      cloneCurrentSelectionRanges,
+      viewerMode,
+    ],
+  );
+
+  const handlePdfContextMenu = (event: React.MouseEvent) => {
+    if (viewerMode !== "pdfjs") return;
+
+    const browserSelection = window.getSelection();
+    const text = normalizeSelectedText(browserSelection?.toString() ?? "");
+    event.preventDefault();
+
+    const overlayRect = selectionOverlayRef.current?.getBoundingClientRect();
+    const baseLeft = overlayRect?.left ?? 0;
+    const baseTop = overlayRect?.top ?? 0;
+    const overlayWidth = overlayRect?.width ?? window.innerWidth;
+    const overlayHeight = overlayRect?.height ?? window.innerHeight;
+    const padding = 8;
+
+    if (!text) {
+      const annotation = findAnnotationAtViewportPoint(
+        event.clientX,
+        event.clientY,
+      );
+      if (!annotation) {
+        return;
+      }
+
+      const nextSelection = buildSelectionStateFromAnnotation(
+        annotation,
+        "button",
+      );
+      const menuWidth = 188;
+      const menuHeight = annotation.note.trim() ? 224 : 190;
+      const left = clamp(
+        event.clientX - baseLeft,
+        padding,
+        Math.max(padding, overlayWidth - menuWidth - padding),
+      );
+      const top = clamp(
+        event.clientY - baseTop,
+        padding,
+        Math.max(padding, overlayHeight - menuHeight - padding),
+      );
+      setSelection(nextSelection);
+      setAnnotationEditor(null);
+      setContextMenu({
+        x: left,
+        y: top,
+        mode: "annotation",
+        annotationId: annotation.id,
+      });
+      return;
+    }
+
+    if (!selection || selection.text !== text) {
+      handleSelectionCapture();
+    }
+
+    const menuWidth = 188;
+    const menuHeight = 228;
+    const left = clamp(
+      event.clientX - baseLeft,
+      padding,
+      Math.max(padding, overlayWidth - menuWidth - padding),
+    );
+    const top = clamp(
+      event.clientY - baseTop,
+      padding,
+      Math.max(padding, overlayHeight - menuHeight - padding),
+    );
+    setContextMenu({ x: left, y: top, mode: "selection" });
+  };
+
+  const handleContextExplain = () => {
+    if (!selection) return;
+    setSelection((previous) =>
+      previous ? { ...previous, overlay: "explain" } : previous,
+    );
+    setContextMenu(null);
+  };
+  const handleContextTranslate = () => {
+    if (!selection) return;
+    if (selection.text.length > MAX_TRANSLATE_SELECTION_CHARS) {
+      onStatusRef.current("选中文本过长，请使用“整页翻译”。", "info", false);
+      return;
+    }
+    setSelection((previous) =>
+      previous ? { ...previous, overlay: "translate" } : previous,
+    );
+    setContextMenu(null);
+  };
+
+  const handleContextCopy = async () => {
+    if (!selection?.text) return;
+    try {
+      await navigator.clipboard.writeText(selection.text);
+      onStatusRef.current("已复制选中文本。", "info", false);
+    } catch {
+      onStatusRef.current("复制失败，请手动复制。", "error", false);
+    }
+    setContextMenu(null);
   };
 
   const handleContextAddNote = () => {
@@ -2839,6 +3486,13 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
     setZoomPercent((previous) => Math.max(MIN_ZOOM, previous - ZOOM_STEP));
   };
 
+  const zoomIn = () => {
+    setSelection(null);
+    window.getSelection()?.removeAllRanges();
+    captureViewportAnchor();
+    setZoomPercent((previous) => Math.min(MAX_ZOOM, previous + ZOOM_STEP));
+  };
+
   const handlePageInputChange = (
     event: React.ChangeEvent<HTMLInputElement>,
   ) => {
@@ -2921,6 +3575,15 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
       event.currentTarget.blur();
     }
   };
+
+  const selectionStyle = useMemo<React.CSSProperties | undefined>(() => {
+    if (!selection) return undefined;
+    return {
+      position: "fixed",
+      left: `${selection.targetLeft}px`,
+      top: `${selection.targetTop}px`,
+    };
+  }, [selection]);
 
   const popoverStyle = useMemo<React.CSSProperties | undefined>(() => {
     if (!selection) return undefined;
@@ -3288,6 +3951,9 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
                   >
                     <ZoomIn size={14} />
                   </button>
+                  <span className="pdf-toolbar-pill pdf-toolbar-zoom-pill">
+                    {zoomPercent}%
+                  </span>
                 </div>
 
                 <div className="pdf-toolbar-section pdf-toolbar-section-center">
@@ -3327,20 +3993,6 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
 
                   <span className="pdf-toolbar-divider" aria-hidden="true" />
 
-                <div className="pdf-toolbar-group" role="group">
-                  <button
-                    type="button"
-                    className={`action-button ${readerToolMode === "translate" ? "primary" : ""}`}
-                    onClick={() =>
-                      setReaderToolMode((prev) =>
-                        prev === "translate" ? "explain" : "translate",
-                      )
-                    }
-                    disabled={viewerMode !== "pdfjs"}
-                    title="选中文本后直接打开翻译"
-                  >
-                    翻译模式
-                  </button>
                   <button
                     type="button"
                     className="action-button pdf-toolbar-icon-button"
@@ -3553,57 +4205,7 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
             </div>
           ))}
 
-        {viewerMode === "pdfjs" && (
-          <div className="pdf-selection-overlay" ref={selectionOverlayRef}>
-            {contextMenu && selection && (
-              <div
-                ref={contextMenuRef}
-                className="pdf-selection-context-menu"
-                style={{ left: contextMenu.x, top: contextMenu.y }}
-                onMouseDown={(event) => event.preventDefault()}
-              >
-                <button type="button" onClick={handleContextCopy}>
-                  复制
-                </button>
-                <button type="button" onClick={handleContextExplain}>
-                  解释
-                </button>
-                <button type="button" onClick={handleContextTranslate}>
-                  翻译
-                </button>
-              </div>
-            )}
-
-            {selection && selection.overlay === "explain" && (
-              <TermExplainPopover
-                selectedText={selection.text}
-                pdfPath={activePdfPath}
-                page={selection.page}
-                currentModel={currentModel}
-                ensureAiReady={ensureAiReady}
-                lookupMode={lookupMode}
-                onClose={handleClosePopover}
-                onSaveCardSuccess={onSaveCardSuccess}
-                onStatus={onStatus}
-                style={popoverStyle}
-              />
-            )}
-
-            {selection && selection.overlay === "translate" && (
-              <PdfTranslatePopover
-                selectedText={selection.text}
-                pdfPath={activePdfPath}
-                page={selection.page}
-                translationModel={translationModel}
-                ensureTranslationReady={ensureTranslationReady}
-                onTranslateSuccess={handleSelectionTranslateResolved}
-                onClose={handleClosePopover}
-                onStatus={onStatus}
-                style={popoverStyle}
-              />
-            )}
-          </div>
-        )}
+        {selectionOverlay}
       </div>
 
       {viewerError && (
