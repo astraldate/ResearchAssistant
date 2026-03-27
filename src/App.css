@@ -1617,14 +1617,14 @@ textarea:focus {
 
 .pdf-reader-toolbar {
   min-width: 0;
-  padding: 8px 10px;
-  border: 1px solid rgba(122, 133, 150, 0.14);
-  border-radius: 999px;
-  background: rgba(248, 246, 239, 0.46);
+  padding: 6px 8px;
+  border: 1px solid rgba(122, 133, 150, 0.16);
+  border-radius: 14px;
+  background: rgba(250, 248, 242, 0.9);
   box-shadow:
-    0 12px 28px rgba(27, 36, 48, 0.08),
-    inset 0 1px 0 rgba(255, 255, 255, 0.4);
-  backdrop-filter: blur(16px);
+    0 12px 22px rgba(27, 36, 48, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(18px);
 }
 
 .pdf-reader-toolbar-shell {
@@ -1632,7 +1632,7 @@ textarea:focus {
   top: 12px;
   left: 50%;
   z-index: 1;
-  width: min(calc(100% - 28px), 920px);
+  width: min(calc(100% - 28px), 980px);
   overflow: hidden;
   max-height: 120px;
   opacity: 1;
@@ -1667,10 +1667,10 @@ textarea:focus {
 }
 
 .pdf-reader-toolbar-shell.auto-hidden .pdf-reader-toolbar {
-  background: rgba(248, 246, 239, 0.28);
+  background: rgba(250, 248, 242, 0.7);
   box-shadow:
-    0 8px 18px rgba(27, 36, 48, 0.05),
-    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+    0 7px 16px rgba(27, 36, 48, 0.05),
+    inset 0 1px 0 rgba(255, 255, 255, 0.42);
 }
 
 .pdf-reader-toolbar-scroll {
@@ -1681,13 +1681,29 @@ textarea:focus {
   scrollbar-width: thin;
 }
 
-.pdf-reader-toolbar-inner {
+.pdf-reader-toolbar-layout {
   width: max-content;
   min-width: 100%;
-  display: inline-flex;
+  display: inline-grid;
+  grid-template-columns: auto minmax(0, auto) auto;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   padding-bottom: 1px;
+}
+
+.pdf-toolbar-section {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 6px;
+}
+
+.pdf-toolbar-section-center {
+  justify-content: center;
+}
+
+.pdf-toolbar-section-end {
+  justify-content: flex-end;
 }
 
 .pdf-mode-control {
@@ -1708,11 +1724,27 @@ textarea:focus {
 }
 
 .pdf-toolbar-group-end {
-  margin-left: auto;
+  margin-left: 0;
 }
 
 .pdf-page-jump-group {
   white-space: nowrap;
+}
+
+.pdf-toolbar-page-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(122, 133, 150, 0.14);
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.pdf-toolbar-page-chip:focus-within {
+  border-color: rgba(38, 95, 155, 0.22);
+  box-shadow: 0 0 0 3px rgba(38, 95, 155, 0.1);
 }
 
 .pdf-toolbar-text {
@@ -1723,37 +1755,51 @@ textarea:focus {
 .pdf-toolbar-pill {
   display: inline-flex;
   align-items: center;
-  min-height: 34px;
-  padding: 0 11px;
-  border-radius: 999px;
+  min-height: 28px;
+  padding: 0 8px;
+  border-radius: 8px;
   border: 1px solid rgba(122, 133, 150, 0.14);
-  background: rgba(255, 255, 255, 0.52);
+  background: rgba(255, 255, 255, 0.55);
   color: var(--text-secondary);
-  font-size: 0.78rem;
+  font-size: 0.74rem;
   white-space: nowrap;
 }
 
+.pdf-toolbar-zoom-pill {
+  min-width: 54px;
+  justify-content: center;
+  font-variant-numeric: tabular-nums;
+}
+
 .pdf-page-input {
-  width: 62px;
-  padding: 6px 10px;
-  border-radius: 999px;
-  text-align: center;
-  background: rgba(255, 255, 255, 0.56);
-  border-color: rgba(122, 133, 150, 0.14);
+  width: 44px;
+  min-width: 44px;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  text-align: right;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  box-shadow: none;
+}
+
+.pdf-page-input:focus {
+  border-color: transparent;
+  box-shadow: none;
 }
 
 .pdf-toolbar-icon-button {
-  width: 34px;
-  height: 34px;
-  min-width: 34px;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
   padding: 0;
   justify-content: center;
-  border-radius: 11px;
-  border-color: rgba(122, 133, 150, 0.14);
-  background: rgba(255, 255, 255, 0.42);
+  border-radius: 6px;
+  border-color: transparent;
+  background: transparent;
   color: var(--text-secondary);
   box-shadow: none;
-  backdrop-filter: blur(12px);
   transition:
     transform 0.16s ease,
     background 0.16s ease,
@@ -1763,34 +1809,53 @@ textarea:focus {
 }
 
 .pdf-toolbar-icon-button:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.76);
-  border-color: rgba(48, 95, 151, 0.18);
+  background: rgba(122, 133, 150, 0.1);
+  border-color: transparent;
   color: var(--text-accent);
-  transform: translateY(-1px);
-  box-shadow: 0 8px 14px rgba(27, 36, 48, 0.07);
+  transform: none;
+  box-shadow: none;
 }
 
 .pdf-toolbar-icon-button.primary {
-  background: rgba(48, 95, 151, 0.1);
-  border-color: rgba(48, 95, 151, 0.18);
+  background: rgba(48, 95, 151, 0.12);
+  border-color: transparent;
   color: var(--text-accent);
 }
 
 .pdf-toolbar-icon-button.primary:hover:not(:disabled) {
-  background: rgba(48, 95, 151, 0.14);
+  background: rgba(48, 95, 151, 0.16);
 }
 
 .pdf-reader-toolbar-shell .pdf-reader-toolbar {
   pointer-events: auto;
 }
 
+.pdf-toolbar-divider {
+  width: 1px;
+  height: 18px;
+  border-radius: 1px;
+  background: rgba(122, 133, 150, 0.2);
+  flex: 0 0 1px;
+}
+
+.pdf-lookup-control {
+  position: relative;
+}
+
 .pdf-mode-control select {
-  min-width: 118px;
-  padding: 6px 10px;
-  border-radius: 999px;
+  min-width: 108px;
+  height: 30px;
+  padding: 0 24px 0 8px;
+  border-radius: 8px;
   border-color: rgba(122, 133, 150, 0.14);
-  background: rgba(255, 255, 255, 0.52);
-  font-size: 0.78rem;
+  background: rgba(255, 255, 255, 0.58);
+  font-size: 0.76rem;
+  box-shadow: none;
+}
+
+.pdf-mode-control select:focus {
+  border-color: rgba(38, 95, 155, 0.22);
+  box-shadow: 0 0 0 3px rgba(38, 95, 155, 0.08);
 }
 
 .pdf-mode-control select,
@@ -2105,6 +2170,13 @@ textarea:focus {
   will-change: transform;
 }
 
+.pdf-page-annotation-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+
 .pdfjs-page-placeholder {
   border-radius: inherit;
   background:
@@ -2126,19 +2198,54 @@ textarea:focus {
 .pdfjs-text-layer {
   position: absolute;
   inset: 0;
+  z-index: 3;
+}
+
+.pdf-page-annotation-highlight {
+  position: absolute;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--annotation-color) 56%, transparent);
+  box-shadow: inset 0 0 0 1px
+    color-mix(in srgb, var(--annotation-color) 48%, rgba(40, 50, 67, 0.12));
+  mix-blend-mode: multiply;
+  pointer-events: none;
+}
+
+.pdf-annotation-note-badge {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--annotation-color) 88%, white);
+  color: rgba(26, 34, 45, 0.88);
+  box-shadow:
+    0 6px 14px rgba(27, 36, 48, 0.16),
+    0 0 0 1px color-mix(in srgb, var(--annotation-color) 38%, white);
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.pdf-annotation-note-badge:hover {
+  transform: translateY(-1px);
 }
 
 .textLayer {
   position: absolute;
   text-align: initial;
   inset: 0;
-  overflow: hidden;
-  opacity: 0.25;
+  overflow: clip;
+  opacity: 1;
   line-height: 1;
   text-size-adjust: none;
   forced-color-adjust: none;
   transform-origin: 0 0;
   z-index: 2;
+  color-scheme: only light;
+  user-select: text;
 }
 
 .textLayer :is(span, br) {
@@ -2147,6 +2254,7 @@ textarea:focus {
   white-space: pre;
   cursor: text;
   transform-origin: 0 0;
+  user-select: text;
 }
 
 .textLayer span.markedContent {
@@ -2155,11 +2263,19 @@ textarea:focus {
 }
 
 .textLayer ::selection {
-  background: AccentColor;
+  background: transparent;
 }
 
 .textLayer ::-moz-selection {
-  background: AccentColor;
+  background: transparent;
+}
+
+.textLayer.selecting ::selection {
+  background: transparent;
+}
+
+.textLayer.selecting ::-moz-selection {
+  background: transparent;
 }
 
 .textLayer br::selection,
@@ -2174,6 +2290,7 @@ textarea:focus {
   z-index: -1;
   cursor: default;
   user-select: none;
+  pointer-events: none;
 }
 
 .textLayer .endOfContent.active {
@@ -2219,7 +2336,7 @@ textarea:focus {
 
 .pdf-selection-target {
   position: absolute;
-  transform: translate(8px, 8px);
+  transform: none;
   border: none;
   border-radius: 999px;
   padding: 6px 10px;
@@ -2232,19 +2349,28 @@ textarea:focus {
   pointer-events: auto;
 }
 
+.pdf-selection-highlight {
+  position: absolute;
+  border-radius: 1px;
+  background: rgba(245, 221, 74, 0.58);
+  mix-blend-mode: multiply;
+  pointer-events: none;
+}
+
 .pdf-selection-context-menu {
   position: fixed;
   display: flex;
   flex-direction: column;
   gap: 4px;
-  min-width: 120px;
-  padding: 6px;
+  min-width: 168px;
+  padding: 8px;
   border-radius: 10px;
   border: 1px solid var(--border-color);
-  background: #fff;
+  background: rgba(255, 255, 255, 0.97);
   box-shadow: var(--shadow-float);
   z-index: 12;
   pointer-events: auto;
+  backdrop-filter: blur(14px);
 }
 
 .pdf-selection-context-menu button {
@@ -2260,6 +2386,145 @@ textarea:focus {
 
 .pdf-selection-context-menu button:hover {
   background: rgba(48, 95, 151, 0.12);
+}
+
+.pdf-selection-context-divider {
+  height: 1px;
+  margin: 4px 2px;
+  background: rgba(115, 128, 147, 0.18);
+}
+
+.pdf-selection-context-label {
+  padding: 2px 8px 0;
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+}
+
+.pdf-selection-color-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 4px 6px;
+}
+
+.pdf-selection-color-row-editor {
+  padding-inline: 0;
+}
+
+.pdf-selection-context-menu .pdf-selection-color-button,
+.pdf-selection-color-button {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid rgba(32, 41, 56, 0.1);
+  background:
+    radial-gradient(
+      circle at 35% 35%,
+      rgba(255, 255, 255, 0.95),
+      transparent 44%
+    ),
+    color-mix(in srgb, var(--annotation-color) 92%, white);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.55),
+    0 1px 2px rgba(27, 36, 48, 0.1);
+  cursor: pointer;
+}
+
+.pdf-selection-context-menu .pdf-selection-color-button:hover,
+.pdf-selection-context-menu .pdf-selection-color-button.active,
+.pdf-selection-color-button:hover,
+.pdf-selection-color-button.active {
+  background:
+    radial-gradient(
+      circle at 35% 35%,
+      rgba(255, 255, 255, 0.95),
+      transparent 44%
+    ),
+    color-mix(in srgb, var(--annotation-color) 92%, white);
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.7),
+    0 0 0 2px color-mix(in srgb, var(--annotation-color) 26%, white),
+    0 6px 14px rgba(27, 36, 48, 0.12);
+}
+
+.pdf-annotation-editor {
+  width: min(300px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(110, 124, 144, 0.24);
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 18px 42px rgba(27, 36, 48, 0.18);
+  pointer-events: auto;
+  backdrop-filter: blur(16px);
+}
+
+.pdf-annotation-editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pdf-annotation-editor-title {
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.pdf-annotation-editor-input {
+  width: 100%;
+  min-height: 118px;
+  resize: vertical;
+  border: 1px solid rgba(115, 128, 147, 0.22);
+  border-radius: 10px;
+  background: rgba(249, 250, 252, 0.94);
+  padding: 10px 12px;
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.pdf-annotation-editor-input:focus {
+  outline: none;
+  border-color: rgba(48, 95, 151, 0.3);
+  box-shadow: 0 0 0 3px rgba(48, 95, 151, 0.1);
+}
+
+.pdf-annotation-editor-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.pdf-annotation-editor-danger-actions {
+  margin-right: auto;
+  display: inline-flex;
+  gap: 8px;
+}
+
+.pdf-annotation-editor-actions button {
+  border: none;
+  border-radius: 10px;
+  padding: 7px 12px;
+  background: rgba(48, 95, 151, 0.08);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.pdf-annotation-editor-actions button.primary {
+  background: rgba(48, 95, 151, 0.9);
+  color: #fff;
+}
+
+.pdf-annotation-editor-actions button.danger {
+  background: rgba(185, 69, 62, 0.09);
+  color: #9f3b34;
 }
 
 .term-popover {
@@ -3756,6 +4021,10 @@ textarea:focus {
   flex-direction: row;
 }
 
+.sidebar-panel.sidebar-panel-collapsed {
+  min-width: 58px;
+}
+
 .sidebar-rail {
   width: 58px;
   flex: 0 0 58px;
@@ -3803,6 +4072,20 @@ textarea:focus {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  transition:
+    opacity 0.2s ease,
+    transform 0.24s ease,
+    width 0.24s ease;
+}
+
+.sidebar-content.collapsed {
+  width: 0;
+  flex: 0 1 0;
+  min-width: 0;
+  opacity: 0;
+  transform: translateX(-10px);
+  pointer-events: none;
+  overflow: hidden;
 }
 
 .sidebar-tool-scroll {
