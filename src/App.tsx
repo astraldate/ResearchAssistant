@@ -37,6 +37,11 @@ const CardLibrary = lazy(() =>
     default: module.CardLibrary,
   })),
 );
+const MarkdownRenderer = lazy(() =>
+  import("./components/MarkdownRenderer").then((module) => ({
+    default: module.MarkdownRenderer,
+  })),
+);
 const PdfDock = lazy(() =>
   import("./components/PdfDock").then((module) => ({
     default: module.PdfDock,
@@ -54,6 +59,120 @@ type SidebarTool = "workspace" | "citations" | "notes" | "knowledge" | "cards";
 type StatusTone = "info" | "error";
 type AiRequirement = "chat" | "index" | "translate";
 type SettingsTab = "general" | "models" | "mobile";
+
+type SelectedCardView = {
+  id: string;
+  term: string;
+  title: string;
+  path: string;
+  created_at: string;
+  pdf_path?: string | null;
+  pdf_page?: number | null;
+  source_status: string;
+  source_provider?: string | null;
+  lookup_mode: string;
+  preview: string;
+  markdown: string;
+};
+
+const escapeRegExp = (value: string) =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const stripCardMetadata = (
+  markdown: string,
+  term?: string | null,
+  title?: string | null,
+) => {
+  const normalized = markdown.replace(/\r\n/g, "\n").trim();
+  if (!normalized) return "";
+
+  const lines = normalized.split("\n");
+  const metadataKeys = [
+    "id:",
+    "term:",
+    "title:",
+    "created_at:",
+    "updated_at:",
+    "pdf_path:",
+    "pdf_page:",
+    "selected_text:",
+    "source_status:",
+    "source_title:",
+    "source_url:",
+    "source_provider:",
+    "source_lang:",
+    "model:",
+    "lookup_mode:",
+    "tags:",
+  ];
+  const isMetadataLine = (raw: string) => {
+    const line = raw.trim();
+    if (!line) return true;
+    if (/^[A-Za-z0-9_]+:\s*/.test(line)) return true;
+    return metadataKeys.some((key) => line.includes(key));
+  };
+
+  const metadataHitCount = metadataKeys.reduce(
+    (count, key) => count + (normalized.includes(key) ? 1 : 0),
+    0,
+  );
+
+  let content = normalized;
+
+  // Some historical cards serialize metadata as one long prefix block.
+  // In that case, prefer cutting to the first real body anchor.
+  if (metadataHitCount >= 3) {
+    const explicitMetaTail = content.match(
+      /^(?:[\s\S]*?\b(?:tags:\s*\[[^\]]*]|lookup_mode:\s*[^\n\r]+)\s*)/i,
+    );
+    if (explicitMetaTail && explicitMetaTail[0].length < content.length) {
+      const stripped = content.slice(explicitMetaTail[0].length).trimStart();
+      if (stripped) {
+        content = stripped;
+      }
+    }
+
+    const bodyAnchors = [
+      /^#{1,6}\s*(通俗解释|学术解释|解释|翻译)\s*$/m,
+      /^\*\*(通俗解释|学术解释|解释|翻译)\*\*\s*$/m,
+      /^通俗解释\s*$/m,
+      /^学术解释\s*$/m,
+    ];
+    const starts = bodyAnchors
+      .map((pattern) => normalized.search(pattern))
+      .filter((index) => index >= 0)
+      .sort((left, right) => left - right);
+    if (starts.length > 0) {
+      content = normalized.slice(starts[0]).trim();
+    }
+  }
+
+  // Fallback: strip line-based metadata prefix.
+  if (content === normalized) {
+    let index = 0;
+    while (index < lines.length && isMetadataLine(lines[index])) {
+      index += 1;
+    }
+    if (index < lines.length) {
+      content = lines.slice(index).join("\n").trim();
+    }
+  }
+
+  const headingCandidates = [term, title]
+    .map((value) => value?.trim())
+    .filter((value): value is string => Boolean(value));
+  for (const heading of headingCandidates) {
+    const headingPattern = new RegExp(
+      `^\\s*(?:#{1,6}\\s*)?${escapeRegExp(heading)}\\s*$\\n?`,
+      "i",
+    );
+    content = content.replace(headingPattern, "").trimStart();
+  }
+
+  // Safety: never return empty when original has content.
+  if (!content) return normalized;
+  return content;
+};
 
 interface InferenceSettings {
   mode: InferenceMode;
@@ -413,6 +532,17 @@ function App() {
     null,
   );
   const [cardsRefreshToken, setCardsRefreshToken] = useState(0);
+  const [selectedCard, setSelectedCard] = useState<SelectedCardView | null>(
+    null,
+  );
+  const selectedCardContent = useMemo(() => {
+    if (!selectedCard) return "";
+    return stripCardMetadata(
+      selectedCard.markdown,
+      selectedCard.term,
+      selectedCard.title,
+    );
+  }, [selectedCard]);
   const [mobileStatus, setMobileStatus] =
     useState<MobileCompanionStatus | null>(null);
   const [mobileStatusError, setMobileStatusError] = useState<string | null>(
@@ -1568,6 +1698,7 @@ function App() {
       name: node.name,
     });
     if (node.type_name !== "file") return;
+    setSelectedCard(null);
     setActiveFilePath(node.path);
     if (node.path.toLowerCase().endsWith(".pdf")) {
       setPdfPage(1);
@@ -1590,6 +1721,7 @@ function App() {
         type_name: "file",
         name,
       });
+      setSelectedCard(null);
       setActiveFilePath(path);
       if (path.toLowerCase().endsWith(".pdf")) {
         const nextPage = Math.max(1, page || 1);
@@ -1849,7 +1981,6 @@ function App() {
       </>
     ) : activeSidebarTool === "cards" ? (
       <div className="sidebar-tool-scroll">
-        <div className="sidebar-tool-title">Knowledge Cards</div>
         <Suspense
           fallback={<div className="support-empty">Loading cards...</div>}
         >
@@ -1857,6 +1988,7 @@ function App() {
             refreshToken={cardsRefreshToken}
             activeRoot={cardSettings?.active_root}
             onStatus={handleChildStatus}
+            onSelectCard={(card) => setSelectedCard(card)}
           />
         </Suspense>
       </div>
@@ -2375,7 +2507,22 @@ function App() {
             className="main-panel pdf-center-panel"
           >
             <div className="pdf-center-shell">
-              {activePdfPath && isPdfDockVisible ? (
+              {activeSidebarTool === "cards" && selectedCard ? (
+                <div className="card-detail-view">
+                  <div className="card-detail-header">
+                    <h2>{selectedCard.term || selectedCard.title}</h2>
+                  </div>
+                  <div className="card-detail-body">
+                    <Suspense
+                      fallback={
+                        <div className="support-empty">Loading card...</div>
+                      }
+                    >
+                      <MarkdownRenderer content={selectedCardContent} />
+                    </Suspense>
+                  </div>
+                </div>
+              ) : activePdfPath && isPdfDockVisible ? (
                 <Suspense
                   fallback={
                     <div className="pdf-empty-state">

@@ -2933,15 +2933,52 @@ textarea:focus {
   flex: 1 1 auto;
 }
 
+.card-library .card-library-header {
+  align-items: flex-start;
+  padding: 10px 14px;
+  gap: 10px;
+}
+
 .card-library .card-library-actions {
-  margin-top: 10px;
+  margin-top: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.card-library-header-icon {
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
+  padding: 0;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.94);
+}
+
+.card-library-header-icon:hover {
+  background: rgba(38, 95, 155, 0.08);
+}
+
+.card-library-header-icon:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .card-library-search-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding-top: 14px;
+  padding-top: 8px;
+}
+
+.card-library .main-view-title {
+  font-size: 0.93rem;
+}
+
+.card-library .main-view-subtitle {
+  margin-top: 2px;
+  font-size: 0.84rem;
 }
 
 .card-library-search-input {
@@ -4316,6 +4353,68 @@ textarea:focus {
 .pdf-empty-state p {
   margin: 10px 0 0;
   font-size: 1rem;
+}
+
+.card-detail-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-primary);
+  border-radius: 20px;
+  padding: 20px 22px;
+  box-shadow: 0 18px 40px rgba(25, 38, 54, 0.08);
+  overflow: hidden;
+}
+
+.card-detail-header h2 {
+  margin: 0;
+  font-size: 1.6rem;
+  color: var(--text-primary);
+}
+
+.card-detail-body {
+  margin-top: 14px;
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.card-detail-body::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.card-detail-body .markdown-content {
+  overflow: visible;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.card-detail-body .markdown-content pre {
+  white-space: pre-wrap;
+  overflow-x: hidden;
+}
+
+.card-detail-body .markdown-content code {
+  word-break: break-word;
+}
+
+.card-item-title-button {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+}
+
+.card-item-title-button:hover {
+  color: #2f5fb3;
 }
 
 .ai-right-panel {
