@@ -1702,7 +1702,7 @@ textarea:focus {
 .pdf-toolbar-group {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   flex-wrap: nowrap;
   white-space: nowrap;
 }

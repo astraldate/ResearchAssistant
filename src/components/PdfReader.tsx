@@ -2383,15 +2383,6 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
                   >
                     <ZoomIn size={14} />
                   </button>
-                  <button
-                    className="action-button pdf-toolbar-icon-button"
-                    onClick={fitToWidth}
-                    disabled={viewerMode !== "pdfjs"}
-                    aria-label="适应宽度"
-                    title="适应宽度"
-                  >
-                    <MoveHorizontal size={14} />
-                  </button>
                 </div>
 
                 <label className="pdf-mode-control">
@@ -2410,24 +2401,15 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
                   </select>
                 </label>
 
-                <div
-                  className="pdf-toolbar-group"
-                  role="group"
-                  aria-label="划词工具模式"
-                >
-                  <button
-                    type="button"
-                    className={`action-button ${readerToolMode === "explain" ? "primary" : ""}`}
-                    onClick={() => setReaderToolMode("explain")}
-                    disabled={viewerMode !== "pdfjs"}
-                    title="选中文本后先显示解释入口"
-                  >
-                    解释模式
-                  </button>
+                <div className="pdf-toolbar-group" role="group">
                   <button
                     type="button"
                     className={`action-button ${readerToolMode === "translate" ? "primary" : ""}`}
-                    onClick={() => setReaderToolMode("translate")}
+                    onClick={() =>
+                      setReaderToolMode((prev) =>
+                        prev === "translate" ? "explain" : "translate",
+                      )
+                    }
                     disabled={viewerMode !== "pdfjs"}
                     title="选中文本后直接打开翻译"
                   >

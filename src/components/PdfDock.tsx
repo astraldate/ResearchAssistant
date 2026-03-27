@@ -114,24 +114,7 @@ export const PdfDock: React.FC<PdfDockProps> = ({
             requestedAnchorText={requestedAnchorText}
             requestedAnchorKey={requestedAnchorKey}
             isToolbarCollapsed={isToolbarCollapsed}
-            toolbarActions={
-              <div className="pdf-dock-actions">
-                <button
-                  className="action-button pdf-toolbar-icon-button"
-                  onClick={onToggleFocusMode}
-                  aria-label={
-                    isFocusMode ? "Exit focus mode" : "Enter focus mode"
-                  }
-                  title={isFocusMode ? "Exit focus mode" : "Enter focus mode"}
-                >
-                  {isFocusMode ? (
-                    <Minimize2 size={14} />
-                  ) : (
-                    <Maximize2 size={14} />
-                  )}
-                </button>
-              </div>
-            }
+            toolbarActions={null}
           />
         </Suspense>
       </div>
