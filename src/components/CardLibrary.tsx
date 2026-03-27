@@ -10,6 +10,7 @@ interface CardLibraryProps {
   refreshToken: number;
   activeRoot?: string | null;
   onStatus: (message: string, tone?: StatusTone, persistent?: boolean) => void;
+  onSelectCard?: (detail: KnowledgeCardDetail & KnowledgeCardSummary) => void;
 }
 
 interface KnowledgeCardSummary {
@@ -24,6 +25,10 @@ interface KnowledgeCardSummary {
   source_provider?: string | null;
   lookup_mode: LookupMode;
   preview: string;
+}
+
+interface KnowledgeCardDetail {
+  markdown: string;
 }
 
 const LOOKUP_MODE_LABELS: Record<LookupMode, string> = {
@@ -75,6 +80,7 @@ export const CardLibrary: React.FC<CardLibraryProps> = ({
   refreshToken,
   activeRoot,
   onStatus,
+  onSelectCard,
 }) => {
   const [cards, setCards] = useState<KnowledgeCardSummary[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -136,33 +142,45 @@ export const CardLibrary: React.FC<CardLibraryProps> = ({
     }
   };
 
+  const handleOpenCardDetail = async (card: KnowledgeCardSummary) => {
+    if (!onSelectCard) return;
+    try {
+      const detail = await invoke<KnowledgeCardDetail>("read_knowledge_card", {
+        cardPath: card.path,
+      });
+      onSelectCard({ ...card, ...detail });
+    } catch (error) {
+      onStatus(`打开知识卡片失败：${String(error)}`, "error", true);
+    }
+  };
+
   return (
     <div className="card-library">
-      <div className="main-view-header">
+      <div className="main-view-header card-library-header">
         <div className="main-view-meta">
-          <div className="main-view-title">知识卡片库</div>
-          <div className="main-view-subtitle">
+          <div className="main-view-title">Knowledge Cards</div>
+          <div className="main-view-subtitle" title={activeRoot || "未设置"}>
             当前目录：{activeRoot || "未设置"}
-            {cards.length > 0 ? ` · 共 ${cards.length} 张卡片` : ""}
-            {searchQuery.trim() ? ` · 命中 ${filteredCards.length} 张` : ""}
           </div>
-          <div className="card-library-actions">
-            <button
-              className="action-button"
-              onClick={() => void loadCards()}
-              disabled={isLoading}
-            >
-              <RefreshCw size={14} className={isLoading ? "spin" : undefined} />
-              刷新
-            </button>
-            <button
-              className="action-button"
-              onClick={() => void invoke("open_card_root_in_explorer")}
-            >
-              <FolderOpen size={14} />
-              打开目录
-            </button>
-          </div>
+        </div>
+        <div className="card-library-actions">
+          <button
+            className="icon-button card-library-header-icon"
+            onClick={() => void loadCards()}
+            disabled={isLoading}
+            title="刷新"
+            aria-label="刷新"
+          >
+            <RefreshCw size={16} className={isLoading ? "spin" : undefined} />
+          </button>
+          <button
+            className="icon-button card-library-header-icon"
+            onClick={() => void invoke("open_card_root_in_explorer")}
+            title="打开目录"
+            aria-label="打开目录"
+          >
+            <FolderOpen size={16} />
+          </button>
         </div>
       </div>
 
@@ -210,7 +228,14 @@ export const CardLibrary: React.FC<CardLibraryProps> = ({
 
             <div className="card-item-header">
               <div className="card-item-title-block">
-                <div className="card-item-title">{card.term}</div>
+                <button
+                  type="button"
+                  className="card-item-title card-item-title-button"
+                  onClick={() => void handleOpenCardDetail(card)}
+                  title="查看完整卡片内容"
+                >
+                  {card.term}
+                </button>
                 <div className="card-item-meta">
                   <span
                     className={`status-chip muted ${getSourceProviderTone(card.source_provider)}`}
