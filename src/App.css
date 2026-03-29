@@ -2996,6 +2996,20 @@ textarea:focus {
   gap: 18px;
 }
 
+.message-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.message-row.user {
+  justify-content: flex-end;
+}
+
+.message-row.ai {
+  justify-content: flex-start;
+}
+
 .message {
   max-width: min(86%, 960px);
 }
@@ -3009,6 +3023,100 @@ textarea:focus {
 
 .message.ai {
   align-self: flex-start;
+}
+
+.chat-message-select {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px;
+  border-radius: 10px;
+  background: rgba(38, 95, 155, 0.08);
+  border: 1px solid rgba(38, 95, 155, 0.16);
+}
+
+.chat-message-checkbox {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--text-accent);
+}
+
+.chat-selection-entry {
+  margin-top: 8px;
+  display: flex;
+  justify-content: flex-start;
+}
+
+.chat-selection-trigger {
+  border: 1px dashed var(--border-color);
+  background: rgba(255, 255, 255, 0.94);
+  border-radius: 10px;
+  padding: 6px 10px;
+  font-size: 0.72rem;
+  cursor: pointer;
+  color: var(--text-secondary);
+  transition:
+    background 0.16s ease,
+    color 0.16s ease,
+    border-color 0.16s ease;
+}
+
+.chat-selection-trigger:hover {
+  background: rgba(38, 95, 155, 0.08);
+  color: var(--text-accent);
+  border-color: rgba(38, 95, 155, 0.32);
+}
+
+.chat-selection-bar {
+  position: sticky;
+  bottom: 0;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
+  background: rgba(255, 255, 255, 0.96);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  box-shadow: var(--shadow-float);
+}
+
+.chat-selection-summary {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.chat-selection-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chat-selection-primary,
+.chat-selection-secondary {
+  border-radius: 10px;
+  padding: 6px 10px;
+  font-size: 0.72rem;
+  cursor: pointer;
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
+}
+
+.chat-selection-primary {
+  border-color: rgba(48, 95, 151, 0.28);
+  background: rgba(48, 95, 151, 0.12);
+  color: var(--text-accent);
+}
+
+.chat-selection-secondary {
+  color: var(--text-secondary);
+}
+
+.chat-selection-primary:disabled,
+.chat-selection-secondary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .thinking-text {
@@ -3853,6 +3961,22 @@ textarea:focus {
 
 :root[data-theme="dark"] .message.user {
   background: rgba(130, 182, 255, 0.12);
+}
+
+:root[data-theme="dark"] .chat-message-select {
+  background: rgba(48, 95, 151, 0.18);
+  border-color: rgba(48, 95, 151, 0.32);
+}
+
+:root[data-theme="dark"] .chat-selection-trigger {
+  background: rgba(18, 24, 32, 0.92);
+  border-color: rgba(120, 135, 155, 0.24);
+  color: var(--text-secondary);
+}
+
+:root[data-theme="dark"] .chat-selection-bar {
+  background: rgba(22, 28, 36, 0.92);
+  border-color: rgba(120, 135, 155, 0.24);
 }
 
 :root[data-theme="dark"] .input-area {
