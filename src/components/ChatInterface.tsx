@@ -496,9 +496,17 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     if (!selectedMessages.length) {
       return { selectedMessages, dialogue: "", snippet: "" };
     }
-    const dialogueBlocks = selectedMessages.map((message, index) => {
+    const toBlockquote = (content: string) =>
+      content
+        .split("\n")
+        .map((line) => `> ${line}`.trimEnd())
+        .join("\n");
+    const dialogueBlocks = selectedMessages.map((message) => {
       const role = message.role === "user" ? "用户" : "AI";
-      return `### ${index + 1}. ${role}\n\n${message.content}`;
+      if (message.role === "user") {
+        return [`### ${role}`, "", toBlockquote(message.content)].join("\n");
+      }
+      return `### ${role}\n\n${message.content}`;
     });
     const dialogue = dialogueBlocks.join("\n\n");
     const snippet = selectedMessages

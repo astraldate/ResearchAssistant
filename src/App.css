@@ -5211,6 +5211,23 @@ textarea:focus {
   word-break: break-word;
 }
 
+.card-detail-body .markdown-content blockquote {
+  display: block;
+  width: fit-content;
+  max-width: min(86%, 960px);
+  margin: 4px 0 4px auto;
+  padding: 10px 12px;
+  border-left: none;
+  border-right: 3px solid rgba(38, 95, 155, 0.28);
+  background: rgba(38, 95, 155, 0.06);
+  border-radius: 12px;
+  text-align: right;
+}
+
+.card-detail-body .markdown-content blockquote p {
+  text-align: right;
+}
+
 .card-detail-source {
   margin-top: 18px;
   padding-top: 14px;
