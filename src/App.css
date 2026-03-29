@@ -2668,12 +2668,17 @@ textarea:focus {
   gap: 10px;
   overflow: auto;
   padding-right: 4px;
+  flex: 1;
+  min-height: 0;
+  overscroll-behavior: contain;
 }
 
 .term-popover-stage {
   flex: 1;
   min-height: 0;
   margin-top: 10px;
+  display: flex;
+  flex-direction: column;
   transition:
     opacity 0.16s ease,
     transform 0.2s ease;
@@ -5087,6 +5092,57 @@ textarea:focus {
 
 .card-detail-body .markdown-content code {
   word-break: break-word;
+}
+
+.card-detail-source {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(103, 117, 141, 0.18);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.card-detail-source-title {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.card-detail-source-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
+.card-detail-source-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.card-detail-source-label {
+  font-weight: 700;
+  color: var(--text-primary);
+  flex-shrink: 0;
+}
+
+.card-detail-source-link {
+  color: var(--text-accent);
+  text-decoration: underline;
+  word-break: break-all;
+}
+
+.card-detail-source-file {
+  display: inline-block;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .card-item-title-button {
