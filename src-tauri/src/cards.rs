@@ -143,6 +143,15 @@ pub fn read_knowledge_card(card_path: String) -> Result<KnowledgeCardDetail, Str
     })
 }
 
+pub fn delete_knowledge_card(card_path: String) -> Result<(), String> {
+    let path = PathBuf::from(&card_path);
+    if !path.exists() {
+        return Err(format!("Card file not found: {}", path.display()));
+    }
+    fs::remove_file(&path).map_err(|e| format!("Failed to delete card: {}", e))?;
+    Ok(())
+}
+
 pub fn save_knowledge_card_from_explanation(
     app: &AppHandle,
     request: SaveKnowledgeCardRequest,

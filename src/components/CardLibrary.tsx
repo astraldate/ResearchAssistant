@@ -1,4 +1,5 @@
-﻿import React, { useCallback, useEffect, useMemo, useState } from "react";
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { FolderOpen, RefreshCw, X } from "lucide-react";
 import { LookupMode } from "./TermExplainPopover";
@@ -10,6 +11,7 @@ interface CardLibraryProps {
   activeRoot?: string | null;
   onStatus: (message: string, tone?: StatusTone, persistent?: boolean) => void;
   onSelectCard?: (detail: KnowledgeCardDetail & KnowledgeCardSummary) => void;
+  onCardDeleted?: (cardPath: string) => void;
 }
 
 interface KnowledgeCardSummary {
@@ -41,10 +43,30 @@ export const CardLibrary: React.FC<CardLibraryProps> = ({
   activeRoot,
   onStatus,
   onSelectCard,
+  onCardDeleted,
 }) => {
   const [cards, setCards] = useState<KnowledgeCardSummary[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    card: KnowledgeCardSummary;
+  } | null>(null);
+  const [deleteDialog, setDeleteDialog] = useState<KnowledgeCardSummary | null>(
+    null,
+  );
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleOutside = (event: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setContextMenu(null);
+      }
+    };
+    document.addEventListener("mousedown", handleOutside);
+    return () => document.removeEventListener("mousedown", handleOutside);
+  }, []);
 
   const loadCards = useCallback(async () => {
     setIsLoading(true);
@@ -94,6 +116,36 @@ export const CardLibrary: React.FC<CardLibraryProps> = ({
       onSelectCard({ ...card, ...detail });
     } catch (error) {
       onStatus(`打开知识卡片失败：${String(error)}`, "error", true);
+    }
+  };
+
+  const handleCardContextMenu = (
+    event: React.MouseEvent<HTMLElement>,
+    card: KnowledgeCardSummary,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setContextMenu({ x: event.clientX, y: event.clientY, card });
+  };
+
+  const openDeleteDialog = () => {
+    if (!contextMenu?.card) return;
+    setDeleteDialog(contextMenu.card);
+    setContextMenu(null);
+  };
+
+  const handleDeleteCard = async () => {
+    if (!deleteDialog) return;
+    const target = deleteDialog;
+    try {
+      await invoke("delete_knowledge_card", { cardPath: target.path });
+      setCards((previous) => previous.filter((card) => card.id !== target.id));
+      onCardDeleted?.(target.path);
+      onStatus(`已删除知识卡片：${target.term}`, "info", false);
+    } catch (error) {
+      onStatus(`删除知识卡片失败：${String(error)}`, "error", true);
+    } finally {
+      setDeleteDialog(null);
     }
   };
 
@@ -155,7 +207,11 @@ export const CardLibrary: React.FC<CardLibraryProps> = ({
 
       <div className="card-grid">
         {filteredCards.map((card) => (
-          <article key={card.id} className="card-item">
+          <article
+            key={card.id}
+            className="card-item"
+            onContextMenu={(event) => handleCardContextMenu(event, card)}
+          >
             <div className="card-item-header">
               <div className="card-item-title-block">
                 <button
@@ -191,6 +247,52 @@ export const CardLibrary: React.FC<CardLibraryProps> = ({
           </article>
         ))}
       </div>
+
+      {contextMenu &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <div
+            ref={menuRef}
+            className="pdf-selection-context-menu card-context-menu"
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+          >
+            <button type="button" onClick={openDeleteDialog}>
+              删除知识卡片
+            </button>
+          </div>,
+          document.body,
+        )}
+
+      {deleteDialog && (
+        <div
+          className="file-tree-dialog-backdrop"
+          onClick={() => setDeleteDialog(null)}
+        >
+          <div
+            className="file-tree-dialog"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="file-tree-dialog-title">删除知识卡片</div>
+            <div className="file-tree-dialog-copy">
+              确认删除“{deleteDialog.term}”吗？
+            </div>
+            <div className="file-tree-dialog-actions">
+              <button
+                className="ghost-button"
+                onClick={() => setDeleteDialog(null)}
+              >
+                取消
+              </button>
+              <button
+                className="action-button danger"
+                onClick={() => void handleDeleteCard()}
+              >
+                删除
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

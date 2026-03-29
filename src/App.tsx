@@ -2133,6 +2133,12 @@ function App() {
             activeRoot={cardSettings?.active_root}
             onStatus={handleChildStatus}
             onSelectCard={(card) => setSelectedCard(card)}
+            onCardDeleted={(cardPath) => {
+              if (selectedCard?.path === cardPath) {
+                setSelectedCard(null);
+              }
+              setCardsRefreshToken((value) => value + 1);
+            }}
           />
         </Suspense>
       </div>
