@@ -425,29 +425,19 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     }
   };
 
-  const handleScopedTextSelection = () => {
+  const handleChatContextMenu = (event: React.MouseEvent<HTMLElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
     const selection = window.getSelection();
-    if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
-      setSelectionMenu(null);
-      return;
-    }
-
-    const text = selection.toString().trim();
+    const text = selection?.toString().trim() ?? "";
     if (!text) {
       setSelectionMenu(null);
       return;
     }
-
-    const rect = selection.getRangeAt(0).getBoundingClientRect();
-    if (!rect.width && !rect.height) {
-      setSelectionMenu(null);
-      return;
-    }
-
     setSelectionMenu({
       text,
-      x: rect.left + rect.width / 2,
-      y: Math.max(8, rect.top - 8),
+      x: event.clientX,
+      y: event.clientY,
     });
   };
 
@@ -922,14 +912,14 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         </div>
       </div>
 
-      <div className="chat-body">
+      <div className="chat-body" onContextMenu={handleChatContextMenu}>
         <Group orientation="vertical" className="chat-content-panels">
           <Panel defaultSize="70%" minSize="30%">
             <div
               ref={messagesListRef}
               className="messages-list"
               onScroll={handleMessagesScroll}
-              onMouseUp={handleScopedTextSelection}
+              onContextMenu={handleChatContextMenu}
             >
               {messages.map((message) => (
                 <div key={message.id} className={`message ${message.role}`}>
@@ -1078,7 +1068,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 <div className="support-grid">
                   <section
                     className="support-panel"
-                    onMouseUp={handleScopedTextSelection}
+                    onContextMenu={handleChatContextMenu}
                   >
                     <div className="support-panel-title">引用片段</div>
                     <div className="support-panel-body">
@@ -1100,7 +1090,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
                   <section
                     className="support-panel"
-                    onMouseUp={handleScopedTextSelection}
+                    onContextMenu={handleChatContextMenu}
                   >
                     <div className="support-panel-title">笔记</div>
                     <div className="support-panel-body">
@@ -1131,7 +1121,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
                   <section
                     className="support-panel"
-                    onMouseUp={handleScopedTextSelection}
+                    onContextMenu={handleChatContextMenu}
                   >
                     <div className="support-panel-title">知识库搜索</div>
                     <div className="knowledge-search-row">
@@ -1205,34 +1195,36 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       {selectionMenu && (
         <div
           ref={selectionMenuRef}
-          className="selection-menu"
+          className="selection-menu context-menu"
           style={{ left: selectionMenu.x, top: selectionMenu.y }}
           onMouseDown={(event) => event.preventDefault()}
         >
-          <button style={TOOL_BUTTON_STYLE} onClick={handleExplainSelection}>
+          <button
+            type="button"
+            className="context-menu-item"
+            onClick={handleExplainSelection}
+          >
             解释
           </button>
           <button
-            style={TOOL_BUTTON_STYLE}
+            type="button"
+            className="context-menu-item"
             onClick={() => void handleExpandRetrievalSelection()}
           >
             扩展检索
           </button>
           <button
-            style={TOOL_BUTTON_STYLE}
+            type="button"
+            className="context-menu-item"
             onClick={handleAddNoteFromSelection}
           >
             加入笔记
           </button>
-          {activePdfPath && (
-            <button
-              style={TOOL_BUTTON_STYLE}
-              onClick={handleUseSelectionAsCitation}
-            >
-              设为引用
-            </button>
-          )}
-          <button style={TOOL_BUTTON_STYLE} onClick={closeSelectionMenu}>
+          <button
+            type="button"
+            className="context-menu-item"
+            onClick={closeSelectionMenu}
+          >
             关闭
           </button>
         </div>
