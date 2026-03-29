@@ -5231,11 +5231,10 @@ textarea:focus {
 .card-detail-body .markdown-content blockquote p {
   text-align: right;
 }
-
 .card-detail-source {
   margin-top: 18px;
   padding-top: 14px;
-  border-top: 1px solid rgba(103, 117, 141, 0.18);
+  border-top: none;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -5245,6 +5244,30 @@ textarea:focus {
   font-size: 1rem;
   font-weight: 700;
   color: var(--text-primary);
+}
+
+.card-detail-params {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed rgba(103, 117, 141, 0.2);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.74rem;
+  color: rgba(103, 117, 141, 0.86);
+}
+
+.card-detail-params-label {
+  font-weight: 600;
+  color: rgba(103, 117, 141, 0.9);
+}
+
+.card-detail-params-values {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: rgba(103, 117, 141, 0.78);
+  word-break: break-all;
 }
 
 .card-detail-source-list {
