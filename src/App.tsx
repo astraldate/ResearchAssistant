@@ -594,6 +594,18 @@ function App() {
   const [selectedCard, setSelectedCard] = useState<SelectedCardView | null>(
     null,
   );
+  const [isEditingCard, setIsEditingCard] = useState(false);
+  const [editCardTitle, setEditCardTitle] = useState("");
+  const [editCardBody, setEditCardBody] = useState("");
+  const [isSavingCardEdit, setIsSavingCardEdit] = useState(false);
+  const selectedCardBody = useMemo(() => {
+    if (!selectedCard) return "";
+    return stripCardMetadata(
+      selectedCard.markdown,
+      selectedCard.term,
+      selectedCard.title,
+    );
+  }, [selectedCard]);
   const selectedCardContent = useMemo(() => {
     if (!selectedCard) return "";
     const stripped = stripCardMetadata(
@@ -652,6 +664,14 @@ function App() {
     index: false,
     translate: false,
   });
+
+  useEffect(() => {
+    if (!selectedCard) {
+      setIsEditingCard(false);
+      setEditCardTitle("");
+      setEditCardBody("");
+    }
+  }, [selectedCard]);
 
   const progressPercent = useMemo(() => {
     if (!ingestProgress || ingestProgress.total <= 0) return 0;
@@ -2036,6 +2056,61 @@ function App() {
     setCardsRefreshToken((value) => value + 1);
   };
 
+  const beginEditCard = (card: SelectedCardView) => {
+    setSelectedCard(card);
+    setIsEditingCard(true);
+    const title = card.term || card.title || "";
+    setEditCardTitle(title);
+    setEditCardBody(
+      stripCardMetadata(card.markdown, card.term, card.title) || "",
+    );
+  };
+
+  const handleCancelEditCard = () => {
+    if (!selectedCard) {
+      setIsEditingCard(false);
+      return;
+    }
+    setEditCardTitle(selectedCard.term || selectedCard.title || "");
+    setEditCardBody(selectedCardBody);
+    setIsEditingCard(false);
+  };
+
+  const handleSaveEditCard = async () => {
+    if (!selectedCard || isSavingCardEdit) return;
+    const title = editCardTitle.trim();
+    if (!title) {
+      showTemporaryStatus("标题不能为空。", "error");
+      return;
+    }
+    setIsSavingCardEdit(true);
+    try {
+      await invoke("update_knowledge_card", {
+        request: {
+          card_path: selectedCard.path,
+          title,
+          body: editCardBody,
+        },
+      });
+      const refreshed = await invoke<{ markdown: string }>(
+        "read_knowledge_card",
+        { cardPath: selectedCard.path },
+      );
+      setSelectedCard((previous) =>
+        previous
+          ? { ...previous, term: title, title, markdown: refreshed.markdown }
+          : previous,
+      );
+      setCardsRefreshToken((value) => value + 1);
+      showTemporaryStatus("知识卡片已更新。", "info");
+      setIsEditingCard(false);
+    } catch (error) {
+      showTemporaryStatus(`保存失败：${String(error)}`, "error");
+    } finally {
+      setIsSavingCardEdit(false);
+    }
+  };
+
   const handleRefreshMobilePairCode = async () => {
     setIsRefreshingMobilePairCode(true);
     try {
@@ -2139,6 +2214,7 @@ function App() {
               }
               setCardsRefreshToken((value) => value + 1);
             }}
+            onEditCard={(card) => beginEditCard(card)}
           />
         </Suspense>
       </div>
@@ -2699,64 +2775,145 @@ function App() {
               {activeSidebarTool === "cards" && selectedCard ? (
                 <div className="card-detail-view">
                   <div className="card-detail-header">
-                    <h2>{selectedCard.term || selectedCard.title}</h2>
+                    {isEditingCard ? (
+                      <input
+                        className="card-edit-title"
+                        value={editCardTitle}
+                        onChange={(event) =>
+                          setEditCardTitle(event.target.value)
+                        }
+                        placeholder="请输入标题"
+                      />
+                    ) : (
+                      <h2>{selectedCard.term || selectedCard.title}</h2>
+                    )}
+                    <div className="card-detail-actions">
+                      {isEditingCard ? (
+                        <>
+                          <button
+                            className="action-button"
+                            onClick={() => void handleSaveEditCard()}
+                            disabled={isSavingCardEdit}
+                          >
+                            {isSavingCardEdit ? "保存中..." : "保存"}
+                          </button>
+                          <button
+                            className="ghost-button"
+                            onClick={handleCancelEditCard}
+                            disabled={isSavingCardEdit}
+                          >
+                            取消
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          className="ghost-button"
+                          onClick={() => beginEditCard(selectedCard)}
+                        >
+                          编辑
+                        </button>
+                      )}
+                    </div>
                   </div>
                   <div className="card-detail-body">
-                    <Suspense
-                      fallback={
-                        <div className="support-empty">Loading card...</div>
-                      }
-                    >
-                      <MarkdownRenderer content={selectedCardContent} />
-                    </Suspense>
-                    {selectedCardSource && (
-                      <div className="card-detail-source">
-                        <div className="card-detail-source-title">来源</div>
-                        <div className="card-detail-source-list">
-                          <div className="card-detail-source-row">
-                            <span className="card-detail-source-label">
-                              来源提供方：
-                            </span>
-                            <span>
-                              {selectedCardSource.sourceProvider || "未提供"}
-                            </span>
-                          </div>
-                          <div className="card-detail-source-row">
-                            <span className="card-detail-source-label">
-                              来源链接：
-                            </span>
-                            {selectedCardSource.sourceUrl ? (
-                              <a
-                                className="card-detail-source-link"
-                                href={selectedCardSource.sourceUrl}
-                                target="_blank"
-                                rel="noreferrer"
-                              >
-                                {selectedCardSource.sourceUrl}
-                              </a>
-                            ) : (
-                              <span>未提供</span>
-                            )}
-                          </div>
-                          <div className="card-detail-source-row">
-                            <span className="card-detail-source-label">
-                              模型：
-                            </span>
-                            <span>{selectedCardSource.model || "未提供"}</span>
-                          </div>
-                          <div className="card-detail-source-row">
-                            <span className="card-detail-source-label">
-                              来源文件：
-                            </span>
-                            <span
-                              className="card-detail-source-file"
-                              title={selectedCardSource.sourceFile}
-                            >
-                              {selectedCardSource.sourceFile || "未提供"}
-                            </span>
-                          </div>
-                        </div>
+                    {isEditingCard ? (
+                      <div className="card-edit-body">
+                        <textarea
+                          className="card-edit-textarea"
+                          value={editCardBody}
+                          onChange={(event) =>
+                            setEditCardBody(event.target.value)
+                          }
+                          placeholder="请输入正文内容（支持 Markdown）"
+                        />
                       </div>
+                    ) : (
+                      <>
+                        <Suspense
+                          fallback={
+                            <div className="support-empty">Loading card...</div>
+                          }
+                        >
+                          <MarkdownRenderer content={selectedCardContent} />
+                        </Suspense>
+                        {selectedCardSource && (
+                          <div className="card-detail-source">
+                            <div className="card-detail-source-title">来源</div>
+                            <div className="card-detail-source-list">
+                              <div className="card-detail-source-row">
+                                <span className="card-detail-source-label">
+                                  来源提供方：
+                                </span>
+                                <span>
+                                  {selectedCardSource.sourceProvider ||
+                                    "未提供"}
+                                </span>
+                              </div>
+                              <div className="card-detail-source-row">
+                                <span className="card-detail-source-label">
+                                  来源链接：
+                                </span>
+                                {selectedCardSource.sourceUrl ? (
+                                  <a
+                                    className="card-detail-source-link"
+                                    href={selectedCardSource.sourceUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                  >
+                                    {selectedCardSource.sourceUrl}
+                                  </a>
+                                ) : (
+                                  <span>未提供</span>
+                                )}
+                              </div>
+                              <div className="card-detail-source-row">
+                                <span className="card-detail-source-label">
+                                  模型：
+                                </span>
+                                <span>
+                                  {selectedCardSource.model || "未提供"}
+                                </span>
+                              </div>
+                              <div className="card-detail-source-row">
+                                <span className="card-detail-source-label">
+                                  来源文件：
+                                </span>
+                                <span
+                                  className="card-detail-source-file"
+                                  title={selectedCardSource.sourceFile}
+                                >
+                                  {selectedCardSource.sourceFile || "未提供"}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="card-detail-params">
+                              <div className="card-detail-params-label">
+                                可用参数
+                              </div>
+                              <div className="card-detail-params-values">
+                                <span>
+                                  @title=
+                                  {selectedCard.title ||
+                                    selectedCard.term ||
+                                    "未提供"}
+                                </span>
+                                <span>
+                                  @source=
+                                  {selectedCardSource.sourceProvider ||
+                                    "未提供"}
+                                </span>
+                                <span>
+                                  @time={selectedCard.created_at || "未提供"}
+                                </span>
+                                <span>
+                                  @file=
+                                  {selectedCardSource.sourceFile || "none"}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </>
                     )}
                   </div>
                 </div>
