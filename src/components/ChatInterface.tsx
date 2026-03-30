@@ -998,17 +998,6 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
           >
             导出 Markdown
           </button>
-          {!isChatSelectionMode &&
-            !isLoading &&
-            activeStreamRef.current == null &&
-            lastAiMessageId && (
-              <button
-                style={TOOL_BUTTON_STYLE}
-                onClick={() => setIsChatSelectionMode(true)}
-              >
-                选择聊天记录
-              </button>
-            )}
         </div>
       </div>
 
@@ -1052,6 +1041,21 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                         {message.content}
                       </div>
                     )}
+                    {!isChatSelectionMode &&
+                      !isLoading &&
+                      activeStreamRef.current == null &&
+                      message.role === "ai" &&
+                      message.id === lastAiMessageId && (
+                        <div className="chat-selection-entry">
+                          <button
+                            type="button"
+                            className="chat-selection-trigger"
+                            onClick={() => setIsChatSelectionMode(true)}
+                          >
+                            选择聊天记录
+                          </button>
+                        </div>
+                      )}
                   </div>
                   {isChatSelectionMode && message.role === "user" && (
                     <label className="chat-message-select">

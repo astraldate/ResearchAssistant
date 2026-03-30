@@ -1,7 +1,7 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { Plus, RefreshCw, X } from "lucide-react";
+import { FolderOpen, RefreshCw, X } from "lucide-react";
 import { LookupMode } from "./TermExplainPopover";
 
 type StatusTone = "info" | "error";
@@ -12,7 +12,6 @@ interface CardLibraryProps {
   onStatus: (message: string, tone?: StatusTone, persistent?: boolean) => void;
   onSelectCard?: (detail: KnowledgeCardDetail & KnowledgeCardSummary) => void;
   onCardDeleted?: (cardPath: string) => void;
-  onEditCard?: (detail: KnowledgeCardDetail & KnowledgeCardSummary) => void;
 }
 
 interface KnowledgeCardSummary {
@@ -45,7 +44,6 @@ export const CardLibrary: React.FC<CardLibraryProps> = ({
   onStatus,
   onSelectCard,
   onCardDeleted,
-  onEditCard,
 }) => {
   const [cards, setCards] = useState<KnowledgeCardSummary[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -92,47 +90,15 @@ export const CardLibrary: React.FC<CardLibraryProps> = ({
     const normalizedQuery = searchQuery.trim().toLowerCase();
     if (!normalizedQuery) return cards;
 
-    const tagMatch = normalizedQuery.match(
-      /^@(title|source|time|file)(?:=(.*))?$/i,
-    );
-    if (normalizedQuery.startsWith("@") && !tagMatch) return cards;
-
     return cards.filter((card) => {
       const pdfFileName = card.pdf_path?.split(/[\\/]/).pop() || "";
-      const pdfFileLabel = pdfFileName || "none";
-      const title = card.title || card.term;
-      const sourceProvider = card.source_provider || "";
-      const createdAt = card.created_at || "";
-
-      if (tagMatch) {
-        const tag = tagMatch[1].toLowerCase();
-        const keyword = (tagMatch[2] ?? "").trim().toLowerCase();
-        if (!keyword) return true;
-        if (tag === "title") {
-          return [title, card.term].join("\n").toLowerCase().includes(keyword);
-        }
-        if (tag === "source") {
-          return sourceProvider.toLowerCase().includes(keyword);
-        }
-        if (tag === "time") {
-          return createdAt.toLowerCase().includes(keyword);
-        }
-        if (tag === "file") {
-          if (["none", "无", "null", "未提供"].includes(keyword)) {
-            return !pdfFileName;
-          }
-          return pdfFileLabel.toLowerCase().includes(keyword);
-        }
-      }
-
       const haystack = [
         card.term,
-        title,
+        card.title,
         card.preview,
-        sourceProvider,
+        card.source_provider || "",
         LOOKUP_MODE_LABELS[card.lookup_mode],
-        pdfFileLabel,
-        createdAt,
+        pdfFileName,
       ]
         .join("\n")
         .toLowerCase();
@@ -153,20 +119,6 @@ export const CardLibrary: React.FC<CardLibraryProps> = ({
     }
   };
 
-  const handleEditCard = async () => {
-    if (!contextMenu?.card || !onEditCard) return;
-    try {
-      const detail = await invoke<KnowledgeCardDetail>("read_knowledge_card", {
-        cardPath: contextMenu.card.path,
-      });
-      onEditCard({ ...contextMenu.card, ...detail });
-    } catch (error) {
-      onStatus(`打开知识卡片失败：${String(error)}`, "error", true);
-    } finally {
-      setContextMenu(null);
-    }
-  };
-
   const handleCardContextMenu = (
     event: React.MouseEvent<HTMLElement>,
     card: KnowledgeCardSummary,
@@ -180,17 +132,6 @@ export const CardLibrary: React.FC<CardLibraryProps> = ({
     if (!contextMenu?.card) return;
     setDeleteDialog(contextMenu.card);
     setContextMenu(null);
-  };
-
-  const handleRevealCard = async () => {
-    if (!contextMenu?.card) return;
-    try {
-      await invoke("reveal_in_explorer", { path: contextMenu.card.path });
-    } catch (error) {
-      onStatus(`定位知识卡片失败：${String(error)}`, "error", true);
-    } finally {
-      setContextMenu(null);
-    }
   };
 
   const handleDeleteCard = async () => {
@@ -208,42 +149,6 @@ export const CardLibrary: React.FC<CardLibraryProps> = ({
     }
   };
 
-  const handleCreateCard = async () => {
-    try {
-      const created = await invoke<KnowledgeCardSummary>(
-        "save_knowledge_card_from_explanation",
-        {
-          request: {
-            term: "新建知识卡片",
-            selected_text: "手动创建",
-            plain_summary: "",
-            source_title: "手动创建",
-            source_url: null,
-            source_provider: "manual",
-            source_lang: "zh",
-            source_extract: null,
-            page_context_snippet: null,
-            pdf_path: null,
-            pdf_page: null,
-            source_status: "model_only",
-            model: "manual",
-            lookup_mode: "popular_cn",
-          },
-        },
-      );
-      await loadCards();
-      if (onEditCard) {
-        const detail = await invoke<KnowledgeCardDetail>("read_knowledge_card", {
-          cardPath: created.path,
-        });
-        onEditCard({ ...created, ...detail });
-      }
-      onStatus(`已创建知识卡片：${created.term}`, "info", false);
-    } catch (error) {
-      onStatus(`新建知识卡片失败：${String(error)}`, "error", true);
-    }
-  };
-
   return (
     <div className="card-library">
       <div className="main-view-header card-library-header">
@@ -256,20 +161,20 @@ export const CardLibrary: React.FC<CardLibraryProps> = ({
         <div className="card-library-actions">
           <button
             className="icon-button card-library-header-icon"
-            onClick={() => void handleCreateCard()}
-            title="新建知识卡片"
-            aria-label="新建知识卡片"
-          >
-            <Plus size={16} />
-          </button>
-          <button
-            className="icon-button card-library-header-icon"
             onClick={() => void loadCards()}
             disabled={isLoading}
             title="刷新"
             aria-label="刷新"
           >
             <RefreshCw size={16} className={isLoading ? "spin" : undefined} />
+          </button>
+          <button
+            className="icon-button card-library-header-icon"
+            onClick={() => void invoke("open_card_root_in_explorer")}
+            title="打开目录"
+            aria-label="打开目录"
+          >
+            <FolderOpen size={16} />
           </button>
         </div>
       </div>
@@ -287,12 +192,6 @@ export const CardLibrary: React.FC<CardLibraryProps> = ({
             清空
           </button>
         )}
-      </div>
-      <div className="card-library-search-hint">
-        <span className="card-library-search-hint-label">可用参数</span>
-        <span className="card-library-search-hint-text">
-          @title=标题，@source=来源提供方，@time=时间，@file=来源文件或 none
-        </span>
       </div>
 
       {cards.length === 0 && !isLoading && (
@@ -357,14 +256,8 @@ export const CardLibrary: React.FC<CardLibraryProps> = ({
             className="pdf-selection-context-menu card-context-menu"
             style={{ left: contextMenu.x, top: contextMenu.y }}
           >
-            <button type="button" onClick={() => void handleRevealCard()}>
-              在文件夹中定位
-            </button>
-            <button type="button" onClick={() => void handleEditCard()}>
-              编辑
-            </button>
             <button type="button" onClick={openDeleteDialog}>
-              删除
+              删除知识卡片
             </button>
           </div>,
           document.body,
