@@ -175,6 +175,44 @@ const stripCardMetadata = (
   return content;
 };
 
+const extractCardMetaValue = (markdown: string, key: string) => {
+  const match = markdown.match(
+    new RegExp(`^\\s*${key}\\s*:\\s*(.+)\\s*$`, "im"),
+  );
+  if (!match) return "";
+  const value = match[1].trim();
+  if (!value || value === "null" || value === "undefined") return "";
+  return value.replace(/^["'](.*)["']$/, "$1");
+};
+
+const stripSourceSection = (markdown: string) => {
+  const lines = markdown.split("\n");
+  const output: string[] = [];
+  let inSource = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!inSource && /^(#{1,6}\s*)?来源\s*$/.test(trimmed)) {
+      inSource = true;
+      continue;
+    }
+    if (inSource) {
+      if (/^[-*•]\s+/.test(trimmed) || trimmed === "") {
+        continue;
+      }
+      if (/^#{1,6}\s+/.test(trimmed) || /^\*\*.+\*\*$/.test(trimmed)) {
+        inSource = false;
+        output.push(line);
+        continue;
+      }
+      inSource = false;
+      output.push(line);
+      continue;
+    }
+    output.push(line);
+  }
+  return output.join("\n").trim();
+};
+
 interface InferenceSettings {
   mode: InferenceMode;
 }
@@ -558,11 +596,31 @@ function App() {
   );
   const selectedCardContent = useMemo(() => {
     if (!selectedCard) return "";
-    return stripCardMetadata(
+    const stripped = stripCardMetadata(
       selectedCard.markdown,
       selectedCard.term,
       selectedCard.title,
     );
+    return stripSourceSection(stripped);
+  }, [selectedCard]);
+
+  const selectedCardSource = useMemo(() => {
+    if (!selectedCard) return null;
+    const markdown = selectedCard.markdown || "";
+    const sourceProvider =
+      selectedCard.source_provider ||
+      extractCardMetaValue(markdown, "source_provider");
+    const sourceUrl = extractCardMetaValue(markdown, "source_url");
+    const model = extractCardMetaValue(markdown, "model");
+    const pdfPath =
+      selectedCard.pdf_path || extractCardMetaValue(markdown, "pdf_path");
+    const sourceFile = pdfPath ? pdfPath.split(/[\\/]/).pop() || "" : "";
+    return {
+      sourceProvider,
+      sourceUrl,
+      model,
+      sourceFile,
+    };
   }, [selectedCard]);
   const [mobileStatus, setMobileStatus] =
     useState<MobileCompanionStatus | null>(null);
@@ -2075,6 +2133,12 @@ function App() {
             activeRoot={cardSettings?.active_root}
             onStatus={handleChildStatus}
             onSelectCard={(card) => setSelectedCard(card)}
+            onCardDeleted={(cardPath) => {
+              if (selectedCard?.path === cardPath) {
+                setSelectedCard(null);
+              }
+              setCardsRefreshToken((value) => value + 1);
+            }}
           />
         </Suspense>
       </div>
@@ -2645,6 +2709,55 @@ function App() {
                     >
                       <MarkdownRenderer content={selectedCardContent} />
                     </Suspense>
+                    {selectedCardSource && (
+                      <div className="card-detail-source">
+                        <div className="card-detail-source-title">来源</div>
+                        <div className="card-detail-source-list">
+                          <div className="card-detail-source-row">
+                            <span className="card-detail-source-label">
+                              来源提供方：
+                            </span>
+                            <span>
+                              {selectedCardSource.sourceProvider || "未提供"}
+                            </span>
+                          </div>
+                          <div className="card-detail-source-row">
+                            <span className="card-detail-source-label">
+                              来源链接：
+                            </span>
+                            {selectedCardSource.sourceUrl ? (
+                              <a
+                                className="card-detail-source-link"
+                                href={selectedCardSource.sourceUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                {selectedCardSource.sourceUrl}
+                              </a>
+                            ) : (
+                              <span>未提供</span>
+                            )}
+                          </div>
+                          <div className="card-detail-source-row">
+                            <span className="card-detail-source-label">
+                              模型：
+                            </span>
+                            <span>{selectedCardSource.model || "未提供"}</span>
+                          </div>
+                          <div className="card-detail-source-row">
+                            <span className="card-detail-source-label">
+                              来源文件：
+                            </span>
+                            <span
+                              className="card-detail-source-file"
+                              title={selectedCardSource.sourceFile}
+                            >
+                              {selectedCardSource.sourceFile || "未提供"}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               ) : activePdfPath && isPdfDockVisible ? (

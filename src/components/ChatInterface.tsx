@@ -52,6 +52,20 @@ interface ResearchPaperOption {
   candidateCount: number;
 }
 
+interface KnowledgeCardSummary {
+  id: string;
+  term: string;
+  title: string;
+  path: string;
+  created_at: string;
+  pdf_path?: string | null;
+  pdf_page?: number | null;
+  source_status: string;
+  source_provider?: string | null;
+  lookup_mode: "popular_cn" | "cs_encyclopedia" | "bioinformatics";
+  preview: string;
+}
+
 interface SessionPayload {
   messages: Message[];
   inputValue: string;
@@ -187,6 +201,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   pdfPage = 1,
   onPdfPageChange,
   onStatus,
+  onCardSaved,
   showSupportPanels = true,
   onModelChange,
 }) => {
@@ -219,6 +234,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     null,
   );
   const [isSessionHydrated, setIsSessionHydrated] = useState(false);
+  const [isChatSelectionMode, setIsChatSelectionMode] = useState(false);
+  const [selectedMessageIds, setSelectedMessageIds] = useState<string[]>([]);
+  const [isSavingChatCard, setIsSavingChatCard] = useState(false);
 
   const messagesListRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -231,6 +249,18 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   const shouldAutoScrollRef = useRef(true);
   const activePdfPath =
     activeFilePath && isPdfFile(activeFilePath) ? activeFilePath : null;
+  const selectedMessageIdSet = useMemo(
+    () => new Set(selectedMessageIds),
+    [selectedMessageIds],
+  );
+  const lastAiMessageId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i].role === "ai") {
+        return messages[i].id;
+      }
+    }
+    return null;
+  }, [messages]);
 
   const persistSession = useCallback(
     (payload?: SessionPayload) => {
@@ -425,35 +455,107 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     }
   };
 
-  const handleScopedTextSelection = () => {
+  const handleChatContextMenu = (event: React.MouseEvent<HTMLElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
     const selection = window.getSelection();
-    if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
-      setSelectionMenu(null);
-      return;
-    }
-
-    const text = selection.toString().trim();
+    const text = selection?.toString().trim() ?? "";
     if (!text) {
       setSelectionMenu(null);
       return;
     }
-
-    const rect = selection.getRangeAt(0).getBoundingClientRect();
-    if (!rect.width && !rect.height) {
-      setSelectionMenu(null);
-      return;
-    }
-
     setSelectionMenu({
       text,
-      x: rect.left + rect.width / 2,
-      y: Math.max(8, rect.top - 8),
+      x: event.clientX,
+      y: event.clientY,
     });
   };
 
   const closeSelectionMenu = () => {
     setSelectionMenu(null);
     window.getSelection()?.removeAllRanges();
+  };
+
+  const clearChatSelection = () => {
+    setIsChatSelectionMode(false);
+    setSelectedMessageIds([]);
+  };
+
+  const toggleMessageSelection = (messageId: string) => {
+    setSelectedMessageIds((previous) =>
+      previous.includes(messageId)
+        ? previous.filter((id) => id !== messageId)
+        : [...previous, messageId],
+    );
+  };
+
+  const buildSelectedDialogue = useCallback(() => {
+    const selectedMessages = messages.filter((message) =>
+      selectedMessageIdSet.has(message.id),
+    );
+    if (!selectedMessages.length) {
+      return { selectedMessages, dialogue: "", snippet: "" };
+    }
+    const toBlockquote = (content: string) =>
+      content
+        .split("\n")
+        .map((line) => `> ${line}`.trimEnd())
+        .join("\n");
+    const dialogueBlocks = selectedMessages.map((message) => {
+      const role = message.role === "user" ? "用户" : "AI";
+      if (message.role === "user") {
+        return [`### ${role}`, "", toBlockquote(message.content)].join("\n");
+      }
+      return `### ${role}\n\n${message.content}`;
+    });
+    const dialogue = dialogueBlocks.join("\n\n");
+    const snippet = selectedMessages
+      .map((message) => message.content)
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 200);
+    return { selectedMessages, dialogue, snippet };
+  }, [messages, selectedMessageIdSet]);
+
+  const handleSaveChatSelectionCard = async () => {
+    if (isSavingChatCard) return;
+    const { selectedMessages, dialogue, snippet } = buildSelectedDialogue();
+    if (!selectedMessages.length) {
+      onStatus("请先选择要保存的聊天记录。", "error", true);
+      return;
+    }
+    setIsSavingChatCard(true);
+    try {
+      const card = await invoke<KnowledgeCardSummary>(
+        "save_knowledge_card_from_explanation",
+        {
+          request: {
+            term: "新建知识卡片",
+            selected_text: snippet || "聊天记录",
+            plain_summary: dialogue,
+            source_title: "聊天记录",
+            source_url: null,
+            source_provider: "chat",
+            source_lang: "zh",
+            source_extract: null,
+            page_context_snippet: null,
+            pdf_path: null,
+            pdf_page: null,
+            source_status: "model_only",
+            model: currentModel || "chat",
+            lookup_mode: "popular_cn",
+          },
+        },
+      );
+      onCardSaved();
+      onStatus(`已保存知识卡片：${card.term}`, "info", false);
+      clearChatSelection();
+    } catch (error) {
+      onStatus(`保存知识卡片失败：${String(error)}`, "error", true);
+    } finally {
+      setIsSavingChatCard(false);
+    }
   };
 
   const handleExplainSelection = () => {
@@ -508,31 +610,6 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       },
       ...previous,
     ]);
-    closeSelectionMenu();
-  };
-
-  const handleUseSelectionAsCitation = () => {
-    if (!selectionMenu || !activePdfPath) {
-      closeSelectionMenu();
-      return;
-    }
-    const snippet = selectionMenu.text.trim();
-    if (!snippet) {
-      closeSelectionMenu();
-      return;
-    }
-    const nextCitation: CitationItem = {
-      id: `${Date.now()}-citation`,
-      path: activePdfPath,
-      page: Math.max(1, pdfPage),
-      snippet,
-      createdAt: Date.now(),
-    };
-    setCitations((previous) => [nextCitation, ...previous]);
-    setInputValue((previous) => {
-      const citationLine = `[引用:${getFileName(activePdfPath)} p.${nextCitation.page}] ${snippet}`;
-      return previous.trim() ? `${previous}\n${citationLine}` : citationLine;
-    });
     closeSelectionMenu();
   };
 
@@ -618,6 +695,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     const assistantMessageId = `${startedAt}-ai`;
     const requestId = `${startedAt}-${Math.random().toString(36).slice(2, 10)}`;
 
+    clearChatSelection();
     setMessages((previous) => [
       ...previous,
       {
@@ -724,6 +802,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     setCitationDraft("");
     setCitations([]);
     setNotes([]);
+    clearChatSelection();
     setRestrictToActivePaper(false);
     onPdfPageChange?.(1);
     localStorage.removeItem(SESSION_KEY);
@@ -922,29 +1001,71 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         </div>
       </div>
 
-      <div className="chat-body">
+      <div className="chat-body" onContextMenu={handleChatContextMenu}>
         <Group orientation="vertical" className="chat-content-panels">
           <Panel defaultSize="70%" minSize="30%">
             <div
               ref={messagesListRef}
               className="messages-list"
               onScroll={handleMessagesScroll}
-              onMouseUp={handleScopedTextSelection}
+              onContextMenu={handleChatContextMenu}
             >
               {messages.map((message) => (
-                <div key={message.id} className={`message ${message.role}`}>
-                  {message.role === "ai" ? (
-                    <MarkdownRenderer
-                      content={message.content}
-                      autoExpandReasoning={
-                        isLoading &&
-                        activeStreamRef.current?.messageId === message.id
-                      }
-                    />
-                  ) : (
-                    <div style={{ whiteSpace: "pre-wrap" }}>
-                      {message.content}
-                    </div>
+                <div
+                  key={message.id}
+                  className={`message-row ${message.role} ${
+                    isChatSelectionMode ? "selectable" : ""
+                  }`}
+                >
+                  {isChatSelectionMode && message.role === "ai" && (
+                    <label className="chat-message-select">
+                      <input
+                        type="checkbox"
+                        className="chat-message-checkbox"
+                        checked={selectedMessageIdSet.has(message.id)}
+                        onChange={() => toggleMessageSelection(message.id)}
+                      />
+                    </label>
+                  )}
+                  <div className={`message ${message.role}`}>
+                    {message.role === "ai" ? (
+                      <MarkdownRenderer
+                        content={message.content}
+                        autoExpandReasoning={
+                          isLoading &&
+                          activeStreamRef.current?.messageId === message.id
+                        }
+                      />
+                    ) : (
+                      <div style={{ whiteSpace: "pre-wrap" }}>
+                        {message.content}
+                      </div>
+                    )}
+                    {!isChatSelectionMode &&
+                      !isLoading &&
+                      activeStreamRef.current == null &&
+                      message.role === "ai" &&
+                      message.id === lastAiMessageId && (
+                        <div className="chat-selection-entry">
+                          <button
+                            type="button"
+                            className="chat-selection-trigger"
+                            onClick={() => setIsChatSelectionMode(true)}
+                          >
+                            选择聊天记录
+                          </button>
+                        </div>
+                      )}
+                  </div>
+                  {isChatSelectionMode && message.role === "user" && (
+                    <label className="chat-message-select">
+                      <input
+                        type="checkbox"
+                        className="chat-message-checkbox"
+                        checked={selectedMessageIdSet.has(message.id)}
+                        onChange={() => toggleMessageSelection(message.id)}
+                      />
+                    </label>
                   )}
                 </div>
               ))}
@@ -954,6 +1075,31 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 </div>
               )}
               <div ref={messagesEndRef} />
+              {isChatSelectionMode && (
+                <div className="chat-selection-bar">
+                  <div className="chat-selection-summary">
+                    已选择 {selectedMessageIds.length} 条
+                  </div>
+                  <div className="chat-selection-actions">
+                    <button
+                      type="button"
+                      className="chat-selection-primary"
+                      onClick={() => void handleSaveChatSelectionCard()}
+                      disabled={isSavingChatCard}
+                    >
+                      添加到知识卡片
+                    </button>
+                    <button
+                      type="button"
+                      className="chat-selection-secondary"
+                      onClick={clearChatSelection}
+                      disabled={isSavingChatCard}
+                    >
+                      取消
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </Panel>
 
@@ -1078,7 +1224,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 <div className="support-grid">
                   <section
                     className="support-panel"
-                    onMouseUp={handleScopedTextSelection}
+                    onContextMenu={handleChatContextMenu}
                   >
                     <div className="support-panel-title">引用片段</div>
                     <div className="support-panel-body">
@@ -1100,7 +1246,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
                   <section
                     className="support-panel"
-                    onMouseUp={handleScopedTextSelection}
+                    onContextMenu={handleChatContextMenu}
                   >
                     <div className="support-panel-title">笔记</div>
                     <div className="support-panel-body">
@@ -1131,7 +1277,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
                   <section
                     className="support-panel"
-                    onMouseUp={handleScopedTextSelection}
+                    onContextMenu={handleChatContextMenu}
                   >
                     <div className="support-panel-title">知识库搜索</div>
                     <div className="knowledge-search-row">
@@ -1205,34 +1351,36 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       {selectionMenu && (
         <div
           ref={selectionMenuRef}
-          className="selection-menu"
+          className="selection-menu context-menu"
           style={{ left: selectionMenu.x, top: selectionMenu.y }}
           onMouseDown={(event) => event.preventDefault()}
         >
-          <button style={TOOL_BUTTON_STYLE} onClick={handleExplainSelection}>
+          <button
+            type="button"
+            className="context-menu-item"
+            onClick={handleExplainSelection}
+          >
             解释
           </button>
           <button
-            style={TOOL_BUTTON_STYLE}
+            type="button"
+            className="context-menu-item"
             onClick={() => void handleExpandRetrievalSelection()}
           >
             扩展检索
           </button>
           <button
-            style={TOOL_BUTTON_STYLE}
+            type="button"
+            className="context-menu-item"
             onClick={handleAddNoteFromSelection}
           >
             加入笔记
           </button>
-          {activePdfPath && (
-            <button
-              style={TOOL_BUTTON_STYLE}
-              onClick={handleUseSelectionAsCitation}
-            >
-              设为引用
-            </button>
-          )}
-          <button style={TOOL_BUTTON_STYLE} onClick={closeSelectionMenu}>
+          <button
+            type="button"
+            className="context-menu-item"
+            onClick={closeSelectionMenu}
+          >
             关闭
           </button>
         </div>

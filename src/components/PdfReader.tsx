@@ -3325,6 +3325,12 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
 
   useEffect(() => {
     const handlePointerDown = (event: MouseEvent) => {
+      // Keep non-primary clicks (e.g. right-click in chat) from clearing text
+      // selection before the consumer's context-menu handler runs.
+      if (event.button !== 0) {
+        return;
+      }
+
       const targetNode = event.target as Node | null;
       const targetElement =
         targetNode instanceof Element ? targetNode : targetNode?.parentElement;

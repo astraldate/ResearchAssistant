@@ -1604,6 +1604,11 @@ async fn read_knowledge_card(card_path: String) -> Result<KnowledgeCardDetail, S
 }
 
 #[tauri::command]
+async fn delete_knowledge_card(card_path: String) -> Result<(), String> {
+    cards::delete_knowledge_card(card_path)
+}
+
+#[tauri::command]
 async fn save_knowledge_card_from_explanation(
     request: SaveKnowledgeCardRequest,
     app: AppHandle,
@@ -4402,6 +4407,7 @@ pub fn run() {
             open_card_root_in_explorer,
             list_knowledge_cards,
             read_knowledge_card,
+            delete_knowledge_card,
             save_knowledge_card_from_explanation,
             translate_pdf_selection,
             translate_pdf_page,
