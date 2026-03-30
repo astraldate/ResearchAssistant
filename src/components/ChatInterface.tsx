@@ -613,31 +613,6 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     closeSelectionMenu();
   };
 
-  const handleUseSelectionAsCitation = () => {
-    if (!selectionMenu || !activePdfPath) {
-      closeSelectionMenu();
-      return;
-    }
-    const snippet = selectionMenu.text.trim();
-    if (!snippet) {
-      closeSelectionMenu();
-      return;
-    }
-    const nextCitation: CitationItem = {
-      id: `${Date.now()}-citation`,
-      path: activePdfPath,
-      page: Math.max(1, pdfPage),
-      snippet,
-      createdAt: Date.now(),
-    };
-    setCitations((previous) => [nextCitation, ...previous]);
-    setInputValue((previous) => {
-      const citationLine = `[引用:${getFileName(activePdfPath)} p.${nextCitation.page}] ${snippet}`;
-      return previous.trim() ? `${previous}\n${citationLine}` : citationLine;
-    });
-    closeSelectionMenu();
-  };
-
   const handleAddCitation = () => {
     if (!activePdfPath || !citationDraft.trim()) return;
     const snippet = citationDraft.trim();
