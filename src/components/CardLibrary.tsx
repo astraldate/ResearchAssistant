@@ -153,6 +153,45 @@ export const CardLibrary: React.FC<CardLibraryProps> = ({
     }
   };
 
+  const handleCreateCard = async () => {
+    try {
+      const created = await invoke<KnowledgeCardSummary>(
+        "save_knowledge_card_from_explanation",
+        {
+          request: {
+            term: "新建知识卡片",
+            selected_text: "手动创建",
+            plain_summary: "",
+            source_title: "手动创建",
+            source_url: null,
+            source_provider: "manual",
+            source_lang: "zh",
+            source_extract: null,
+            page_context_snippet: null,
+            pdf_path: null,
+            pdf_page: null,
+            source_status: "model_only",
+            model: "manual",
+            lookup_mode: "popular_cn",
+          },
+        },
+      );
+      await loadCards();
+      if (onEditCard) {
+        const detail = await invoke<KnowledgeCardDetail>(
+          "read_knowledge_card",
+          {
+            cardPath: created.path,
+          },
+        );
+        onEditCard({ ...created, ...detail });
+      }
+      onStatus(`已创建知识卡片：${created.term}`, "info", false);
+    } catch (error) {
+      onStatus(`新建知识卡片失败：${String(error)}`, "error", true);
+    }
+  };
+
   const handleEditCard = async () => {
     if (!contextMenu?.card || !onEditCard) return;
     try {
