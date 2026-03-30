@@ -2886,6 +2886,31 @@ function App() {
                                 </span>
                               </div>
                             </div>
+                            <div className="card-detail-params">
+                              <div className="card-detail-params-label">
+                                可用参数
+                              </div>
+                              <div className="card-detail-params-values">
+                                <span>
+                                  @title=
+                                  {selectedCard.title ||
+                                    selectedCard.term ||
+                                    "未提供"}
+                                </span>
+                                <span>
+                                  @source=
+                                  {selectedCardSource.sourceProvider ||
+                                    "未提供"}
+                                </span>
+                                <span>
+                                  @time={selectedCard.created_at || "未提供"}
+                                </span>
+                                <span>
+                                  @file=
+                                  {selectedCardSource.sourceFile || "none"}
+                                </span>
+                              </div>
+                            </div>
                           </div>
                         )}
                       </>

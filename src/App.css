@@ -3421,6 +3421,25 @@ textarea:focus {
   padding-top: 8px;
 }
 
+.card-library-search-hint {
+  margin-top: 6px;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed rgba(103, 117, 141, 0.24);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+
+.card-library-search-hint-label {
+  font-weight: 600;
+  color: rgba(103, 117, 141, 0.86);
+}
+
+.card-library-search-hint-text {
+  color: rgba(103, 117, 141, 0.78);
+}
 .card-library .main-view-title {
   font-size: 0.93rem;
 }
