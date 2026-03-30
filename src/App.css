@@ -3983,6 +3983,12 @@ textarea:focus {
   border-color: rgba(120, 135, 155, 0.24);
 }
 
+:root[data-theme="dark"] .card-edit-title,
+:root[data-theme="dark"] .card-edit-textarea {
+  background: rgba(18, 24, 32, 0.92);
+  border-color: rgba(120, 135, 155, 0.24);
+}
+
 :root[data-theme="dark"] .input-area {
   background: rgba(16, 22, 31, 0.92);
 }
@@ -5179,10 +5185,36 @@ textarea:focus {
   overflow: hidden;
 }
 
+.card-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .card-detail-header h2 {
   margin: 0;
   font-size: 1.6rem;
   color: var(--text-primary);
+}
+
+.card-detail-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.card-edit-title {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.96);
 }
 
 .card-detail-body {
@@ -5192,6 +5224,27 @@ textarea:focus {
   overflow-x: hidden;
   overflow-y: auto;
   scrollbar-width: none;
+}
+
+.card-edit-body {
+  min-height: 0;
+  height: 100%;
+  display: flex;
+}
+
+.card-edit-textarea {
+  flex: 1;
+  min-height: 280px;
+  width: 100%;
+  resize: vertical;
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
+  padding: 12px;
+  font-size: 0.92rem;
+  line-height: 1.6;
+  font-family: inherit;
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.96);
 }
 
 .card-detail-body::-webkit-scrollbar {
