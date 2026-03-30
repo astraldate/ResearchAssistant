@@ -3044,32 +3044,6 @@ textarea:focus {
   accent-color: var(--text-accent);
 }
 
-.chat-selection-entry {
-  margin-top: 8px;
-  display: flex;
-  justify-content: flex-start;
-}
-
-.chat-selection-trigger {
-  border: 1px dashed var(--border-color);
-  background: rgba(255, 255, 255, 0.94);
-  border-radius: 10px;
-  padding: 6px 10px;
-  font-size: 0.72rem;
-  cursor: pointer;
-  color: var(--text-secondary);
-  transition:
-    background 0.16s ease,
-    color 0.16s ease,
-    border-color 0.16s ease;
-}
-
-.chat-selection-trigger:hover {
-  background: rgba(38, 95, 155, 0.08);
-  color: var(--text-accent);
-  border-color: rgba(38, 95, 155, 0.32);
-}
-
 .chat-selection-bar {
   position: sticky;
   bottom: 0;
@@ -3447,6 +3421,25 @@ textarea:focus {
   padding-top: 8px;
 }
 
+.card-library-search-hint {
+  margin-top: 6px;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed rgba(103, 117, 141, 0.24);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+
+.card-library-search-hint-label {
+  font-weight: 600;
+  color: rgba(103, 117, 141, 0.86);
+}
+
+.card-library-search-hint-text {
+  color: rgba(103, 117, 141, 0.78);
+}
 .card-library .main-view-title {
   font-size: 0.93rem;
 }
@@ -3980,6 +3973,12 @@ textarea:focus {
 
 :root[data-theme="dark"] .chat-selection-bar {
   background: rgba(22, 28, 36, 0.92);
+  border-color: rgba(120, 135, 155, 0.24);
+}
+
+:root[data-theme="dark"] .card-edit-title,
+:root[data-theme="dark"] .card-edit-textarea {
+  background: rgba(18, 24, 32, 0.92);
   border-color: rgba(120, 135, 155, 0.24);
 }
 
@@ -5179,10 +5178,36 @@ textarea:focus {
   overflow: hidden;
 }
 
+.card-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .card-detail-header h2 {
   margin: 0;
   font-size: 1.6rem;
   color: var(--text-primary);
+}
+
+.card-detail-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.card-edit-title {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.96);
 }
 
 .card-detail-body {
@@ -5192,6 +5217,27 @@ textarea:focus {
   overflow-x: hidden;
   overflow-y: auto;
   scrollbar-width: none;
+}
+
+.card-edit-body {
+  min-height: 0;
+  height: 100%;
+  display: flex;
+}
+
+.card-edit-textarea {
+  flex: 1;
+  min-height: 280px;
+  width: 100%;
+  resize: vertical;
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
+  padding: 12px;
+  font-size: 0.92rem;
+  line-height: 1.6;
+  font-family: inherit;
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.96);
 }
 
 .card-detail-body::-webkit-scrollbar {
@@ -5231,11 +5277,10 @@ textarea:focus {
 .card-detail-body .markdown-content blockquote p {
   text-align: right;
 }
-
 .card-detail-source {
   margin-top: 18px;
   padding-top: 14px;
-  border-top: 1px solid rgba(103, 117, 141, 0.18);
+  border-top: none;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -5245,6 +5290,30 @@ textarea:focus {
   font-size: 1rem;
   font-weight: 700;
   color: var(--text-primary);
+}
+
+.card-detail-params {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed rgba(103, 117, 141, 0.2);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.74rem;
+  color: rgba(103, 117, 141, 0.86);
+}
+
+.card-detail-params-label {
+  font-weight: 600;
+  color: rgba(103, 117, 141, 0.9);
+}
+
+.card-detail-params-values {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: rgba(103, 117, 141, 0.78);
+  word-break: break-all;
 }
 
 .card-detail-source-list {
