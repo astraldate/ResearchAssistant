@@ -17,10 +17,10 @@ pub struct CardSettings {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SaveKnowledgeCardRequest {
-  pub term: String,
-  pub selected_text: String,
-  pub plain_summary: String,
-  pub source_title: Option<String>,
+    pub term: String,
+    pub selected_text: String,
+    pub plain_summary: String,
+    pub source_title: Option<String>,
     pub source_url: Option<String>,
     pub source_provider: Option<String>,
     pub source_lang: Option<String>,
@@ -30,14 +30,7 @@ pub struct SaveKnowledgeCardRequest {
     pub pdf_page: Option<u32>,
     pub source_status: String,
     pub model: String,
-  pub lookup_mode: TermLookupMode,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct UpdateKnowledgeCardRequest {
-    pub card_path: String,
-    pub title: String,
-    pub body: String,
+    pub lookup_mode: TermLookupMode,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -157,20 +150,6 @@ pub fn delete_knowledge_card(card_path: String) -> Result<(), String> {
     }
     fs::remove_file(&path).map_err(|e| format!("Failed to delete card: {}", e))?;
     Ok(())
-}
-
-pub fn update_knowledge_card(request: UpdateKnowledgeCardRequest) -> Result<KnowledgeCardDetail, String> {
-    let path = PathBuf::from(&request.card_path);
-    let raw = fs::read_to_string(&path)
-        .map_err(|e| format!("Failed to read card '{}': {}", path.display(), e))?;
-    let normalized = raw.replace("\r\n", "\n");
-    let (frontmatter, _) = split_frontmatter(&normalized)
-        .ok_or_else(|| format!("Card '{}' is missing YAML frontmatter.", path.display()))?;
-    let values = parse_frontmatter(frontmatter);
-    let updated_markdown = render_updated_card_markdown(&values, &request);
-    fs::write(&path, updated_markdown)
-        .map_err(|e| format!("Failed to write card file: {}", e))?;
-    read_knowledge_card(path.to_string_lossy().to_string())
 }
 
 pub fn save_knowledge_card_from_explanation(
@@ -351,86 +330,6 @@ fn render_card_markdown(id: &str, created_at: &str, request: &SaveKnowledgeCardR
         request.source_title.as_deref().unwrap_or("未命中"),
         request.source_url.as_deref().unwrap_or("未提供"),
         request.model.trim(),
-    )
-}
-
-fn render_updated_card_markdown(
-    values: &HashMap<String, String>,
-    request: &UpdateKnowledgeCardRequest,
-) -> String {
-    let id = values
-        .get("id")
-        .cloned()
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| Uuid::new_v4().simple().to_string());
-    let created_at = values
-        .get("created_at")
-        .cloned()
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(current_timestamp_iso_utc);
-    let updated_at = current_timestamp_iso_utc();
-    let term = request.title.trim();
-    let title = if term.is_empty() { "未命名" } else { term };
-    let pdf_path = parse_optional_string(values.get("pdf_path"));
-    let pdf_page = values
-        .get("pdf_page")
-        .and_then(|value| value.trim().parse::<u32>().ok());
-    let selected_text = values
-        .get("selected_text")
-        .cloned()
-        .unwrap_or_else(|| String::new());
-    let source_status = values
-        .get("source_status")
-        .cloned()
-        .unwrap_or_else(|| "model_only".to_string());
-    let source_title = parse_optional_string(values.get("source_title"));
-    let source_url = parse_optional_string(values.get("source_url"));
-    let source_provider = parse_optional_string(values.get("source_provider"));
-    let source_lang = parse_optional_string(values.get("source_lang"));
-    let model = values.get("model").cloned().unwrap_or_else(|| "unknown".to_string());
-    let lookup_mode = values
-        .get("lookup_mode")
-        .cloned()
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "popular_cn".to_string());
-    let tags = values
-        .get("tags")
-        .cloned()
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "[]".to_string());
-
-    let body = request.body.replace("\r\n", "\n").trim().to_string();
-    let body_block = if body.is_empty() {
-        format!("# {}", title)
-    } else {
-        format!("# {}\n\n{}", title, body)
-    };
-
-    let tags_line = if tags.trim().starts_with('[') {
-        tags.trim().to_string()
-    } else {
-        render_yaml_string(tags.trim())
-    };
-
-    format!(
-        "---\nid: {}\nterm: {}\ntitle: {}\ncreated_at: {}\nupdated_at: {}\npdf_path: {}\npdf_page: {}\nselected_text: {}\nsource_status: {}\nsource_title: {}\nsource_url: {}\nsource_provider: {}\nsource_lang: {}\nmodel: {}\nlookup_mode: {}\ntags: {}\n---\n\n{}",
-        render_yaml_string(&id),
-        render_yaml_string(title),
-        render_yaml_string(title),
-        render_yaml_string(&created_at),
-        render_yaml_string(&updated_at),
-        render_yaml_option(pdf_path.as_deref()),
-        render_yaml_option_number(pdf_page),
-        render_yaml_string(selected_text.trim()),
-        render_yaml_string(source_status.trim()),
-        render_yaml_option(source_title.as_deref()),
-        render_yaml_option(source_url.as_deref()),
-        render_yaml_option(source_provider.as_deref()),
-        render_yaml_option(source_lang.as_deref()),
-        render_yaml_string(model.trim()),
-        render_yaml_string(lookup_mode.trim()),
-        tags_line,
-        body_block
     )
 }
 
