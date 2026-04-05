@@ -26,6 +26,10 @@ interface ResearchMemoryPanelProps {
   chatModel: string;
   extractFastModel: string;
   extractFallbackModel: string;
+  pipelineSummaryModel: string;
+  pipelineNameModel: string;
+  edgeExtractModel: string;
+  edgeValidateModel: string;
   translationModel: string;
   onOpenPathInApp?: (path: string, page?: number, snippet?: string) => void;
   ingestProgress?: {
@@ -175,6 +179,20 @@ interface ResearchPaperRecord {
   updatedAt: string;
 }
 
+interface ResearchExtractionDiagnosticsRecord {
+  paperId: string;
+  title: string;
+  path: string;
+  relationMapUnitCount: number;
+  candidateConflictCount: number;
+  pipelineSummaryEmptyCount: number;
+  pipelineNameEmptyCount: number;
+  edgeCandidateCount: number;
+  edgeValidatedCount: number;
+  edgeValidateFallbackCount: number;
+  updatedAt: string;
+}
+
 const graphLaneDefinitions: Record<
   GraphView,
   Array<{ kind: GraphNodeKind; label: string }>
@@ -262,8 +280,14 @@ const buildGraphElements = (
   const elements: ElementDefinition[] = [];
   const anchorIds = laneDefs.map((lane) => `__anchor_${view}_${lane.kind}`);
   const nodeIds = new Set(graph.nodes.map((node) => node.id));
-  const fallbackPositions =
-    graph.edges.length === 0 ? buildFallbackPositions(graph, view) : null;
+  const fallbackPositions = buildFallbackPositions(graph, view);
+  const connectedNodeIds = new Set<string>();
+
+  for (const edge of graph.edges) {
+    if (!nodeIds.has(edge.from) || !nodeIds.has(edge.to)) continue;
+    connectedNodeIds.add(edge.from);
+    connectedNodeIds.add(edge.to);
+  }
 
   laneDefs.forEach((lane, index) => {
     elements.push({
@@ -309,11 +333,11 @@ const buildGraphElements = (
       selectable: true,
       grabbable: false,
       locked: true,
-      position: fallbackPositions?.get(node.id),
+      position: fallbackPositions.get(node.id),
     });
 
     const anchorId = `__anchor_${view}_${node.kind}`;
-    if (anchorIds.includes(anchorId)) {
+    if (anchorIds.includes(anchorId) && !connectedNodeIds.has(node.id)) {
       elements.push({
         data: {
           id: `__anchor_attach_${view}_${node.id}`,
@@ -391,10 +415,33 @@ const buildFallbackPositions = (
   return positions;
 };
 
+const shouldFallbackToPresetLayout = (cy: CytoscapeCore) => {
+  const nodes = cy.nodes(".graph-node");
+  if (nodes.length <= 1) return false;
+
+  const roundedPositions = nodes.map((node) => {
+    const position = node.position();
+    return `${Math.round(position.x)}:${Math.round(position.y)}`;
+  });
+  const uniquePositions = new Set(roundedPositions);
+  if (uniquePositions.size <= 1) {
+    return true;
+  }
+
+  const bounds = nodes.boundingBox();
+  const width = Math.abs(bounds.w ?? bounds.x2 - bounds.x1);
+  const height = Math.abs(bounds.h ?? bounds.y2 - bounds.y1);
+  return width < 140 || height < 140;
+};
+
 export function ResearchMemoryPanel({
   chatModel,
   extractFastModel,
   extractFallbackModel,
+  pipelineSummaryModel,
+  pipelineNameModel,
+  edgeExtractModel,
+  edgeValidateModel,
   translationModel,
   onOpenPathInApp,
   ingestProgress,
@@ -402,6 +449,9 @@ export function ResearchMemoryPanel({
 }: ResearchMemoryPanelProps) {
   const [activeTab, setActiveTab] = useState<ResearchTab>("papers");
   const [papers, setPapers] = useState<ResearchPaperRecord[]>([]);
+  const [diagnostics, setDiagnostics] = useState<
+    ResearchExtractionDiagnosticsRecord[]
+  >([]);
   const [isPapersLoading, setIsPapersLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<ResearchSearchHit[]>([]);
@@ -492,6 +542,9 @@ export function ResearchMemoryPanel({
         review.candidateKind === "node" && review.entityKind === reviewFilter,
     );
   }, [reviewFilter, reviews]);
+  const diagnosticsByPaperId = useMemo(() => {
+    return new Map(diagnostics.map((record) => [record.paperId, record]));
+  }, [diagnostics]);
   const ingestStageLabel = useMemo(() => {
     if (!ingestProgress?.stage) return "idle";
     const labels: Record<string, string> = {
@@ -500,7 +553,10 @@ export function ResearchMemoryPanel({
       scan: "扫描文件",
       parse_pages: "解析页面",
       candidate_extract: "抽取候选概念",
-      relation_extract: "补全关系与 Pipeline",
+      pipeline_summarize: "总结 Pipeline 骨架",
+      pipeline_name_extract: "提取 Pipeline 名称",
+      edge_extract: "抽取 Edge",
+      edge_validate: "校验 Edge",
       canonicalize: "归并候选概念",
       index_vectors: "重建向量索引",
       finalize: "保存索引",
@@ -733,9 +789,19 @@ export function ResearchMemoryPanel({
 
     cy.on("zoom pan render resize", syncModuleTooltipPosition);
     cy.ready(() => {
-      resetGraphView();
-      applyGraphSelectionState();
-      syncModuleTooltipPosition();
+      window.requestAnimationFrame(() => {
+        if (!usePresetLayout && shouldFallbackToPresetLayout(cy)) {
+          cy.layout({
+            name: "preset",
+            fit: true,
+            padding: 80,
+            animate: false,
+          } as any).run();
+        }
+        resetGraphView();
+        applyGraphSelectionState();
+        syncModuleTooltipPosition();
+      });
     });
 
     return () => {
@@ -780,11 +846,18 @@ export function ResearchMemoryPanel({
   async function loadPapers(force = false) {
     if (!force && papers.length > 0) return;
     setIsPapersLoading(true);
+    if (force) {
+      onStatus?.("正在刷新论文状态视图，不会重置审核结果。", "info");
+    }
     try {
-      const records = await invoke<ResearchPaperRecord[]>(
-        "list_research_papers",
-      );
+      const [records, extractionDiagnostics] = await Promise.all([
+        invoke<ResearchPaperRecord[]>("list_research_papers"),
+        invoke<ResearchExtractionDiagnosticsRecord[]>(
+          "list_research_extraction_diagnostics",
+        ),
+      ]);
       setPapers(records);
+      setDiagnostics(extractionDiagnostics);
     } catch (error) {
       onStatus?.(`加载论文状态失败：${String(error)}`, "error");
     } finally {
@@ -795,6 +868,9 @@ export function ResearchMemoryPanel({
   async function loadGraph(view: GraphView, force = false) {
     if (!force && graphCache[view]) return;
     setIsGraphLoading(true);
+    if (force) {
+      onStatus?.("正在刷新图谱视图，不会重置审核结果。", "info");
+    }
     try {
       const graph = await invoke<ResearchGraph>("get_research_graph", { view });
       setGraphCache((current) => ({ ...current, [view]: graph }));
@@ -869,6 +945,12 @@ export function ResearchMemoryPanel({
   async function loadReviews(force = false) {
     if (!force && reviews.length > 0) return;
     setIsReviewLoading(true);
+    if (force) {
+      onStatus?.(
+        "正在刷新审核队列视图，不会重置审核结果；如有缺失 edge，会尝试自动补回。",
+        "info",
+      );
+    }
     try {
       const records = await invoke<ReviewRecord[]>("list_extraction_reviews");
       setReviews(records);
@@ -882,6 +964,9 @@ export function ResearchMemoryPanel({
   async function loadIdeas(force = false) {
     if (!force && ideas.length > 0) return;
     setIsIdeasLoading(true);
+    if (force) {
+      onStatus?.("正在刷新 Idea 视图，不会重置审核结果。", "info");
+    }
     try {
       const records = await invoke<IdeaCandidate[]>("list_idea_candidates");
       setIdeas(records);
@@ -1118,64 +1203,100 @@ export function ResearchMemoryPanel({
           className="action-button"
           onClick={() => void loadPapers(true)}
           disabled={isPapersLoading}
+          title="重新读取论文状态，不会重置审核结果"
         >
-          {isPapersLoading ? "Loading" : "Refresh"}
+          {isPapersLoading ? "刷新中..." : "刷新视图"}
         </button>
       </div>
       {papers.length === 0 && !isPapersLoading && (
         <div className="support-empty">还没有已索引论文记录。</div>
       )}
-      {papers.map((paper) => (
-        <div key={paper.paperId} className="research-card">
-          <div className="research-card-head">
-            <strong>{paper.title}</strong>
-            <span
-              className={`research-chip ${paper.isInGraph ? "success" : ""}`}
-            >
-              {paperStatusLabels[paper.parseStatus] ?? paper.parseStatus}
-            </span>
+      {papers.map((paper) => {
+        const diagnostic = diagnosticsByPaperId.get(paper.paperId);
+        return (
+          <div key={paper.paperId} className="research-card">
+            <div className="research-card-head">
+              <strong>{paper.title}</strong>
+              <span
+                className={`research-chip ${paper.isInGraph ? "success" : ""}`}
+              >
+                {paperStatusLabels[paper.parseStatus] ?? paper.parseStatus}
+              </span>
+            </div>
+            <div className="research-meta-row">
+              <span>type</span>
+              <span>{paperTypeLabels[paper.paperType] ?? paper.paperType}</span>
+            </div>
+            <div className="research-meta-row">
+              <span>chunk</span>
+              <span>{paper.chunkCount}</span>
+            </div>
+            <div className="research-meta-row">
+              <span>候选</span>
+              <span>{paper.candidateCount}</span>
+            </div>
+            <div className="research-meta-row">
+              <span>待审核</span>
+              <span>{paper.pendingReviewCount}</span>
+            </div>
+            <div className="research-meta-row">
+              <span>已入图</span>
+              <span>
+                {paper.isInGraph
+                  ? `是 (${paper.approvedCandidateCount})`
+                  : "否"}
+              </span>
+            </div>
+            <div className="research-meta-row">
+              <span>index / extraction</span>
+              <span>
+                {paper.indexStatus} / {paper.extractionStatus}
+              </span>
+            </div>
+            {diagnostic && (
+              <>
+                <div className="research-meta-row">
+                  <span>relation units</span>
+                  <span>{diagnostic.relationMapUnitCount}</span>
+                </div>
+                <div className="research-meta-row">
+                  <span>candidate 冲突</span>
+                  <span>{diagnostic.candidateConflictCount}</span>
+                </div>
+                <div className="research-meta-row">
+                  <span>pipeline 空 summary / 空命名</span>
+                  <span>
+                    {diagnostic.pipelineSummaryEmptyCount} /{" "}
+                    {diagnostic.pipelineNameEmptyCount}
+                  </span>
+                </div>
+                <div className="research-meta-row">
+                  <span>edge 候选 / 保留</span>
+                  <span>
+                    {diagnostic.edgeCandidateCount} /{" "}
+                    {diagnostic.edgeValidatedCount}
+                  </span>
+                </div>
+                <div className="research-meta-row">
+                  <span>edge 校验回退</span>
+                  <span>{diagnostic.edgeValidateFallbackCount}</span>
+                </div>
+              </>
+            )}
+            <div className="support-item-text research-path-text">
+              {paper.path}
+            </div>
+            <div className="support-item-actions">
+              <button
+                className="action-button"
+                onClick={() => void handleOpenFile(paper.path)}
+              >
+                Open paper
+              </button>
+            </div>
           </div>
-          <div className="research-meta-row">
-            <span>type</span>
-            <span>{paperTypeLabels[paper.paperType] ?? paper.paperType}</span>
-          </div>
-          <div className="research-meta-row">
-            <span>chunk</span>
-            <span>{paper.chunkCount}</span>
-          </div>
-          <div className="research-meta-row">
-            <span>候选</span>
-            <span>{paper.candidateCount}</span>
-          </div>
-          <div className="research-meta-row">
-            <span>待审核</span>
-            <span>{paper.pendingReviewCount}</span>
-          </div>
-          <div className="research-meta-row">
-            <span>已入图</span>
-            <span>
-              {paper.isInGraph ? `是 (${paper.approvedCandidateCount})` : "否"}
-            </span>
-          </div>
-          <div className="research-meta-row">
-            <span>index / extraction</span>
-            <span>
-              {paper.indexStatus} / {paper.extractionStatus}
-            </span>
-          </div>
-          <div className="support-item-text research-path-text">
-            {paper.path}
-          </div>
-          <div className="support-item-actions">
-            <button
-              className="action-button"
-              onClick={() => void handleOpenFile(paper.path)}
-            >
-              Open paper
-            </button>
-          </div>
-        </div>
-      ))}
+        );
+      })}
     </>
   );
 
@@ -1200,8 +1321,9 @@ export function ResearchMemoryPanel({
           className="action-button"
           onClick={() => void loadGraph(graphView, true)}
           disabled={isGraphLoading}
+          title="重新读取图谱视图，不会重置审核结果"
         >
-          {isGraphLoading ? "Loading" : "Refresh"}
+          {isGraphLoading ? "刷新中..." : "刷新视图"}
         </button>
       </div>
 
@@ -1262,8 +1384,9 @@ export function ResearchMemoryPanel({
           className="action-button"
           onClick={() => void loadReviews(true)}
           disabled={isReviewLoading}
+          title="重新读取审核队列，不会重置审核结果；会尝试补回缺失 edge"
         >
-          {isReviewLoading ? "Loading" : "Refresh"}
+          {isReviewLoading ? "刷新中..." : "刷新视图"}
         </button>
       </div>
       <div className="research-inline-tabs review-filter-tabs">
@@ -1380,8 +1503,9 @@ export function ResearchMemoryPanel({
           className="action-button"
           onClick={() => void loadIdeas(true)}
           disabled={isIdeasLoading}
+          title="重新读取 Idea 候选，不会重置审核结果"
         >
-          {isIdeasLoading ? "Loading" : "Refresh"}
+          {isIdeasLoading ? "刷新中..." : "刷新视图"}
         </button>
       </div>
       {ideas.length === 0 && !isIdeasLoading && (
@@ -1451,6 +1575,22 @@ export function ResearchMemoryPanel({
         <div className="research-meta-row">
           <span>Extract Fallback</span>
           <span>{extractFallbackModel}</span>
+        </div>
+        <div className="research-meta-row">
+          <span>Pipeline Summary</span>
+          <span>{pipelineSummaryModel}</span>
+        </div>
+        <div className="research-meta-row">
+          <span>Pipeline Name</span>
+          <span>{pipelineNameModel}</span>
+        </div>
+        <div className="research-meta-row">
+          <span>Edge Extract</span>
+          <span>{edgeExtractModel}</span>
+        </div>
+        <div className="research-meta-row">
+          <span>Edge Validate</span>
+          <span>{edgeValidateModel}</span>
         </div>
         <div className="research-meta-row">
           <span>Translate</span>

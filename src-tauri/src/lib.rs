@@ -1,4 +1,3 @@
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -11,14 +10,16 @@ use tauri::{Emitter, State, Window};
 mod cards;
 mod encyclopedia;
 mod mobile;
-mod research_memory;
+pub mod research_memory;
 mod text_decode;
 use cards::{CardSettings, KnowledgeCardDetail, KnowledgeCardSummary, SaveKnowledgeCardRequest};
 use encyclopedia::TermLookupMode;
 use research_memory::{
-    ApplyReviewRequest, ComparePapersResult, DocumentResult, IdeaCandidate, IngestMode,
-    PageVisualNoteResult, ResearchGraph, ResearchGraphEdgeDetail, ResearchGraphNodeDetail,
-    ResearchIngestOptions, ResearchPaperRecord, ResearchSearchHit, ReviewRecord,
+    ApplyReviewRequest, ComparePapersResult, DocumentResult, ExtractionProviderSettings,
+    IdeaCandidate, IngestMode,
+    PageVisualNoteResult, ResearchExtractionDiagnosticsRecord, ResearchGraph, ResearchGraphEdgeDetail,
+    ResearchGraphNodeDetail, ResearchIngestOptions, ResearchPaperRecord, ResearchSearchHit,
+    ReviewRecord,
 };
 use text_decode::{decode_command_output, decode_text_bytes, read_text_file_auto};
 
@@ -239,6 +240,28 @@ pub struct GenerateBriefReportRequest {
     pub active_pdf_path: Option<String>,
     pub user_instruction: Option<String>,
     pub model: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PaperCommandRequest {
+    pub command_type: String,
+    pub paper_path: Option<String>,
+    pub scope_paper: Option<String>,
+    pub active_pdf_path: Option<String>,
+    pub user_instruction: Option<String>,
+    pub model: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PaperDraftResult {
+    pub kind: String,
+    pub title: String,
+    pub path: String,
+    pub open_target: String,
+    pub preview_text: String,
+    pub content: String,
 }
 
 impl Default for InferenceSettings {
@@ -1484,6 +1507,24 @@ async fn set_thinking_enabled(
     let updated = state.set_thinking_enabled(thinking_enabled)?;
     save_inference_settings_to_disk(&app, &updated)?;
     Ok(updated)
+}
+
+#[tauri::command]
+async fn get_research_extraction_provider_settings(
+    app: AppHandle,
+) -> Result<ExtractionProviderSettings, String> {
+    research_memory::load_extraction_provider_settings(&app)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn set_research_extraction_provider_settings(
+    app: AppHandle,
+    settings: ExtractionProviderSettings,
+) -> Result<ExtractionProviderSettings, String> {
+    research_memory::save_extraction_provider_settings(&app, &settings)
+        .map_err(|e| e.to_string())?;
+    Ok(settings)
 }
 
 fn reveal_path_in_explorer(path: &str) -> Result<(), String> {
@@ -2749,8 +2790,13 @@ async fn ingest_knowledge_base(
             extract_model: Some(model),
             extract_fast_model: None,
             extract_fallback_model: None,
+            extract_pipeline_summary_model: None,
+            extract_pipeline_name_model: None,
+            extract_edge_model: None,
+            extract_edge_validate_model: None,
             allow_auto_pull_extract_model: Some(true),
-            extraction_mode: Some("balanced".to_string()),
+            extraction_mode: Some("fast".to_string()),
+            extract_provider: None,
             embedding_model: None,
             vision_model: None,
             mode,
@@ -2865,6 +2911,15 @@ async fn list_extraction_reviews(app: AppHandle) -> Result<Vec<ReviewRecord>, St
 #[tauri::command]
 async fn list_research_papers(app: AppHandle) -> Result<Vec<ResearchPaperRecord>, String> {
     research_memory::list_research_papers(&app)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn list_research_extraction_diagnostics(
+    app: AppHandle,
+) -> Result<Vec<ResearchExtractionDiagnosticsRecord>, String> {
+    research_memory::list_research_extraction_diagnostics(&app)
         .await
         .map_err(|e| e.to_string())
 }
@@ -4336,19 +4391,17 @@ fn choose_best_paper_match(
     Err("当前没有可用的目标论文。请先选中文献，或使用 @paper 指定论文。".to_string())
 }
 
-async fn resolve_brief_target_paper(
+async fn resolve_target_paper(
     app: &AppHandle,
-    request: &GenerateBriefReportRequest,
+    scope_paper: Option<&str>,
+    paper_path: Option<&str>,
+    active_pdf_path: Option<&str>,
 ) -> Result<ResearchPaperRecord, String> {
     let papers = research_memory::list_research_papers(app)
         .await
         .map_err(|e| e.to_string())?;
-    let fallback_path = request
-        .paper_path
-        .as_deref()
-        .or(request.active_pdf_path.as_deref());
-    let paper =
-        choose_best_paper_match(&papers, request.scope_paper.as_deref(), fallback_path)?;
+    let fallback_path = paper_path.or(active_pdf_path);
+    let paper = choose_best_paper_match(&papers, scope_paper, fallback_path)?;
     if paper.chunk_count == 0 {
         return Err(format!(
             "目标论文“{}”尚未建立可检索内容，请先完成 ingest。",
@@ -4465,6 +4518,72 @@ async fn build_brief_context(
     Ok((context, evidence_count))
 }
 
+fn command_scoped_queries(command_type: &str) -> [(&'static str, &'static str); 4] {
+    match command_type {
+        "method" => [
+            ("Method / Pipeline", "method pipeline framework overview approach"),
+            ("Module / Architecture", "module architecture component algorithm design"),
+            ("Input / Output / Objective", "input output objective task formulation"),
+            ("Technical Motivation", "motivation design reason why works"),
+        ],
+        "exp" => [
+            ("Experiment Setup", "experiment setup benchmark evaluation protocol"),
+            ("Dataset / Baseline", "dataset baseline benchmark comparison"),
+            ("Ablation / Robustness", "ablation robustness sensitivity failure case"),
+            ("Limitation / Discussion", "limitation discussion future work weakness"),
+        ],
+        "claim" => [
+            ("Core Claims", "claim contribution key finding conclusion"),
+            ("Supporting Evidence", "result evidence experiment observation"),
+            ("Method Support", "method mechanism insight motivation"),
+            ("Limitation / Caveat", "limitation caveat discussion uncertainty"),
+        ],
+        _ => [
+            ("Question-Relevant Evidence", "question answer key evidence relevant claim"),
+            ("Method / Pipeline", "method pipeline framework module"),
+            ("Experiment / Result", "experiment result baseline dataset"),
+            ("Limitation / Discussion", "limitation discussion future work"),
+        ],
+    }
+}
+
+async fn build_paper_command_context(
+    app: &AppHandle,
+    paper: &ResearchPaperRecord,
+    command_type: &str,
+) -> Result<(String, usize), String> {
+    let scope = research_memory::ResearchSearchScope {
+        path: Some(paper.path.as_str()),
+        paper_query: None,
+    };
+    let mut unique_hits = HashMap::<String, ResearchSearchHit>::new();
+    let mut section_blocks = Vec::new();
+
+    for (section_title, query) in command_scoped_queries(command_type) {
+        let hits = research_memory::search_research_memory(app, query, 5, None, scope.clone())
+            .await
+            .map_err(|e| e.to_string())?;
+        for hit in &hits {
+            unique_hits
+                .entry(hit.id.clone())
+                .or_insert_with(|| hit.clone());
+        }
+        section_blocks.push(format_brief_hits_section(section_title, &hits));
+    }
+
+    let evidence_count = unique_hits.len();
+    let context = format!(
+        "## 目标论文\n- 标题：{}\n- 路径：{}\n- Chunk 数：{}\n- 候选概念数：{}\n- 论文类型：{}\n\n## 检索证据\n{}",
+        paper.title,
+        paper.path,
+        paper.chunk_count,
+        paper.candidate_count,
+        paper.paper_type,
+        section_blocks.join("\n\n")
+    );
+    Ok((context, evidence_count))
+}
+
 fn build_brief_prompt(
     paper: &ResearchPaperRecord,
     context: &str,
@@ -4488,6 +4607,138 @@ fn build_brief_prompt(
     )
 }
 
+fn command_display_name(command_type: &str) -> &'static str {
+    match command_type {
+        "ask" => "/ask",
+        "method" => "/method",
+        "exp" => "/exp",
+        "claim" => "/claim",
+        _ => "/ask",
+    }
+}
+
+fn build_paper_command_system_prompt(command_type: &str) -> &'static str {
+    match command_type {
+        "method" => {
+            "你现在是一个盲人。你看不见引言、实验、结果和结论。你的视野里只有核心方法、算法组件和管线设计。你只能提取输入输出、pipeline、module、design motivation、why it works。任何实验结果、SOTA、数据集名、baseline、宏观意义都必须严格过滤掉。如果论文没有明确 pipeline，就明确写“未明确给出完整方法管线”，不得脑补。"
+        }
+        "exp" => {
+            "你现在只能看到实验、结果、消融和局限。你看不见引言、方法原理和结论。你只能提取 dataset、baseline、metrics、ablation、robustness、failure case、limitation。任何方法原理长解释、宏观背景、泛化总结、高层 motivation 都必须删除。没有可核验定量证据时，必须写“论文未给出可核验结果”，不得补数值。"
+        }
+        "claim" => {
+            "你是科研论点审校助手。只提炼论文的核心 claims，并区分“论文明确声明”“从证据可谨慎推出”“当前证据不足”。禁止把背景事实和泛泛意义包装成 claim。"
+        }
+        _ => {
+            "你是科研论文问答助手。只能基于当前论文检索证据回答，不得扩展到全库，也不得编造缺失事实。若证据不足，必须明确说明。"
+        }
+    }
+}
+
+fn build_paper_command_prompt(
+    command_type: &str,
+    paper: &ResearchPaperRecord,
+    context: &str,
+    user_instruction: Option<&str>,
+) -> String {
+    let instruction_block = user_instruction
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("## 用户附加要求\n{}\n\n", value))
+        .unwrap_or_default();
+    match command_type {
+        "method" => format!(
+            "{instruction_block}你正在执行 /method。\n\n只输出以下结构：\n# Method Focus\n- 任务输入与输出\n- Pipeline / 整体技术路线\n- 关键 Module\n- 设计动机\n- 为什么能 work\n\n规则：\n1. 不得输出实验结果、baseline、SOTA、数据集表述作为主体。\n2. 如果论文没有明确给出完整 pipeline，必须明确写缺失。\n3. 所有内容都必须来自当前论文证据。\n\n## 论文\n- 标题：{title}\n\n## 证据\n{context}",
+            title = paper.title
+        ),
+        "exp" => format!(
+            "{instruction_block}你正在执行 /exp。\n\n只输出以下结构：\n# Experiment Focus\n- Datasets / Benchmarks\n- Baselines / Comparison Setup\n- Main Results\n- Ablation / Robustness\n- Failure Case / Limitation\n\n规则：\n1. 不得输出大段方法原理或背景动机。\n2. 没有定量证据时明确写“论文未给出可核验结果”。\n3. 所有内容都必须来自当前论文证据。\n\n## 论文\n- 标题：{title}\n\n## 证据\n{context}",
+            title = paper.title
+        ),
+        "claim" => format!(
+            "{instruction_block}你正在执行 /claim。\n\n输出 3-7 条核心 claim。每条都必须包含：\n- Claim\n- 证据强弱：论文明确声明 / 从证据可谨慎推出 / 当前证据不足\n- 证据说明\n\n规则：\n1. 不要把背景事实写成 claim。\n2. 不要虚构数值和结论。\n3. 如果证据不足，也要保留并明确写出。\n\n## 论文\n- 标题：{title}\n\n## 证据\n{context}",
+            title = paper.title
+        ),
+        _ => format!(
+            "{instruction_block}你正在执行 /ask。\n\n请基于当前论文证据回答用户问题。如果证据不足，直接说明不足，不得编造。\n\n## 用户问题\n{question}\n\n## 论文\n- 标题：{title}\n\n## 证据\n{context}",
+            question = user_instruction.unwrap_or("请概括这篇论文当前最重要的信息。"),
+            title = paper.title
+        ),
+    }
+}
+
+fn sanitize_draft_file_stem(value: &str) -> String {
+    let compact = value
+        .chars()
+        .map(|ch| match ch {
+            'A'..='Z' => ch.to_ascii_lowercase(),
+            'a'..='z' | '0'..='9' => ch,
+            ch if ch.is_alphanumeric() => ch,
+            _ => '-',
+        })
+        .collect::<String>();
+    let joined = compact
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    if joined.is_empty() {
+        "paper-draft".to_string()
+    } else {
+        joined
+    }
+}
+
+fn current_timestamp_file_tag() -> String {
+    let seconds = UNIX_EPOCH
+        .elapsed()
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    seconds.to_string()
+}
+
+fn draft_directory_path(app: &AppHandle, draft_kind: &str) -> Result<PathBuf, String> {
+    let settings = cards::get_card_settings(app)?;
+    let root = PathBuf::from(settings.active_root);
+    let folder = match draft_kind {
+        "review_draft" => root.join("paper_drafts").join("review"),
+        _ => root.join("paper_drafts").join("notes"),
+    };
+    std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+    Ok(folder)
+}
+
+fn build_note_draft_markdown(
+    paper: &ResearchPaperRecord,
+    content: &str,
+    user_instruction: Option<&str>,
+    model: &str,
+) -> String {
+    format!(
+        "---\nkind: paper_note_draft\ntitle: {title}\nsource_paper: {path}\ncreated_at: {created_at}\nmodel: {model}\nuser_instruction: {instruction}\n---\n\n# {title}\n\n## 阅读笔记\n\n{content}\n",
+        title = paper.title,
+        path = paper.path,
+        created_at = cards::current_timestamp_iso_utc(),
+        model = model,
+        instruction = user_instruction.unwrap_or("").replace('\n', " ")
+    )
+}
+
+fn build_review_draft_markdown(
+    paper: &ResearchPaperRecord,
+    content: &str,
+    user_instruction: Option<&str>,
+    model: &str,
+) -> String {
+    format!(
+        "---\nkind: paper_review_draft\ntitle: {title}\nsource_paper: {path}\ncreated_at: {created_at}\nmodel: {model}\nuser_instruction: {instruction}\n---\n\n# {title}\n\n## Review Draft\n\n{content}\n",
+        title = paper.title,
+        path = paper.path,
+        created_at = cards::current_timestamp_iso_utc(),
+        model = model,
+        instruction = user_instruction.unwrap_or("").replace('\n', " ")
+    )
+}
+
 #[tauri::command]
 async fn generate_brief_report(
     window: Window,
@@ -4507,7 +4758,13 @@ async fn generate_brief_report(
     };
 
     emit_progress("locating", "正在定位目标论文...");
-    let paper = resolve_brief_target_paper(&app, &request).await?;
+    let paper = resolve_target_paper(
+        &app,
+        request.scope_paper.as_deref(),
+        request.paper_path.as_deref(),
+        request.active_pdf_path.as_deref(),
+    )
+    .await?;
     emit_progress("retrieving", "正在检索图谱与摘要证据...");
     let (context, evidence_count) = build_brief_context(&app, &paper).await?;
     emit_progress("generating", "正在生成核心简报...");
@@ -4539,6 +4796,161 @@ async fn generate_brief_report(
         emit_progress("done", "核心简报已生成。");
         text
     })
+}
+
+#[tauri::command]
+async fn run_paper_command(
+    app: AppHandle,
+    request: PaperCommandRequest,
+    settings_state: State<'_, InferenceSettingsState>,
+) -> Result<String, String> {
+    let paper = resolve_target_paper(
+        &app,
+        request.scope_paper.as_deref(),
+        request.paper_path.as_deref(),
+        request.active_pdf_path.as_deref(),
+    )
+    .await?;
+    let (context, _) = build_paper_command_context(&app, &paper, &request.command_type).await?;
+    let prompt = build_paper_command_prompt(
+        &request.command_type,
+        &paper,
+        &context,
+        request.user_instruction.as_deref(),
+    );
+    let settings = settings_state.get()?;
+    run_ollama_chat(
+        &request.model,
+        vec![
+            serde_json::json!({
+                "role": "system",
+                "content": build_paper_command_system_prompt(&request.command_type)
+            }),
+            serde_json::json!({
+                "role": "user",
+                "content": prompt
+            }),
+        ],
+        settings.thinking_enabled,
+    )
+    .await
+    .and_then(|text| {
+        trim_non_empty_model_output(
+            text,
+            &format!("{} 返回了空结果。", command_display_name(&request.command_type)),
+        )
+    })
+}
+
+async fn create_paper_draft(
+    app: &AppHandle,
+    request: &PaperCommandRequest,
+    draft_kind: &str,
+    settings_state: &InferenceSettingsState,
+) -> Result<PaperDraftResult, String> {
+    let paper = resolve_target_paper(
+        app,
+        request.scope_paper.as_deref(),
+        request.paper_path.as_deref(),
+        request.active_pdf_path.as_deref(),
+    )
+    .await?;
+    let command_type = if draft_kind == "review_draft" {
+        "claim"
+    } else {
+        "ask"
+    };
+    let (context, _) = build_paper_command_context(app, &paper, command_type).await?;
+    let prompt = if draft_kind == "review_draft" {
+        format!(
+            "你正在为单篇论文生成 review 草稿。请输出 Markdown，包含：\n# Review Draft\n- Summary\n- Strengths\n- Weaknesses\n- Open Questions\n- Evidence-backed Notes\n\n规则：\n1. 只基于当前论文证据。\n2. 不得虚构实验数值。\n3. 风格简洁，可直接进入人工编辑。\n\n## 用户附加要求\n{}\n\n## 论文\n- 标题：{}\n\n## 证据\n{}",
+            request.user_instruction.as_deref().unwrap_or("无"),
+            paper.title,
+            context
+        )
+    } else {
+        format!(
+            "你正在为单篇论文生成阅读笔记草稿。请输出 Markdown，包含：\n# 阅读笔记\n- 一句话总结\n- Method Notes\n- Experiment Notes\n- My Questions\n- Potential Follow-ups\n\n规则：\n1. 只基于当前论文证据。\n2. 可保留缺失说明。\n3. 风格适合后续人工继续编辑。\n\n## 用户附加要求\n{}\n\n## 论文\n- 标题：{}\n\n## 证据\n{}",
+            request.user_instruction.as_deref().unwrap_or("无"),
+            paper.title,
+            context
+        )
+    };
+    let settings = settings_state.get()?;
+    let content = run_ollama_chat(
+        &request.model,
+        vec![
+            serde_json::json!({
+                "role": "system",
+                "content": if draft_kind == "review_draft" {
+                    "你是科研 review 草稿助手。只产出可编辑的 Markdown review draft，不得编造。"
+                } else {
+                    "你是科研阅读笔记助手。只产出可编辑的 Markdown note draft，不得编造。"
+                }
+            }),
+            serde_json::json!({
+                "role": "user",
+                "content": prompt
+            }),
+        ],
+        settings.thinking_enabled,
+    )
+    .await
+    .and_then(|text| trim_non_empty_model_output(text, "模型返回了空草稿。"))?;
+    let directory = draft_directory_path(app, draft_kind)?;
+    let file_name = format!(
+        "{}-{}-{}.md",
+        current_timestamp_file_tag(),
+        sanitize_draft_file_stem(&paper.title),
+        if draft_kind == "review_draft" {
+            "review"
+        } else {
+            "note"
+        }
+    );
+    let path = directory.join(file_name);
+    let markdown = if draft_kind == "review_draft" {
+        build_review_draft_markdown(
+            &paper,
+            &content,
+            request.user_instruction.as_deref(),
+            &request.model,
+        )
+    } else {
+        build_note_draft_markdown(
+            &paper,
+            &content,
+            request.user_instruction.as_deref(),
+            &request.model,
+        )
+    };
+    std::fs::write(&path, markdown.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(PaperDraftResult {
+        kind: draft_kind.to_string(),
+        title: paper.title.clone(),
+        path: path.to_string_lossy().to_string(),
+        open_target: path.to_string_lossy().to_string(),
+        preview_text: truncate_chars(content.trim(), 220),
+        content: markdown,
+    })
+}
+
+#[tauri::command]
+async fn create_paper_note_draft(
+    app: AppHandle,
+    request: PaperCommandRequest,
+    settings_state: State<'_, InferenceSettingsState>,
+) -> Result<PaperDraftResult, String> {
+    create_paper_draft(&app, &request, "note_draft", &settings_state).await
+}
+
+#[tauri::command]
+async fn create_paper_review_draft(
+    app: AppHandle,
+    request: PaperCommandRequest,
+    settings_state: State<'_, InferenceSettingsState>,
+) -> Result<PaperDraftResult, String> {
+    create_paper_draft(&app, &request, "review_draft", &settings_state).await
 }
 
 async fn route_chat_completion(
@@ -4697,6 +5109,7 @@ pub fn run() {
             get_research_graph_node_detail,
             get_research_graph_edge_detail,
             list_research_papers,
+            list_research_extraction_diagnostics,
             list_extraction_reviews,
             apply_extraction_review,
             list_idea_candidates,
@@ -4713,9 +5126,14 @@ pub fn run() {
             resolve_hf_gguf,
             get_inference_settings,
             set_inference_mode,
+            get_research_extraction_provider_settings,
+            set_research_extraction_provider_settings,
             set_thinking_enabled,
             chat_with_llm,
+            run_paper_command,
             generate_brief_report,
+            create_paper_note_draft,
+            create_paper_review_draft,
             explain_pdf_selection,
             reveal_in_explorer,
             open_file,

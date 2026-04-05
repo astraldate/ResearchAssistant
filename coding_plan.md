@@ -39,14 +39,27 @@
 - 抽取链路改为 `Map-Reduce`，禁止整篇论文一次性结构化抽取。
 - 抽取模型职责已拆分：
   - 聊天默认模型：`qwen3.5:9b`
-  - 快速候选抽取：`nuextract`
-  - 关系抽取 / 失败兜底：`qwen3:8b`
-- 索引前会自动检查并拉取缺失的 `nuextract`、embedding 和关系抽取模型。
+  - 候选节点抽取：`qwen3:8b`
+  - Pipeline Summary / Pipeline 命名：`qwen3.5:9b`
+  - Edge 抽取 / Edge 校验：`qwen3.5:9b`
+- 索引前会自动检查并拉取缺失的候选、Pipeline、Edge 和 embedding 模型。
 - 抽取阶段已拆成：
   - `candidate_extract`
-  - `relation_extract`
+  - `pipeline_summarize`
+  - `pipeline_name_extract`
+  - `edge_extract`
+  - `edge_validate`
   - `canonicalize`
   - `index_vectors`
+- Candidate prompt 已加入排他性定义、负面示例和 `kindRationale`，减少节点级联失真。
+- Relation 类抽取已对 `Introduction / Method / Approach / Framework / Overview` 使用更大窗口和重叠切片。
+- `Pipeline` 已改成“先总结骨架，再提取标准名称”的两步式 CoT 降维。
+- `Paper Status` 现在可直接查看每篇论文的抽取诊断：
+  - relation units
+  - candidate 冲突
+  - pipeline 空 summary / 空命名
+  - edge 候选 / 保留
+  - edge 校验回退
 - 当前图谱深度已锁死为：
   - `Task -> Pipeline -> Module`
   - `Challenge -> Insight`
@@ -69,7 +82,7 @@
 - Android 构建日志里 `react-native-gesture-handler` 仍有对象路径 warning，虽然不再阻断 release，但还可以继续压缩。
 - 需要把 APK 复制到稳定命名路径的动作收成显式脚本，而不是依赖人工复制。
 - 需要增加 Android release 构建的 CI 校验，至少覆盖依赖安装、TypeScript 和 `assembleRelease`。
-- `Research Memory` 仍缺少真正的抽取模型设置页，目前默认值已写死到代码和本地持久化状态里。
+- `Research Memory` 抽取模型设置已扩到候选、Pipeline Summary、Pipeline 命名、Edge 抽取、Edge 校验，但还缺更系统的策略页和样本集管理。
 - `Graph` 仍是轻量 lane 视图，不是 Cytoscape 的可交互 DAG。
 - `compare_papers` 后端已具备，但前端完整入口仍需补齐。
 - `/brief` 已能生成单论文简报，但还缺少更稳定的证据排序、字段后处理和多文献命令扩展。

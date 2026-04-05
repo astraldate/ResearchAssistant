@@ -21,6 +21,8 @@ interface Message {
   role: "user" | "ai";
   content: string;
   timestamp: number;
+  kind?: "markdown" | "draft_result_card";
+  draftResult?: PaperDraftResult;
 }
 
 interface DocumentResult {
@@ -74,7 +76,14 @@ interface SelectionMenuState {
   y: number;
 }
 
-type SlashCommandName = "brief";
+type SlashCommandName =
+  | "brief"
+  | "ask"
+  | "method"
+  | "exp"
+  | "claim"
+  | "note"
+  | "review";
 
 interface ParsedSlashCommand {
   name: SlashCommandName;
@@ -83,6 +92,16 @@ interface ParsedSlashCommand {
 }
 
 const buildBriefProgressContent = (message: string) => `_${message}_`;
+const buildDraftCardFallbackContent = (draft: PaperDraftResult) =>
+  [
+    draft.kind === "note_draft" ? "已生成笔记草稿" : "已生成 review 草稿",
+    "",
+    `**${draft.title}**`,
+    "",
+    draft.previewText,
+    "",
+    `路径：\`${draft.path}\``,
+  ].join("\n");
 
 interface ChatStreamEvent {
   request_id: string;
@@ -95,6 +114,15 @@ interface BriefProgressEvent {
   request_id: string;
   phase: "locating" | "retrieving" | "generating" | "done";
   message: string;
+}
+
+interface PaperDraftResult {
+  kind: "note_draft" | "review_draft";
+  title: string;
+  path: string;
+  openTarget: string;
+  previewText: string;
+  content: string;
 }
 
 interface ChatInterfaceProps {
@@ -172,6 +200,36 @@ const SUPPORTED_SLASH_COMMANDS: Array<{
   description: string;
 }> = [
   {
+    name: "ask",
+    title: "⚡ /ask",
+    description: "对当前文献做定向问答",
+  },
+  {
+    name: "method",
+    title: "⚡ /method",
+    description: "只看方法设计与技术路线",
+  },
+  {
+    name: "exp",
+    title: "⚡ /exp",
+    description: "只看实验、对比、消融与局限",
+  },
+  {
+    name: "claim",
+    title: "⚡ /claim",
+    description: "提取论文核心论点与证据强弱",
+  },
+  {
+    name: "note",
+    title: "⚡ /note",
+    description: "生成并保存笔记草稿",
+  },
+  {
+    name: "review",
+    title: "⚡ /review",
+    description: "生成并保存 review 草稿",
+  },
+  {
     name: "brief",
     title: "⚡ /brief",
     description: "生成当前文献的核心 Markdown 简报 (基于图谱与摘要)",
@@ -183,7 +241,9 @@ const parseSlashCommand = (value: string): ParsedSlashCommand | null => {
   const match = trimmed.match(/^\/([a-zA-Z][\w-]*)(?:\s+([\s\S]*))?$/);
   if (!match) return null;
   const name = match[1].toLowerCase();
-  if (name !== "brief") return null;
+  if (!SUPPORTED_SLASH_COMMANDS.some((command) => command.name === name)) {
+    return null;
+  }
   const rawBody = (match[2] ?? "").trim();
   const inlinePaperMatch = rawBody.match(
     /^@paper\s+(.+?)(?:\r?\n+|$)([\s\S]*)/i,
@@ -192,13 +252,13 @@ const parseSlashCommand = (value: string): ParsedSlashCommand | null => {
     const scopePaper = inlinePaperMatch[1].trim();
     const remainder = (inlinePaperMatch[2] ?? "").trim();
     return {
-      name: "brief",
+      name: name as SlashCommandName,
       scopePaper: scopePaper || null,
       userInstruction: remainder,
     };
   }
   return {
-    name: "brief",
+    name: name as SlashCommandName,
     scopePaper: null,
     userInstruction: rawBody,
   };
@@ -216,7 +276,9 @@ const extractUnsupportedSlashCommand = (value: string) => {
   const match = trimmed.match(/^\/([a-zA-Z][\w-]*)(?:\s|$)/);
   if (!match) return null;
   const name = match[1].toLowerCase();
-  if (name === "brief") return null;
+  if (SUPPORTED_SLASH_COMMANDS.some((command) => command.name === name)) {
+    return null;
+  }
   return name;
 };
 
@@ -761,6 +823,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     cancelledRequestIdsRef.current.delete(requestId);
 
     if (unsupportedSlashCommand) {
+      const supportedNames = SUPPORTED_SLASH_COMMANDS.map(
+        (command) => `\`/${command.name}\``,
+      ).join("、");
       setMessages((previous) => [
         ...previous,
         {
@@ -772,7 +837,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         {
           id: assistantMessageId,
           role: "ai",
-          content: `暂不支持该指令：\`/${unsupportedSlashCommand}\`\n\n当前可用指令：\`/brief\``,
+          content: `暂不支持该指令：\`/${unsupportedSlashCommand}\`\n\n当前可用指令：${supportedNames}`,
           timestamp: startedAt,
         },
       ]);
@@ -797,7 +862,13 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         content:
           slashCommand?.name === "brief"
             ? buildBriefProgressContent("正在准备核心简报...")
-            : "",
+            : slashCommand?.name === "note"
+              ? "_正在生成笔记草稿..._"
+              : slashCommand?.name === "review"
+                ? "_正在生成 review 草稿..._"
+                : slashCommand
+                  ? `_${slashCommand.name === "method" ? "正在聚焦方法设计..." : slashCommand.name === "exp" ? "正在聚焦实验与局限..." : slashCommand.name === "claim" ? "正在提取核心论点..." : "正在检索论文证据..."}_`
+                  : "",
         timestamp: startedAt,
       },
     ]);
@@ -845,6 +916,82 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
               : message,
           ),
         ]);
+        setImagePath(null);
+        return;
+      }
+      if (
+        slashCommand?.name === "ask" ||
+        slashCommand?.name === "method" ||
+        slashCommand?.name === "exp" ||
+        slashCommand?.name === "claim"
+      ) {
+        const response = await invoke<string>("run_paper_command", {
+          request: {
+            commandType: slashCommand.name,
+            scopePaper: effectiveScopePaper ?? undefined,
+            paperPath: scopePath,
+            activePdfPath: activePdfPath ?? undefined,
+            userInstruction: slashCommand.userInstruction || undefined,
+            model: activeModel,
+          },
+        });
+        if (cancelledRequestIdsRef.current.has(requestId)) {
+          return;
+        }
+        setMessages((previous) =>
+          previous.map((message) =>
+            message.id === assistantMessageId
+              ? {
+                  ...message,
+                  content: response,
+                  kind: "markdown",
+                  timestamp: Date.now(),
+                }
+              : message,
+          ),
+        );
+        setImagePath(null);
+        return;
+      }
+      if (slashCommand?.name === "note" || slashCommand?.name === "review") {
+        const draft = await invoke<PaperDraftResult>(
+          slashCommand.name === "note"
+            ? "create_paper_note_draft"
+            : "create_paper_review_draft",
+          {
+            request: {
+              commandType: slashCommand.name,
+              scopePaper: effectiveScopePaper ?? undefined,
+              paperPath: scopePath,
+              activePdfPath: activePdfPath ?? undefined,
+              userInstruction: slashCommand.userInstruction || undefined,
+              model: activeModel,
+            },
+          },
+        );
+        if (cancelledRequestIdsRef.current.has(requestId)) {
+          return;
+        }
+        setMessages((previous) =>
+          previous.map((message) =>
+            message.id === assistantMessageId
+              ? {
+                  ...message,
+                  content: buildDraftCardFallbackContent(draft),
+                  kind: "draft_result_card",
+                  draftResult: draft,
+                  timestamp: Date.now(),
+                }
+              : message,
+          ),
+        );
+        onStatus(
+          draft.kind === "note_draft"
+            ? "已生成笔记草稿。"
+            : "已生成 review 草稿。",
+          "info",
+          false,
+        );
         setImagePath(null);
         return;
       }
@@ -1006,9 +1153,16 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     if (shouldShowSlashCommandList) {
       const trimmedCommandBody = parsedScope.cleanQuestion.trim();
       if (event.key === "Enter" && !event.shiftKey) {
-        if (trimmedCommandBody !== "/brief") {
+        if (
+          !SUPPORTED_SLASH_COMMANDS.some(
+            (command) => trimmedCommandBody === `/${command.name}`,
+          )
+        ) {
           event.preventDefault();
-          applySlashCommand("brief");
+          const firstCommand = filteredSlashCommands[0];
+          if (firstCommand) {
+            applySlashCommand(firstCommand.name);
+          }
           return;
         }
       }
@@ -1055,6 +1209,23 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     setInputValue((previous) =>
       previous.trim() ? `${previous}\n${note.text}` : note.text,
     );
+  };
+
+  const handleOpenDraftResult = async (draft: PaperDraftResult) => {
+    try {
+      await invoke("open_file", { path: draft.openTarget });
+    } catch (error) {
+      onStatus(`打开草稿失败：${String(error)}`, "error", true);
+    }
+  };
+
+  const handleCopyDraftPath = async (draft: PaperDraftResult) => {
+    try {
+      await navigator.clipboard.writeText(draft.path);
+      onStatus("已复制草稿路径。", "info", false);
+    } catch (error) {
+      onStatus(`复制草稿路径失败：${String(error)}`, "error", true);
+    }
   };
 
   const handleDeleteNote = (noteId: string) => {
@@ -1224,6 +1395,51 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     [parsedScope.scopePaper],
   );
 
+  const renderAssistantMessage = (message: Message) => {
+    if (message.kind === "draft_result_card" && message.draftResult) {
+      const draft = message.draftResult;
+      return (
+        <div className="chat-draft-result-card">
+          <div className="chat-draft-result-status">
+            {draft.kind === "note_draft"
+              ? "已生成笔记草稿"
+              : "已生成 review 草稿"}
+          </div>
+          <div className="chat-draft-result-title">{draft.title}</div>
+          <div className="chat-draft-result-preview">{draft.previewText}</div>
+          <div className="chat-draft-result-path" title={draft.path}>
+            {draft.path}
+          </div>
+          <div className="chat-draft-result-actions">
+            <button
+              type="button"
+              style={TOOL_BUTTON_STYLE}
+              onClick={() => void handleOpenDraftResult(draft)}
+            >
+              点击查看/编辑
+            </button>
+            <button
+              type="button"
+              style={TOOL_BUTTON_STYLE}
+              onClick={() => void handleCopyDraftPath(draft)}
+            >
+              复制路径
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <MarkdownRenderer
+        content={message.content}
+        autoExpandReasoning={
+          isLoading && activeStreamRef.current?.messageId === message.id
+        }
+      />
+    );
+  };
+
   return (
     <div className="chat-container">
       <div className="chat-header">
@@ -1264,13 +1480,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
               {messages.map((message) => (
                 <div key={message.id} className={`message ${message.role}`}>
                   {message.role === "ai" ? (
-                    <MarkdownRenderer
-                      content={message.content}
-                      autoExpandReasoning={
-                        isLoading &&
-                        activeStreamRef.current?.messageId === message.id
-                      }
-                    />
+                    renderAssistantMessage(message)
                   ) : (
                     <div style={{ whiteSpace: "pre-wrap" }}>
                       {message.content}

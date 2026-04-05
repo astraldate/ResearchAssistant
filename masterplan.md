@@ -71,14 +71,20 @@
 - 保持 `纯 Rust + Tauri + React + Ollama`，不引入 Python 服务。
 - 聊天与抽取模型职责拆分：
   - 聊天默认 `qwen3.5:9b`
-  - 快速候选抽取 `nuextract`
-  - 关系抽取与失败兜底 `qwen3:8b`
+  - 候选节点抽取 `qwen3:8b`
+  - Pipeline Summary / Pipeline 命名 / Edge 抽取 / Edge 校验 默认 `qwen3.5:9b`
 - 存储层保持：
   - `SQLite` 作为主库
   - `LanceDB` 作为派生向量索引
 - 图谱主干固定：
   - `Task -> Pipeline -> Module`
   - `Challenge -> Insight`
+- 抽取策略当前重点：
+  - `candidate_extract` 注入排他性定义与负面示例，降低 Task/Module/Challenge/Insight 混淆
+  - `Introduction / Method / Approach / Framework / Overview` 章节使用更大 relation map unit
+  - `Pipeline` 改成 `pipeline_summarize -> pipeline_name_extract`
+  - `Edge` 改成 `edge_extract -> edge_validate`
+  - `Paper Status` 直接展示每篇论文的抽取诊断，便于做最小回归比较
 - 工作区内的文件或文件夹可以直接右键：
   - `建立索引`
   - `解除索引`

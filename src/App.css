@@ -1002,6 +1002,20 @@ textarea:focus {
   background: linear-gradient(90deg, #3f76b8, #6ba0db);
 }
 
+.ingest-subprogress-track {
+  margin-top: 6px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(38, 95, 155, 0.08);
+  overflow: hidden;
+}
+
+.ingest-subprogress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(63, 118, 184, 0.55), #8db7e6);
+}
+
 .workspace-path {
   padding: 10px 14px;
   word-break: break-all;
@@ -2737,6 +2751,51 @@ textarea:focus {
   z-index: 18060;
 }
 
+.chat-draft-result-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(48, 95, 151, 0.18);
+  background: linear-gradient(
+    180deg,
+    rgba(248, 250, 255, 0.96),
+    rgba(240, 246, 255, 0.92)
+  );
+}
+
+.chat-draft-result-status {
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: #2f5e97;
+}
+
+.chat-draft-result-title {
+  font-size: 0.98rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.chat-draft-result-preview {
+  font-size: 0.82rem;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+}
+
+.chat-draft-result-path {
+  font-size: 0.74rem;
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+
+.chat-draft-result-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .chat-paper-mention-item {
   display: flex;
   flex-direction: column;
@@ -3421,6 +3480,31 @@ textarea:focus {
 .settings-model-card-head span {
   font-size: 0.8rem;
   color: var(--text-secondary);
+}
+
+.settings-provider-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.settings-provider-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+
+.settings-provider-field input,
+.settings-provider-field select {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid rgba(93, 110, 132, 0.18);
+  background: rgba(255, 255, 255, 0.96);
+  color: var(--text-primary);
+  padding: 10px 12px;
+  font: inherit;
 }
 
 .chat-pdf-citation-shell .citation-bar {
