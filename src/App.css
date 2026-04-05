@@ -16,6 +16,18 @@
       transparent 28%
     ),
     #f6f4ef;
+  --app-background:
+    radial-gradient(
+      circle at top left,
+      rgba(91, 132, 177, 0.18),
+      transparent 26%
+    ),
+    radial-gradient(
+      circle at right bottom,
+      rgba(211, 169, 109, 0.16),
+      transparent 28%
+    ),
+    #f6f4ef;
 
   --bg-primary: rgba(255, 255, 255, 0.92);
   --bg-secondary: rgba(247, 245, 240, 0.92);
@@ -29,11 +41,105 @@
   --danger: #b42318;
   --shadow-soft: 0 12px 40px rgba(37, 48, 65, 0.12);
   --shadow-float: 0 10px 24px rgba(27, 36, 48, 0.14);
+  --input-surface: rgba(255, 255, 255, 0.95);
+  --focus-ring: rgba(38, 95, 155, 0.12);
+  --workspace-rail-bg: linear-gradient(
+    180deg,
+    rgba(244, 240, 231, 0.96),
+    rgba(236, 231, 221, 0.92)
+  );
+  --workspace-surface: linear-gradient(
+    180deg,
+    rgba(248, 246, 241, 0.97),
+    rgba(244, 240, 230, 0.94)
+  );
+  --workspace-rail-button-bg: rgba(255, 255, 255, 0.68);
+  --workspace-rail-button-hover-bg: rgba(255, 255, 255, 0.9);
+  --modal-surface: rgba(255, 255, 255, 0.98);
+  --settings-tab-bg: rgba(244, 242, 236, 0.9);
+  --settings-tab-active-bg: #21364f;
+  --settings-tab-active-shadow: 0 8px 18px rgba(33, 54, 79, 0.26);
+  --settings-runtime-bg: linear-gradient(
+    180deg,
+    rgba(248, 246, 241, 0.96),
+    rgba(241, 246, 249, 0.92)
+  );
+  --settings-theme-toggle-bg: rgba(246, 243, 236, 0.92);
+  --settings-theme-option-active-bg: rgba(48, 95, 151, 0.92);
+  --settings-theme-option-active-color: #fff;
+  --settings-theme-option-shadow: 0 10px 22px rgba(27, 36, 48, 0.14);
 
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+:root[data-theme="dark"] {
+  color: #e8eef8;
+  background:
+    radial-gradient(
+      circle at top left,
+      rgba(69, 112, 172, 0.2),
+      transparent 28%
+    ),
+    radial-gradient(
+      circle at right bottom,
+      rgba(198, 136, 72, 0.14),
+      transparent 30%
+    ),
+    #0f141c;
+  --app-background:
+    radial-gradient(
+      circle at top left,
+      rgba(69, 112, 172, 0.2),
+      transparent 28%
+    ),
+    radial-gradient(
+      circle at right bottom,
+      rgba(198, 136, 72, 0.14),
+      transparent 30%
+    ),
+    #0f141c;
+  --bg-primary: rgba(20, 27, 37, 0.92);
+  --bg-secondary: rgba(24, 31, 43, 0.9);
+  --bg-tertiary: rgba(33, 43, 58, 0.94);
+  --bg-accent: #162334;
+  --text-primary: #e8eef8;
+  --text-secondary: #9dadc4;
+  --text-accent: #82b6ff;
+  --border-color: rgba(135, 158, 194, 0.18);
+  --border-strong: rgba(130, 182, 255, 0.3);
+  --danger: #f06b6b;
+  --shadow-soft: 0 18px 46px rgba(1, 6, 14, 0.36);
+  --shadow-float: 0 14px 34px rgba(1, 6, 14, 0.42);
+  --input-surface: rgba(17, 23, 32, 0.95);
+  --focus-ring: rgba(130, 182, 255, 0.18);
+  --workspace-rail-bg: linear-gradient(
+    180deg,
+    rgba(20, 26, 35, 0.98),
+    rgba(15, 20, 28, 0.96)
+  );
+  --workspace-surface: linear-gradient(
+    180deg,
+    rgba(18, 25, 35, 0.98),
+    rgba(14, 20, 29, 0.96)
+  );
+  --workspace-rail-button-bg: rgba(255, 255, 255, 0.06);
+  --workspace-rail-button-hover-bg: rgba(130, 182, 255, 0.16);
+  --modal-surface: rgba(18, 25, 35, 0.98);
+  --settings-tab-bg: rgba(255, 255, 255, 0.05);
+  --settings-tab-active-bg: #2f4d75;
+  --settings-tab-active-shadow: 0 8px 18px rgba(8, 14, 26, 0.34);
+  --settings-runtime-bg: linear-gradient(
+    180deg,
+    rgba(24, 31, 43, 0.98),
+    rgba(19, 27, 38, 0.94)
+  );
+  --settings-theme-toggle-bg: rgba(255, 255, 255, 0.05);
+  --settings-theme-option-active-bg: rgba(130, 182, 255, 0.2);
+  --settings-theme-option-active-color: #f7fbff;
+  --settings-theme-option-shadow: 0 10px 22px rgba(5, 9, 18, 0.28);
 }
 
 * {
@@ -50,6 +156,8 @@ body,
 
 body {
   overflow: hidden;
+  background: var(--app-background);
+  color: var(--text-primary);
 }
 
 button,
@@ -67,7 +175,7 @@ input,
 select,
 textarea {
   border: 1px solid var(--border-color);
-  background: rgba(255, 255, 255, 0.95);
+  background: var(--input-surface);
   color: var(--text-primary);
 }
 
@@ -76,7 +184,7 @@ select:focus,
 textarea:focus {
   outline: none;
   border-color: var(--text-accent);
-  box-shadow: 0 0 0 3px rgba(38, 95, 155, 0.12);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 .app-shell {
@@ -104,11 +212,7 @@ textarea:focus {
   gap: 8px;
   padding: 10px 6px;
   border-right: 1px solid rgba(103, 117, 141, 0.18);
-  background: linear-gradient(
-    180deg,
-    rgba(244, 240, 231, 0.96),
-    rgba(236, 231, 221, 0.92)
-  );
+  background: var(--workspace-rail-bg);
   backdrop-filter: blur(16px);
   transition:
     width 0.28s ease,
@@ -122,7 +226,7 @@ textarea:focus {
   height: 34px;
   border: 1px solid rgba(103, 117, 141, 0.14);
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.68);
+  background: var(--workspace-rail-button-bg);
   box-shadow: 0 6px 18px rgba(27, 36, 48, 0.06);
   display: inline-flex;
   align-items: center;
@@ -140,7 +244,7 @@ textarea:focus {
 
 .workspace-rail-button:hover,
 .workspace-rail-button.active {
-  background: rgba(255, 255, 255, 0.9);
+  background: var(--workspace-rail-button-hover-bg);
   color: var(--text-accent);
   border-color: rgba(38, 95, 155, 0.22);
   box-shadow: 0 12px 28px rgba(27, 36, 48, 0.1);
@@ -413,11 +517,7 @@ textarea:focus {
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: linear-gradient(
-    180deg,
-    rgba(248, 246, 241, 0.97),
-    rgba(244, 240, 230, 0.94)
-  );
+  background: var(--workspace-surface);
   border-right: 1px solid var(--border-color);
   backdrop-filter: blur(16px);
   transition:
@@ -1631,14 +1731,14 @@ textarea:focus {
 
 .pdf-reader-toolbar {
   min-width: 0;
-  padding: 8px 10px;
-  border: 1px solid rgba(122, 133, 150, 0.14);
-  border-radius: 999px;
-  background: rgba(248, 246, 239, 0.46);
+  padding: 6px 8px;
+  border: 1px solid rgba(122, 133, 150, 0.16);
+  border-radius: 14px;
+  background: rgba(250, 248, 242, 0.9);
   box-shadow:
-    0 12px 28px rgba(27, 36, 48, 0.08),
-    inset 0 1px 0 rgba(255, 255, 255, 0.4);
-  backdrop-filter: blur(16px);
+    0 12px 22px rgba(27, 36, 48, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(18px);
 }
 
 .pdf-reader-toolbar-shell {
@@ -1646,7 +1746,7 @@ textarea:focus {
   top: 12px;
   left: 50%;
   z-index: 1;
-  width: min(calc(100% - 28px), 920px);
+  width: min(calc(100% - 28px), 980px);
   overflow: hidden;
   max-height: 120px;
   opacity: 1;
@@ -1681,10 +1781,10 @@ textarea:focus {
 }
 
 .pdf-reader-toolbar-shell.auto-hidden .pdf-reader-toolbar {
-  background: rgba(248, 246, 239, 0.28);
+  background: rgba(250, 248, 242, 0.7);
   box-shadow:
-    0 8px 18px rgba(27, 36, 48, 0.05),
-    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+    0 7px 16px rgba(27, 36, 48, 0.05),
+    inset 0 1px 0 rgba(255, 255, 255, 0.42);
 }
 
 .pdf-reader-toolbar-scroll {
@@ -1695,13 +1795,29 @@ textarea:focus {
   scrollbar-width: thin;
 }
 
-.pdf-reader-toolbar-inner {
+.pdf-reader-toolbar-layout {
   width: max-content;
   min-width: 100%;
-  display: inline-flex;
+  display: inline-grid;
+  grid-template-columns: auto minmax(0, auto) auto;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   padding-bottom: 1px;
+}
+
+.pdf-toolbar-section {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 6px;
+}
+
+.pdf-toolbar-section-center {
+  justify-content: center;
+}
+
+.pdf-toolbar-section-end {
+  justify-content: flex-end;
 }
 
 .pdf-mode-control {
@@ -1716,17 +1832,33 @@ textarea:focus {
 .pdf-toolbar-group {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   flex-wrap: nowrap;
   white-space: nowrap;
 }
 
 .pdf-toolbar-group-end {
-  margin-left: auto;
+  margin-left: 0;
 }
 
 .pdf-page-jump-group {
   white-space: nowrap;
+}
+
+.pdf-toolbar-page-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(122, 133, 150, 0.14);
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.pdf-toolbar-page-chip:focus-within {
+  border-color: rgba(38, 95, 155, 0.22);
+  box-shadow: 0 0 0 3px rgba(38, 95, 155, 0.1);
 }
 
 .pdf-toolbar-text {
@@ -1737,37 +1869,51 @@ textarea:focus {
 .pdf-toolbar-pill {
   display: inline-flex;
   align-items: center;
-  min-height: 34px;
-  padding: 0 11px;
-  border-radius: 999px;
+  min-height: 28px;
+  padding: 0 8px;
+  border-radius: 8px;
   border: 1px solid rgba(122, 133, 150, 0.14);
-  background: rgba(255, 255, 255, 0.52);
+  background: rgba(255, 255, 255, 0.55);
   color: var(--text-secondary);
-  font-size: 0.78rem;
+  font-size: 0.74rem;
   white-space: nowrap;
 }
 
+.pdf-toolbar-zoom-pill {
+  min-width: 54px;
+  justify-content: center;
+  font-variant-numeric: tabular-nums;
+}
+
 .pdf-page-input {
-  width: 62px;
-  padding: 6px 10px;
-  border-radius: 999px;
-  text-align: center;
-  background: rgba(255, 255, 255, 0.56);
-  border-color: rgba(122, 133, 150, 0.14);
+  width: 44px;
+  min-width: 44px;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  text-align: right;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  box-shadow: none;
+}
+
+.pdf-page-input:focus {
+  border-color: transparent;
+  box-shadow: none;
 }
 
 .pdf-toolbar-icon-button {
-  width: 34px;
-  height: 34px;
-  min-width: 34px;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
   padding: 0;
   justify-content: center;
-  border-radius: 11px;
-  border-color: rgba(122, 133, 150, 0.14);
-  background: rgba(255, 255, 255, 0.42);
+  border-radius: 6px;
+  border-color: transparent;
+  background: transparent;
   color: var(--text-secondary);
   box-shadow: none;
-  backdrop-filter: blur(12px);
   transition:
     transform 0.16s ease,
     background 0.16s ease,
@@ -1777,34 +1923,53 @@ textarea:focus {
 }
 
 .pdf-toolbar-icon-button:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.76);
-  border-color: rgba(48, 95, 151, 0.18);
+  background: rgba(122, 133, 150, 0.1);
+  border-color: transparent;
   color: var(--text-accent);
-  transform: translateY(-1px);
-  box-shadow: 0 8px 14px rgba(27, 36, 48, 0.07);
+  transform: none;
+  box-shadow: none;
 }
 
 .pdf-toolbar-icon-button.primary {
-  background: rgba(48, 95, 151, 0.1);
-  border-color: rgba(48, 95, 151, 0.18);
+  background: rgba(48, 95, 151, 0.12);
+  border-color: transparent;
   color: var(--text-accent);
 }
 
 .pdf-toolbar-icon-button.primary:hover:not(:disabled) {
-  background: rgba(48, 95, 151, 0.14);
+  background: rgba(48, 95, 151, 0.16);
 }
 
 .pdf-reader-toolbar-shell .pdf-reader-toolbar {
   pointer-events: auto;
 }
 
+.pdf-toolbar-divider {
+  width: 1px;
+  height: 18px;
+  border-radius: 1px;
+  background: rgba(122, 133, 150, 0.2);
+  flex: 0 0 1px;
+}
+
+.pdf-lookup-control {
+  position: relative;
+}
+
 .pdf-mode-control select {
-  min-width: 118px;
-  padding: 6px 10px;
-  border-radius: 999px;
+  min-width: 108px;
+  height: 30px;
+  padding: 0 24px 0 8px;
+  border-radius: 8px;
   border-color: rgba(122, 133, 150, 0.14);
-  background: rgba(255, 255, 255, 0.52);
-  font-size: 0.78rem;
+  background: rgba(255, 255, 255, 0.58);
+  font-size: 0.76rem;
+  box-shadow: none;
+}
+
+.pdf-mode-control select:focus {
+  border-color: rgba(38, 95, 155, 0.22);
+  box-shadow: 0 0 0 3px rgba(38, 95, 155, 0.08);
 }
 
 .pdf-mode-control select,
@@ -2119,6 +2284,13 @@ textarea:focus {
   will-change: transform;
 }
 
+.pdf-page-annotation-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+
 .pdfjs-page-placeholder {
   border-radius: inherit;
   background:
@@ -2140,19 +2312,54 @@ textarea:focus {
 .pdfjs-text-layer {
   position: absolute;
   inset: 0;
+  z-index: 3;
+}
+
+.pdf-page-annotation-highlight {
+  position: absolute;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--annotation-color) 56%, transparent);
+  box-shadow: inset 0 0 0 1px
+    color-mix(in srgb, var(--annotation-color) 48%, rgba(40, 50, 67, 0.12));
+  mix-blend-mode: multiply;
+  pointer-events: none;
+}
+
+.pdf-annotation-note-badge {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--annotation-color) 88%, white);
+  color: rgba(26, 34, 45, 0.88);
+  box-shadow:
+    0 6px 14px rgba(27, 36, 48, 0.16),
+    0 0 0 1px color-mix(in srgb, var(--annotation-color) 38%, white);
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.pdf-annotation-note-badge:hover {
+  transform: translateY(-1px);
 }
 
 .textLayer {
   position: absolute;
   text-align: initial;
   inset: 0;
-  overflow: hidden;
-  opacity: 0.25;
+  overflow: clip;
+  opacity: 1;
   line-height: 1;
   text-size-adjust: none;
   forced-color-adjust: none;
   transform-origin: 0 0;
   z-index: 2;
+  color-scheme: only light;
+  user-select: text;
 }
 
 .textLayer :is(span, br) {
@@ -2161,6 +2368,7 @@ textarea:focus {
   white-space: pre;
   cursor: text;
   transform-origin: 0 0;
+  user-select: text;
 }
 
 .textLayer span.markedContent {
@@ -2169,11 +2377,19 @@ textarea:focus {
 }
 
 .textLayer ::selection {
-  background: AccentColor;
+  background: transparent;
 }
 
 .textLayer ::-moz-selection {
-  background: AccentColor;
+  background: transparent;
+}
+
+.textLayer.selecting ::selection {
+  background: transparent;
+}
+
+.textLayer.selecting ::-moz-selection {
+  background: transparent;
 }
 
 .textLayer br::selection,
@@ -2188,6 +2404,7 @@ textarea:focus {
   z-index: -1;
   cursor: default;
   user-select: none;
+  pointer-events: none;
 }
 
 .textLayer .endOfContent.active {
@@ -2233,7 +2450,7 @@ textarea:focus {
 
 .pdf-selection-target {
   position: absolute;
-  transform: translate(8px, 8px);
+  transform: none;
   border: none;
   border-radius: 999px;
   padding: 6px 10px;
@@ -2244,6 +2461,188 @@ textarea:focus {
   box-shadow: var(--shadow-float);
   z-index: 10;
   pointer-events: auto;
+}
+
+.pdf-selection-highlight {
+  position: absolute;
+  border-radius: 1px;
+  background: rgba(245, 221, 74, 0.58);
+  mix-blend-mode: multiply;
+  pointer-events: none;
+}
+
+.pdf-selection-context-menu {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 168px;
+  padding: 8px;
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: var(--shadow-float);
+  z-index: 12;
+  pointer-events: auto;
+  backdrop-filter: blur(14px);
+}
+
+.pdf-selection-context-menu button {
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 6px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--text-primary);
+  font-size: 0.85rem;
+}
+
+.pdf-selection-context-menu button:hover {
+  background: rgba(48, 95, 151, 0.12);
+}
+
+.card-context-menu {
+  z-index: 22000;
+}
+
+.pdf-selection-context-divider {
+  height: 1px;
+  margin: 4px 2px;
+  background: rgba(115, 128, 147, 0.18);
+}
+
+.pdf-selection-context-label {
+  padding: 2px 8px 0;
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+}
+
+.pdf-selection-color-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 4px 6px;
+}
+
+.pdf-selection-color-row-editor {
+  padding-inline: 0;
+}
+
+.pdf-selection-context-menu .pdf-selection-color-button,
+.pdf-selection-color-button {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid rgba(32, 41, 56, 0.1);
+  background:
+    radial-gradient(
+      circle at 35% 35%,
+      rgba(255, 255, 255, 0.95),
+      transparent 44%
+    ),
+    color-mix(in srgb, var(--annotation-color) 92%, white);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.55),
+    0 1px 2px rgba(27, 36, 48, 0.1);
+  cursor: pointer;
+}
+
+.pdf-selection-context-menu .pdf-selection-color-button:hover,
+.pdf-selection-context-menu .pdf-selection-color-button.active,
+.pdf-selection-color-button:hover,
+.pdf-selection-color-button.active {
+  background:
+    radial-gradient(
+      circle at 35% 35%,
+      rgba(255, 255, 255, 0.95),
+      transparent 44%
+    ),
+    color-mix(in srgb, var(--annotation-color) 92%, white);
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.7),
+    0 0 0 2px color-mix(in srgb, var(--annotation-color) 26%, white),
+    0 6px 14px rgba(27, 36, 48, 0.12);
+}
+
+.pdf-annotation-editor {
+  width: min(300px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(110, 124, 144, 0.24);
+  background: var(--modal-surface);
+  box-shadow: 0 18px 42px rgba(27, 36, 48, 0.18);
+  pointer-events: auto;
+  backdrop-filter: blur(16px);
+}
+
+.pdf-annotation-editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pdf-annotation-editor-title {
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.pdf-annotation-editor-input {
+  width: 100%;
+  min-height: 118px;
+  resize: vertical;
+  border: 1px solid rgba(115, 128, 147, 0.22);
+  border-radius: 10px;
+  background: rgba(249, 250, 252, 0.94);
+  padding: 10px 12px;
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.pdf-annotation-editor-input:focus {
+  outline: none;
+  border-color: rgba(48, 95, 151, 0.3);
+  box-shadow: 0 0 0 3px rgba(48, 95, 151, 0.1);
+}
+
+.pdf-annotation-editor-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.pdf-annotation-editor-danger-actions {
+  margin-right: auto;
+  display: inline-flex;
+  gap: 8px;
+}
+
+.pdf-annotation-editor-actions button {
+  border: none;
+  border-radius: 10px;
+  padding: 7px 12px;
+  background: rgba(48, 95, 151, 0.08);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.pdf-annotation-editor-actions button.primary {
+  background: rgba(48, 95, 151, 0.9);
+  color: #fff;
+}
+
+.pdf-annotation-editor-actions button.danger {
+  background: rgba(185, 69, 62, 0.09);
+  color: #9f3b34;
 }
 
 .term-popover {
@@ -2287,12 +2686,17 @@ textarea:focus {
   gap: 10px;
   overflow: auto;
   padding-right: 4px;
+  flex: 1;
+  min-height: 0;
+  overscroll-behavior: contain;
 }
 
 .term-popover-stage {
   flex: 1;
   min-height: 0;
   margin-top: 10px;
+  display: flex;
+  flex-direction: column;
   transition:
     opacity 0.16s ease,
     transform 0.2s ease;
@@ -2610,6 +3014,20 @@ textarea:focus {
   gap: 18px;
 }
 
+.message-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.message-row.user {
+  justify-content: flex-end;
+}
+
+.message-row.ai {
+  justify-content: flex-start;
+}
+
 .message {
   max-width: min(86%, 960px);
 }
@@ -2623,6 +3041,74 @@ textarea:focus {
 
 .message.ai {
   align-self: flex-start;
+}
+
+.chat-message-select {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px;
+  border-radius: 10px;
+  background: rgba(38, 95, 155, 0.08);
+  border: 1px solid rgba(38, 95, 155, 0.16);
+}
+
+.chat-message-checkbox {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--text-accent);
+}
+
+.chat-selection-bar {
+  position: sticky;
+  bottom: 0;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
+  background: rgba(255, 255, 255, 0.96);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  box-shadow: var(--shadow-float);
+}
+
+.chat-selection-summary {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.chat-selection-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chat-selection-primary,
+.chat-selection-secondary {
+  border-radius: 10px;
+  padding: 6px 10px;
+  font-size: 0.72rem;
+  cursor: pointer;
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
+}
+
+.chat-selection-primary {
+  border-color: rgba(48, 95, 151, 0.28);
+  background: rgba(48, 95, 151, 0.12);
+  color: var(--text-accent);
+}
+
+.chat-selection-secondary {
+  color: var(--text-secondary);
+}
+
+.chat-selection-primary:disabled,
+.chat-selection-secondary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .thinking-text {
@@ -3013,7 +3499,7 @@ textarea:focus {
 .card-item {
   border: 1px solid var(--border-color);
   background: rgba(255, 255, 255, 0.94);
-  padding: 14px;
+  padding: 8px;
   box-shadow: 0 6px 18px rgba(27, 36, 48, 0.04);
 }
 
@@ -3066,15 +3552,8 @@ textarea:focus {
 
 .selection-menu {
   position: fixed;
-  transform: translate(-50%, -100%);
-  z-index: 15000;
-  display: flex;
-  gap: 8px;
-  padding: 8px;
-  border-radius: 999px;
-  border: 1px solid var(--border-color);
-  background: rgba(255, 255, 255, 0.98);
-  box-shadow: var(--shadow-float);
+  transform: translate(0, 0);
+  z-index: 20000;
 }
 
 .card-library,
@@ -3088,15 +3567,71 @@ textarea:focus {
   flex: 1 1 auto;
 }
 
+.card-library .card-library-header {
+  align-items: flex-start;
+  padding: 10px 14px;
+  gap: 10px;
+}
+
 .card-library .card-library-actions {
-  margin-top: 10px;
+  margin-top: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.card-library-header-icon {
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
+  padding: 0;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.94);
+}
+
+.card-library-header-icon:hover {
+  background: rgba(38, 95, 155, 0.08);
+}
+
+.card-library-header-icon:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .card-library-search-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding-top: 14px;
+  padding-top: 8px;
+}
+
+.card-library-search-hint {
+  margin-top: 6px;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed rgba(103, 117, 141, 0.24);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+
+.card-library-search-hint-label {
+  font-weight: 600;
+  color: rgba(103, 117, 141, 0.86);
+}
+
+.card-library-search-hint-text {
+  color: rgba(103, 117, 141, 0.78);
+}
+.card-library .main-view-title {
+  font-size: 0.93rem;
+}
+
+.card-library .main-view-subtitle {
+  margin-top: 2px;
+  font-size: 0.84rem;
 }
 
 .card-library-search-input {
@@ -3108,12 +3643,12 @@ textarea:focus {
 
 .card-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr));
-  gap: 18px;
+  grid-template-columns: repeat(auto-fill, minmax(min(150px, 100%), 1fr));
+  gap: 8px;
   min-width: 0;
   overflow-x: hidden;
   overflow-y: auto;
-  padding: 18px 2px 2px;
+  padding: 8px 2px 2px;
   align-items: stretch;
 }
 
@@ -3179,18 +3714,18 @@ textarea:focus {
 .card-item {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  min-height: 316px;
+  gap: 6px;
+  min-height: 120px;
   height: 100%;
   min-width: 0;
   position: relative;
   overflow: hidden;
-  border-radius: 22px;
+  border-radius: 12px;
   background:
     radial-gradient(
       circle at top right,
-      rgba(120, 172, 225, 0.18),
-      transparent 34%
+      rgba(120, 172, 225, 0.14),
+      transparent 28%
     ),
     linear-gradient(
       180deg,
@@ -3198,8 +3733,8 @@ textarea:focus {
       rgba(247, 244, 238, 0.95)
     );
   box-shadow:
-    0 12px 28px rgba(27, 36, 48, 0.07),
-    0 2px 0 rgba(255, 255, 255, 0.72) inset;
+    0 6px 16px rgba(27, 36, 48, 0.06),
+    0 1px 0 rgba(255, 255, 255, 0.72) inset;
   transition:
     transform 0.22s ease,
     box-shadow 0.24s ease,
@@ -3222,11 +3757,10 @@ textarea:focus {
 }
 
 .card-item:hover {
-  transform: translate3d(0, -7px, 0);
+  transform: translate3d(0, -2px, 0);
   box-shadow:
-    0 20px 44px rgba(27, 36, 48, 0.14),
-    0 12px 24px rgba(51, 79, 112, 0.09),
-    0 2px 0 rgba(255, 255, 255, 0.72) inset;
+    0 10px 22px rgba(27, 36, 48, 0.12),
+    0 1px 0 rgba(255, 255, 255, 0.72) inset;
 }
 
 .card-item:hover .card-item-title {
@@ -3245,7 +3779,7 @@ textarea:focus {
 .card-item-title-block {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
   min-width: 0;
 }
 
@@ -3253,16 +3787,15 @@ textarea:focus {
   display: flex;
   align-items: flex-start;
   justify-content: flex-start;
-  gap: 12px;
+  gap: 6px;
   min-width: 0;
 }
 
 .card-item-footnote {
   display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: auto;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 4px;
   min-width: 0;
   flex-wrap: wrap;
 }
@@ -3318,6 +3851,37 @@ textarea:focus {
   word-break: break-word;
 }
 
+.card-item-title {
+  font-size: 0.9rem;
+}
+
+.card-item-preview {
+  font-size: 0.78rem;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.card-item-source {
+  color: var(--text-secondary);
+  font-weight: 600;
+  display: block;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: normal;
+  overflow-wrap: normal;
+}
+
+.card-item-date {
+  color: var(--text-secondary);
+}
+
 .settings-overlay {
   position: fixed;
   inset: 0;
@@ -3351,7 +3915,7 @@ textarea:focus {
   gap: 12px;
   padding: 16px 18px;
   border-bottom: 1px solid var(--border-color);
-  background: rgba(255, 255, 255, 0.98);
+  background: var(--modal-surface);
 }
 
 .settings-modal-header h3 {
@@ -3362,12 +3926,12 @@ textarea:focus {
   display: flex;
   gap: 8px;
   padding: 14px 18px 0;
-  background: rgba(255, 255, 255, 0.98);
+  background: var(--modal-surface);
 }
 
 .settings-tab {
   border: 1px solid var(--border-color);
-  background: rgba(244, 242, 236, 0.9);
+  background: var(--settings-tab-bg);
   color: var(--text-secondary);
   border-radius: 999px;
   padding: 8px 14px;
@@ -3382,10 +3946,10 @@ textarea:focus {
 }
 
 .settings-tab.active {
-  background: #21364f;
-  border-color: #21364f;
+  background: var(--settings-tab-active-bg);
+  border-color: var(--settings-tab-active-bg);
   color: #fff;
-  box-shadow: 0 8px 18px rgba(33, 54, 79, 0.26);
+  box-shadow: var(--settings-tab-active-shadow);
 }
 
 .settings-tab-body {
@@ -3419,6 +3983,301 @@ textarea:focus {
   padding: 10px 12px;
 }
 
+.settings-theme-toggle {
+  display: inline-flex;
+  gap: 6px;
+  width: fit-content;
+  padding: 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: var(--settings-theme-toggle-bg);
+}
+
+.settings-theme-option {
+  border: none;
+  border-radius: 999px;
+  padding: 8px 14px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition:
+    background 0.18s ease,
+    color 0.18s ease,
+    box-shadow 0.18s ease,
+    transform 0.18s ease;
+}
+
+.settings-theme-option:hover {
+  color: var(--text-primary);
+}
+
+.settings-theme-option.active {
+  background: var(--settings-theme-option-active-bg);
+  color: var(--settings-theme-option-active-color);
+  box-shadow: var(--settings-theme-option-shadow);
+}
+
+:root[data-theme="dark"] .sidebar-rail {
+  background: rgba(14, 20, 29, 0.9);
+}
+
+:root[data-theme="dark"] .rail-button {
+  color: var(--text-secondary);
+}
+
+:root[data-theme="dark"] .rail-button:hover {
+  background: rgba(130, 182, 255, 0.12);
+  color: var(--text-accent);
+}
+
+:root[data-theme="dark"] .rail-button.active {
+  background: rgba(130, 182, 255, 0.18);
+  border-color: rgba(130, 182, 255, 0.22);
+  color: var(--text-accent);
+}
+
+:root[data-theme="dark"] .pdf-reader-toolbar {
+  border-color: rgba(135, 158, 194, 0.14);
+  background: rgba(20, 27, 37, 0.88);
+  box-shadow:
+    0 12px 22px rgba(1, 6, 14, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+:root[data-theme="dark"]
+  .pdf-reader-toolbar-shell.auto-hidden
+  .pdf-reader-toolbar {
+  background: rgba(20, 27, 37, 0.72);
+  box-shadow:
+    0 7px 16px rgba(1, 6, 14, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+:root[data-theme="dark"] .pdf-toolbar-page-chip,
+:root[data-theme="dark"] .pdf-toolbar-pill {
+  border-color: rgba(135, 158, 194, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-secondary);
+}
+
+:root[data-theme="dark"] .pdf-lookup-control select {
+  border-color: rgba(135, 158, 194, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+  color-scheme: dark;
+  background-color: rgba(22, 29, 39, 0.96);
+}
+
+:root[data-theme="dark"] .pdf-lookup-control select:focus {
+  border-color: rgba(130, 182, 255, 0.26);
+  box-shadow: 0 0 0 3px rgba(130, 182, 255, 0.12);
+}
+
+:root[data-theme="dark"] .pdf-toolbar-page-chip:focus-within {
+  border-color: rgba(130, 182, 255, 0.26);
+  box-shadow: 0 0 0 3px rgba(130, 182, 255, 0.12);
+}
+
+:root[data-theme="dark"] .pdf-toolbar-icon-button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+:root[data-theme="dark"] .pdf-toolbar-icon-button.primary {
+  background: rgba(130, 182, 255, 0.16);
+}
+
+:root[data-theme="dark"] .pdf-dock-panel {
+  background: linear-gradient(
+    180deg,
+    rgba(18, 25, 35, 0.98),
+    rgba(14, 20, 29, 0.98)
+  );
+}
+
+:root[data-theme="dark"] .pdf-dock-header {
+  background: rgba(18, 25, 35, 0.96);
+}
+
+:root[data-theme="dark"] .pdf-dock-topbar {
+  background: rgba(18, 25, 35, 0.92);
+}
+
+:root[data-theme="dark"] .pdf-dock-topbar-button {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(135, 158, 194, 0.16);
+  color: var(--text-secondary);
+  box-shadow: 0 4px 12px rgba(1, 6, 14, 0.18);
+}
+
+:root[data-theme="dark"] .pdf-dock-topbar-button:hover {
+  background: rgba(130, 182, 255, 0.12);
+  color: var(--text-accent);
+}
+
+:root[data-theme="dark"] .ai-right-panel {
+  background: rgba(18, 25, 35, 0.96);
+}
+
+:root[data-theme="dark"] .chat-tools-shell,
+:root[data-theme="dark"] .chat-pdf-shell,
+:root[data-theme="dark"] .pdf-workspace {
+  background: linear-gradient(
+    180deg,
+    rgba(18, 25, 35, 0.92),
+    rgba(14, 20, 29, 0.88)
+  );
+}
+
+:root[data-theme="dark"] .chat-header,
+:root[data-theme="dark"] .main-view-header {
+  background: rgba(18, 25, 35, 0.88);
+}
+
+:root[data-theme="dark"] .messages-list {
+  background: linear-gradient(
+    180deg,
+    rgba(18, 25, 35, 0.42),
+    rgba(14, 20, 29, 0)
+  );
+}
+
+:root[data-theme="dark"] .message.user {
+  background: rgba(130, 182, 255, 0.12);
+}
+
+:root[data-theme="dark"] .chat-message-select {
+  background: rgba(48, 95, 151, 0.18);
+  border-color: rgba(48, 95, 151, 0.32);
+}
+
+:root[data-theme="dark"] .chat-selection-trigger {
+  background: rgba(18, 24, 32, 0.92);
+  border-color: rgba(120, 135, 155, 0.24);
+  color: var(--text-secondary);
+}
+
+:root[data-theme="dark"] .chat-selection-bar {
+  background: rgba(22, 28, 36, 0.92);
+  border-color: rgba(120, 135, 155, 0.24);
+}
+
+:root[data-theme="dark"] .card-edit-title,
+:root[data-theme="dark"] .card-edit-textarea {
+  background: rgba(18, 24, 32, 0.92);
+  border-color: rgba(120, 135, 155, 0.24);
+}
+
+:root[data-theme="dark"] .input-area {
+  background: rgba(16, 22, 31, 0.92);
+}
+
+:root[data-theme="dark"] .image-chip,
+:root[data-theme="dark"] .chat-scope-chip {
+  background: rgba(130, 182, 255, 0.1);
+  border-color: rgba(130, 182, 255, 0.16);
+  color: var(--text-accent);
+}
+
+:root[data-theme="dark"] .chat-input-wrapper {
+  border-color: rgba(135, 158, 194, 0.16);
+  background: rgba(22, 29, 39, 0.98);
+}
+
+:root[data-theme="dark"] .chat-input-wrapper:focus-within {
+  border-color: rgba(130, 182, 255, 0.28);
+  background: rgba(22, 29, 39, 1);
+  box-shadow:
+    0 0 0 1px rgba(130, 182, 255, 0.12),
+    0 0 0 4px rgba(130, 182, 255, 0.08),
+    0 0 18px rgba(80, 131, 195, 0.16),
+    0 0 24px rgba(205, 140, 69, 0.08);
+}
+
+:root[data-theme="dark"] .chat-paper-mention-list {
+  border-color: rgba(135, 158, 194, 0.14);
+  background: rgba(18, 25, 35, 0.98);
+  box-shadow: 0 18px 40px rgba(1, 6, 14, 0.28);
+}
+
+:root[data-theme="dark"] .chat-paper-mention-item:hover,
+:root[data-theme="dark"] .chat-paper-mention-item.active {
+  background: rgba(130, 182, 255, 0.1);
+  border-color: rgba(130, 182, 255, 0.16);
+}
+
+:root[data-theme="dark"] .send-button:hover {
+  background: rgba(130, 182, 255, 0.08);
+}
+
+:root[data-theme="dark"] .support-panel,
+:root[data-theme="dark"] .card-item,
+:root[data-theme="dark"] .reasoning-panel {
+  background: rgba(22, 29, 39, 0.86);
+  box-shadow: 0 8px 20px rgba(1, 6, 14, 0.16);
+}
+
+:root[data-theme="dark"] .card-library-header-icon {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(135, 158, 194, 0.16);
+  color: var(--text-secondary);
+}
+
+:root[data-theme="dark"] .card-library-header-icon:hover {
+  background: rgba(130, 182, 255, 0.1);
+  color: var(--text-accent);
+}
+
+:root[data-theme="dark"] .card-library-search-input,
+:root[data-theme="dark"] .knowledge-search-input,
+:root[data-theme="dark"] .selection-menu,
+:root[data-theme="dark"] .research-text-input {
+  background: rgba(22, 29, 39, 0.96);
+  border-color: rgba(135, 158, 194, 0.16);
+  color: var(--text-primary);
+}
+
+:root[data-theme="dark"] .research-panel-tab,
+:root[data-theme="dark"] .research-inline-tab {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(135, 158, 194, 0.16);
+  color: var(--text-secondary);
+}
+
+:root[data-theme="dark"] .research-panel-tab.active,
+:root[data-theme="dark"] .research-inline-tab.active {
+  border-color: rgba(130, 182, 255, 0.24);
+  background: rgba(130, 182, 255, 0.14);
+  color: var(--text-accent);
+}
+
+:root[data-theme="dark"] .research-card,
+:root[data-theme="dark"] .research-node-card {
+  border-color: rgba(130, 182, 255, 0.12);
+  background: linear-gradient(
+    180deg,
+    rgba(23, 31, 42, 0.96),
+    rgba(18, 25, 35, 0.92)
+  );
+  box-shadow: 0 10px 28px rgba(1, 6, 14, 0.18);
+}
+
+:root[data-theme="dark"] .research-tag {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+:root[data-theme="dark"] .model-compact-row select {
+  background: rgba(22, 29, 39, 0.96);
+}
+
+:root[data-theme="dark"] .model-compact-download {
+  border-color: var(--border-color);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+:root[data-theme="dark"] .pdf-empty-state {
+  background: rgba(18, 25, 35, 0.9);
+}
+
 .settings-model-grid {
   display: flex;
   flex-direction: column;
@@ -3431,11 +4290,7 @@ textarea:focus {
   padding: 14px 16px;
   border-radius: 16px;
   border: 1px solid rgba(93, 110, 132, 0.14);
-  background: linear-gradient(
-    180deg,
-    rgba(248, 246, 241, 0.96),
-    rgba(241, 246, 249, 0.92)
-  );
+  background: var(--settings-runtime-bg);
 }
 
 .settings-runtime-row {
@@ -3899,6 +4754,10 @@ textarea:focus {
   flex-direction: row;
 }
 
+.sidebar-panel.sidebar-panel-collapsed {
+  min-width: 58px;
+}
+
 .sidebar-rail {
   width: 58px;
   flex: 0 0 58px;
@@ -3946,6 +4805,20 @@ textarea:focus {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  transition:
+    opacity 0.2s ease,
+    transform 0.24s ease,
+    width 0.24s ease;
+}
+
+.sidebar-content.collapsed {
+  width: 0;
+  flex: 0 1 0;
+  min-width: 0;
+  opacity: 0;
+  transform: translateX(-10px);
+  pointer-events: none;
+  overflow: hidden;
 }
 
 .sidebar-tool-scroll {
@@ -3963,7 +4836,7 @@ textarea:focus {
 
 .research-panel-tabs {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
   gap: 6px;
   margin-bottom: 12px;
 }
@@ -3975,8 +4848,13 @@ textarea:focus {
   color: var(--text-secondary);
   border-radius: 10px;
   padding: 8px 10px;
+  min-height: 38px;
   font-size: 0.78rem;
   font-weight: 700;
+  line-height: 1.2;
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
   cursor: pointer;
 }
 
@@ -4498,6 +5376,206 @@ textarea:focus {
   font-size: 1rem;
 }
 
+.card-detail-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-primary);
+  border-radius: 20px;
+  padding: 20px 22px;
+  box-shadow: 0 18px 40px rgba(25, 38, 54, 0.08);
+  overflow: hidden;
+}
+
+.card-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.card-detail-header h2 {
+  margin: 0;
+  font-size: 1.6rem;
+  color: var(--text-primary);
+}
+
+.card-detail-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.card-edit-title {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.96);
+}
+
+.card-detail-body {
+  margin-top: 14px;
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.card-edit-body {
+  min-height: 0;
+  height: 100%;
+  display: flex;
+}
+
+.card-edit-textarea {
+  flex: 1;
+  min-height: 280px;
+  width: 100%;
+  resize: vertical;
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
+  padding: 12px;
+  font-size: 0.92rem;
+  line-height: 1.6;
+  font-family: inherit;
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.96);
+}
+
+.card-detail-body::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.card-detail-body .markdown-content {
+  overflow: visible;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.card-detail-body .markdown-content pre {
+  white-space: pre-wrap;
+  overflow-x: hidden;
+}
+
+.card-detail-body .markdown-content code {
+  word-break: break-word;
+}
+
+.card-detail-body .markdown-content blockquote {
+  display: block;
+  width: fit-content;
+  max-width: min(86%, 960px);
+  margin: 4px 0 4px auto;
+  padding: 10px 12px;
+  border-left: none;
+  border-right: 3px solid rgba(38, 95, 155, 0.28);
+  background: rgba(38, 95, 155, 0.06);
+  border-radius: 12px;
+  text-align: right;
+}
+
+.card-detail-body .markdown-content blockquote p {
+  text-align: right;
+}
+.card-detail-source {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.card-detail-source-title {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.card-detail-params {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed rgba(103, 117, 141, 0.2);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.74rem;
+  color: rgba(103, 117, 141, 0.86);
+}
+
+.card-detail-params-label {
+  font-weight: 600;
+  color: rgba(103, 117, 141, 0.9);
+}
+
+.card-detail-params-values {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: rgba(103, 117, 141, 0.78);
+  word-break: break-all;
+}
+
+.card-detail-source-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
+.card-detail-source-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.card-detail-source-label {
+  font-weight: 700;
+  color: var(--text-primary);
+  flex-shrink: 0;
+}
+
+.card-detail-source-link {
+  color: var(--text-accent);
+  text-decoration: underline;
+  word-break: break-all;
+}
+
+.card-detail-source-file {
+  display: inline-block;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.card-item-title-button {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+}
+
+.card-item-title-button:hover {
+  color: #2f5fb3;
+}
+
 .ai-right-panel {
   background: var(--bg-primary);
   border-left: 1px solid var(--border-color);
@@ -4615,4 +5693,129 @@ textarea:focus {
   gap: 8px;
   flex-wrap: wrap;
   flex-shrink: 0;
+}
+
+/* Final dark-theme overrides for late generic button rules */
+:root[data-theme="dark"] .settings-modal,
+:root[data-theme="dark"] .settings-modal-header,
+:root[data-theme="dark"] .settings-tabs {
+  background: var(--modal-surface);
+}
+
+:root[data-theme="dark"] .settings-tab {
+  background: var(--settings-tab-bg);
+  color: var(--text-secondary);
+  border-color: var(--border-color);
+}
+
+:root[data-theme="dark"] .settings-tab.active {
+  background: var(--settings-tab-active-bg);
+  border-color: var(--settings-tab-active-bg);
+  color: #fff;
+  box-shadow: var(--settings-tab-active-shadow);
+}
+
+:root[data-theme="dark"] .tab-button,
+:root[data-theme="dark"] .action-button,
+:root[data-theme="dark"] .card-library-header-icon,
+:root[data-theme="dark"] .research-toolbar .action-button,
+:root[data-theme="dark"] .research-graph-controls .action-button {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(135, 158, 194, 0.16);
+  color: var(--text-primary);
+}
+
+:root[data-theme="dark"] .tab-button:hover,
+:root[data-theme="dark"] .action-button:hover,
+:root[data-theme="dark"] .card-library-header-icon:hover,
+:root[data-theme="dark"] .research-toolbar .action-button:hover,
+:root[data-theme="dark"] .research-graph-controls .action-button:hover {
+  background: rgba(130, 182, 255, 0.1);
+  color: var(--text-accent);
+}
+
+:root[data-theme="dark"] .tab-button.active,
+:root[data-theme="dark"] .action-button.primary {
+  background: linear-gradient(135deg, #3768a5, #5f95d9);
+  border-color: transparent;
+  color: #fff;
+}
+
+:root[data-theme="dark"] .research-panel-tab,
+:root[data-theme="dark"] .research-inline-tab {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(135, 158, 194, 0.16);
+  color: var(--text-secondary);
+}
+
+:root[data-theme="dark"] .research-panel-tab.active,
+:root[data-theme="dark"] .research-inline-tab.active {
+  background: rgba(130, 182, 255, 0.14);
+  border-color: rgba(130, 182, 255, 0.24);
+  color: var(--text-accent);
+}
+
+:root[data-theme="dark"] .pdf-dock-topbar,
+:root[data-theme="dark"] .pdf-dock-topbar-button,
+:root[data-theme="dark"] .ghost-icon-button.pdf-dock-topbar-button {
+  background: rgba(18, 25, 35, 0.92);
+}
+
+:root[data-theme="dark"] .pdf-dock-topbar-button,
+:root[data-theme="dark"] .ghost-icon-button.pdf-dock-topbar-button {
+  border-color: rgba(135, 158, 194, 0.16);
+  color: var(--text-secondary);
+  box-shadow: 0 4px 12px rgba(1, 6, 14, 0.18);
+}
+
+:root[data-theme="dark"] .pdf-dock-topbar-button:hover,
+:root[data-theme="dark"] .ghost-icon-button.pdf-dock-topbar-button:hover {
+  background: rgba(130, 182, 255, 0.12);
+  color: var(--text-accent);
+}
+
+:root[data-theme="dark"] .settings-path-box {
+  background: rgba(22, 29, 39, 0.92);
+  border-color: rgba(135, 158, 194, 0.16);
+  color: var(--text-primary);
+}
+
+:root[data-theme="dark"] .settings-model-card {
+  border-color: rgba(135, 158, 194, 0.14);
+  background: rgba(22, 29, 39, 0.88);
+}
+
+:root[data-theme="dark"] .mobile-settings-panel {
+  border-color: rgba(135, 158, 194, 0.16);
+  background: linear-gradient(
+    180deg,
+    rgba(22, 29, 39, 0.96),
+    rgba(17, 23, 32, 0.92)
+  );
+}
+
+:root[data-theme="dark"] .mobile-settings-device-item {
+  border-color: rgba(135, 158, 194, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+:root[data-theme="dark"] .mobile-settings-code {
+  color: var(--text-accent);
+}
+
+:root[data-theme="dark"] .model-compact-row select {
+  background: rgba(22, 29, 39, 0.96);
+  border-color: rgba(135, 158, 194, 0.16);
+  color: var(--text-primary);
+}
+
+:root[data-theme="dark"] .model-compact-download {
+  border-color: rgba(135, 158, 194, 0.16);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-secondary);
+}
+
+:root[data-theme="dark"] .model-compact-download:hover:not(:disabled) {
+  background: rgba(130, 182, 255, 0.1);
+  color: var(--text-accent);
 }

@@ -37,6 +37,11 @@ const CardLibrary = lazy(() =>
     default: module.CardLibrary,
   })),
 );
+const MarkdownRenderer = lazy(() =>
+  import("./components/MarkdownRenderer").then((module) => ({
+    default: module.MarkdownRenderer,
+  })),
+);
 const PdfDock = lazy(() =>
   import("./components/PdfDock").then((module) => ({
     default: module.PdfDock,
@@ -55,6 +60,159 @@ type SidebarTool = "workspace" | "citations" | "notes" | "knowledge" | "cards";
 type StatusTone = "info" | "error";
 type AiRequirement = "chat" | "index" | "translate";
 type SettingsTab = "general" | "models" | "mobile";
+type AppTheme = "default" | "dark";
+
+type SelectedCardView = {
+  id: string;
+  term: string;
+  title: string;
+  path: string;
+  created_at: string;
+  pdf_path?: string | null;
+  pdf_page?: number | null;
+  source_status: string;
+  source_provider?: string | null;
+  lookup_mode: string;
+  preview: string;
+  markdown: string;
+};
+
+const escapeRegExp = (value: string) =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const stripCardMetadata = (
+  markdown: string,
+  term?: string | null,
+  title?: string | null,
+) => {
+  const normalized = markdown.replace(/\r\n/g, "\n").trim();
+  if (!normalized) return "";
+
+  const lines = normalized.split("\n");
+  const metadataKeys = [
+    "id:",
+    "term:",
+    "title:",
+    "created_at:",
+    "updated_at:",
+    "pdf_path:",
+    "pdf_page:",
+    "selected_text:",
+    "source_status:",
+    "source_title:",
+    "source_url:",
+    "source_provider:",
+    "source_lang:",
+    "model:",
+    "lookup_mode:",
+    "tags:",
+  ];
+  const isMetadataLine = (raw: string) => {
+    const line = raw.trim();
+    if (!line) return true;
+    if (/^[A-Za-z0-9_]+:\s*/.test(line)) return true;
+    return metadataKeys.some((key) => line.includes(key));
+  };
+
+  const metadataHitCount = metadataKeys.reduce(
+    (count, key) => count + (normalized.includes(key) ? 1 : 0),
+    0,
+  );
+
+  let content = normalized;
+
+  // Some historical cards serialize metadata as one long prefix block.
+  // In that case, prefer cutting to the first real body anchor.
+  if (metadataHitCount >= 3) {
+    const explicitMetaTail = content.match(
+      /^(?:[\s\S]*?\b(?:tags:\s*\[[^\]]*]|lookup_mode:\s*[^\n\r]+)\s*)/i,
+    );
+    if (explicitMetaTail && explicitMetaTail[0].length < content.length) {
+      const stripped = content.slice(explicitMetaTail[0].length).trimStart();
+      if (stripped) {
+        content = stripped;
+      }
+    }
+
+    const bodyAnchors = [
+      /^#{1,6}\s*(通俗解释|学术解释|解释|翻译)\s*$/m,
+      /^\*\*(通俗解释|学术解释|解释|翻译)\*\*\s*$/m,
+      /^通俗解释\s*$/m,
+      /^学术解释\s*$/m,
+    ];
+    const starts = bodyAnchors
+      .map((pattern) => normalized.search(pattern))
+      .filter((index) => index >= 0)
+      .sort((left, right) => left - right);
+    if (starts.length > 0) {
+      content = normalized.slice(starts[0]).trim();
+    }
+  }
+
+  // Fallback: strip line-based metadata prefix.
+  if (content === normalized) {
+    let index = 0;
+    while (index < lines.length && isMetadataLine(lines[index])) {
+      index += 1;
+    }
+    if (index < lines.length) {
+      content = lines.slice(index).join("\n").trim();
+    }
+  }
+
+  const headingCandidates = [term, title]
+    .map((value) => value?.trim())
+    .filter((value): value is string => Boolean(value));
+  for (const heading of headingCandidates) {
+    const headingPattern = new RegExp(
+      `^\\s*(?:#{1,6}\\s*)?${escapeRegExp(heading)}\\s*$\\n?`,
+      "i",
+    );
+    content = content.replace(headingPattern, "").trimStart();
+  }
+
+  // Safety: never return empty when original has content.
+  if (!content) return normalized;
+  return content;
+};
+
+const extractCardMetaValue = (markdown: string, key: string) => {
+  const match = markdown.match(
+    new RegExp(`^\\s*${key}\\s*:\\s*(.+)\\s*$`, "im"),
+  );
+  if (!match) return "";
+  const value = match[1].trim();
+  if (!value || value === "null" || value === "undefined") return "";
+  return value.replace(/^["'](.*)["']$/, "$1");
+};
+
+const stripSourceSection = (markdown: string) => {
+  const lines = markdown.split("\n");
+  const output: string[] = [];
+  let inSource = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!inSource && /^(#{1,6}\s*)?来源\s*$/.test(trimmed)) {
+      inSource = true;
+      continue;
+    }
+    if (inSource) {
+      if (/^[-*•]\s+/.test(trimmed) || trimmed === "") {
+        continue;
+      }
+      if (/^#{1,6}\s+/.test(trimmed) || /^\*\*.+\*\*$/.test(trimmed)) {
+        inSource = false;
+        output.push(line);
+        continue;
+      }
+      inSource = false;
+      output.push(line);
+      continue;
+    }
+    output.push(line);
+  }
+  return output.join("\n").trim();
+};
 
 interface InferenceSettings {
   mode: InferenceMode;
@@ -220,6 +378,13 @@ interface ChatSessionSnapshot {
   notes?: NoteItem[];
 }
 
+interface FocusRestoreLayout {
+  sidebar: number;
+  main: number;
+  pdf: number;
+  sidebarCollapsed: boolean;
+}
+
 const REQUIRED_MODELS = {
   embedding: "nomic-embed-text",
   extractFast: "qwen3:8b",
@@ -242,6 +407,8 @@ const EDGE_EXTRACT_MODEL_KEY = "ra_edge_extract_model_v1";
 const EDGE_VALIDATE_MODEL_KEY = "ra_edge_validate_model_v1";
 const TRANSLATION_MODEL_KEY = "ra_translation_model_v1";
 const INGEST_EXTRACTION_MODE_KEY = "ra_ingest_extraction_mode_v1";
+const APP_THEME_KEY = "ra_app_theme_v1";
+const SIDEBAR_COLLAPSED_WIDTH_PX = 58;
 
 const STAGE_LABELS: Record<string, string> = {
   prepare_ingest: "准备导入",
@@ -307,6 +474,12 @@ const CHAT_SESSION_KEY = "ra_chat_session_v3";
 const isPdfFile = (path: string | null | undefined) =>
   Boolean(path && /\.pdf$/i.test(path));
 const DEFAULT_TWO_PANEL_LAYOUT = { main: 55, pdf: 45 };
+const DEFAULT_FOCUS_RESTORE_LAYOUT: FocusRestoreLayout = {
+  sidebar: 23,
+  main: DEFAULT_TWO_PANEL_LAYOUT.main,
+  pdf: DEFAULT_TWO_PANEL_LAYOUT.pdf,
+  sidebarCollapsed: false,
+};
 const AI_IDLE_CHECK_DELAY_MS = 1200;
 const logTiming = (label: string, startedAt: number) => {
   const duration = Math.round(performance.now() - startedAt);
@@ -484,8 +657,13 @@ function App() {
     const stored = localStorage.getItem(TRANSLATION_MODEL_KEY)?.trim();
     return stored || REQUIRED_MODELS.translation;
   });
+  const [appTheme, setAppTheme] = useState<AppTheme>(() => {
+    const stored = localStorage.getItem(APP_THEME_KEY)?.trim();
+    return stored === "dark" ? "dark" : "default";
+  });
   const [activeSidebarTool, setActiveSidebarTool] =
     useState<SidebarTool>("workspace");
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [ingestMode, setIngestMode] = useState<IngestMode>("overwrite");
   const [ingestRunMode, setIngestRunMode] =
     useState<ExtractionRunMode>("balanced");
@@ -528,6 +706,49 @@ function App() {
     null,
   );
   const [cardsRefreshToken, setCardsRefreshToken] = useState(0);
+  const [selectedCard, setSelectedCard] = useState<SelectedCardView | null>(
+    null,
+  );
+  const [isEditingCard, setIsEditingCard] = useState(false);
+  const [editCardTitle, setEditCardTitle] = useState("");
+  const [editCardBody, setEditCardBody] = useState("");
+  const [isSavingCardEdit, setIsSavingCardEdit] = useState(false);
+  const selectedCardBody = useMemo(() => {
+    if (!selectedCard) return "";
+    return stripCardMetadata(
+      selectedCard.markdown,
+      selectedCard.term,
+      selectedCard.title,
+    );
+  }, [selectedCard]);
+  const selectedCardContent = useMemo(() => {
+    if (!selectedCard) return "";
+    const stripped = stripCardMetadata(
+      selectedCard.markdown,
+      selectedCard.term,
+      selectedCard.title,
+    );
+    return stripSourceSection(stripped);
+  }, [selectedCard]);
+
+  const selectedCardSource = useMemo(() => {
+    if (!selectedCard) return null;
+    const markdown = selectedCard.markdown || "";
+    const sourceProvider =
+      selectedCard.source_provider ||
+      extractCardMetaValue(markdown, "source_provider");
+    const sourceUrl = extractCardMetaValue(markdown, "source_url");
+    const model = extractCardMetaValue(markdown, "model");
+    const pdfPath =
+      selectedCard.pdf_path || extractCardMetaValue(markdown, "pdf_path");
+    const sourceFile = pdfPath ? pdfPath.split(/[\\/]/).pop() || "" : "";
+    return {
+      sourceProvider,
+      sourceUrl,
+      model,
+      sourceFile,
+    };
+  }, [selectedCard]);
   const [mobileStatus, setMobileStatus] =
     useState<MobileCompanionStatus | null>(null);
   const [mobileStatusError, setMobileStatusError] = useState<string | null>(
@@ -544,7 +765,9 @@ function App() {
   const previousPdfPathRef = useRef<string | null>(null);
   const sidebarPanelRef = useRef<PanelImperativeHandle | null>(null);
   const mainPanelRef = useRef<PanelImperativeHandle | null>(null);
-  const focusRestoreLayoutRef = useRef(DEFAULT_TWO_PANEL_LAYOUT);
+  const focusRestoreLayoutRef = useRef<FocusRestoreLayout>(
+    DEFAULT_FOCUS_RESTORE_LAYOUT,
+  );
   const pdfPanelRef = useRef<PanelImperativeHandle | null>(null);
   const aiPreparationPromiseRef = useRef<Promise<string> | null>(null);
   const aiPreparedStateRef = useRef<{
@@ -556,6 +779,14 @@ function App() {
     index: false,
     translate: false,
   });
+
+  useEffect(() => {
+    if (!selectedCard) {
+      setIsEditingCard(false);
+      setEditCardTitle("");
+      setEditCardBody("");
+    }
+  }, [selectedCard]);
 
   const stageProgressPercent = useMemo(() => {
     if (!ingestProgress || ingestProgress.total <= 0) return 0;
@@ -1239,6 +1470,13 @@ function App() {
       setIngestRunMode(storedExtractionMode);
     }
   }, []);
+
+  useEffect(() => {
+    localStorage.setItem(APP_THEME_KEY, appTheme);
+    document.documentElement.dataset.theme = appTheme;
+    document.documentElement.style.colorScheme =
+      appTheme === "dark" ? "dark" : "light";
+  }, [appTheme]);
 
   useEffect(() => {
     localStorage.setItem("ra_ingest_mode_v1", ingestMode);
@@ -1991,6 +2229,7 @@ function App() {
       name: node.name,
     });
     if (node.type_name !== "file") return;
+    setSelectedCard(null);
     setActiveFilePath(node.path);
     if (node.path.toLowerCase().endsWith(".pdf")) {
       setPdfPage(1);
@@ -2004,6 +2243,27 @@ function App() {
     }
   };
 
+  const handleSidebarToolToggle = useCallback(
+    (tool: SidebarTool) => {
+      const sidebarPanel = sidebarPanelRef.current;
+      const collapsed = sidebarPanel?.isCollapsed() ?? isSidebarCollapsed;
+      if (activeSidebarTool === tool && !collapsed) {
+        sidebarPanel?.collapse();
+        setIsSidebarCollapsed(true);
+        return;
+      }
+
+      setActiveSidebarTool(tool);
+      if (collapsed) {
+        window.requestAnimationFrame(() => {
+          sidebarPanelRef.current?.expand();
+        });
+      }
+      setIsSidebarCollapsed(false);
+    },
+    [activeSidebarTool, isSidebarCollapsed],
+  );
+
   const handleOpenPathInApp = useCallback(
     (path: string, page?: number, snippet?: string) => {
       const name = path.split(/[\\/]/).pop() || path;
@@ -2013,6 +2273,7 @@ function App() {
         type_name: "file",
         name,
       });
+      setSelectedCard(null);
       setActiveFilePath(path);
       if (path.toLowerCase().endsWith(".pdf")) {
         const nextPage = Math.max(1, page || 1);
@@ -2033,13 +2294,24 @@ function App() {
 
   useEffect(() => {
     if (!activePdfPath) {
+      const wasPdfFocusMode = isPdfFocusMode;
       if (isPdfFocusMode) {
         setIsPdfFocusMode(false);
       }
-      focusRestoreLayoutRef.current = DEFAULT_TWO_PANEL_LAYOUT;
+      const restored = focusRestoreLayoutRef.current;
+      focusRestoreLayoutRef.current = DEFAULT_FOCUS_RESTORE_LAYOUT;
       previousPdfPathRef.current = null;
       setIsPdfDockVisible(false);
       window.requestAnimationFrame(() => {
+        if (wasPdfFocusMode) {
+          if (restored.sidebarCollapsed) {
+            sidebarPanelRef.current?.collapse();
+            setIsSidebarCollapsed(true);
+          } else {
+            sidebarPanelRef.current?.resize(`${restored.sidebar}%`);
+            setIsSidebarCollapsed(false);
+          }
+        }
         mainPanelRef.current?.resize("100%");
       });
       return;
@@ -2089,6 +2361,13 @@ function App() {
       const restored = focusRestoreLayoutRef.current;
       setIsPdfFocusMode(false);
       window.requestAnimationFrame(() => {
+        if (restored.sidebarCollapsed) {
+          sidebarPanelRef.current?.collapse();
+          setIsSidebarCollapsed(true);
+        } else {
+          sidebarPanelRef.current?.resize(`${restored.sidebar}%`);
+          setIsSidebarCollapsed(false);
+        }
         mainPanelRef.current?.resize(`${restored.main}%`);
         pdfPanelRef.current?.resize(`${restored.pdf}%`);
       });
@@ -2096,30 +2375,47 @@ function App() {
     }
 
     focusRestoreLayoutRef.current = {
+      sidebar:
+        sidebarPanelRef.current?.getSize().asPercentage ??
+        DEFAULT_FOCUS_RESTORE_LAYOUT.sidebar,
       main:
         mainPanelRef.current?.getSize().asPercentage ??
         DEFAULT_TWO_PANEL_LAYOUT.main,
       pdf:
         pdfPanelRef.current?.getSize().asPercentage ??
         DEFAULT_TWO_PANEL_LAYOUT.pdf,
+      sidebarCollapsed:
+        sidebarPanelRef.current?.isCollapsed() ?? isSidebarCollapsed,
     };
 
     setIsPdfFocusMode(true);
     window.requestAnimationFrame(() => {
+      sidebarPanelRef.current?.resize("0%");
       mainPanelRef.current?.resize("0%");
       mainPanelRef.current?.resize("100%");
       pdfPanelRef.current?.resize("0%");
     });
-  }, [activePdfPath, isPdfDockVisible, isPdfFocusMode]);
+  }, [activePdfPath, isPdfDockVisible, isPdfFocusMode, isSidebarCollapsed]);
 
   const handleClosePdfDock = useCallback(() => {
+    const restored = focusRestoreLayoutRef.current;
+    const wasPdfFocusMode = isPdfFocusMode;
     setIsPdfFocusMode(false);
-    focusRestoreLayoutRef.current = DEFAULT_TWO_PANEL_LAYOUT;
+    focusRestoreLayoutRef.current = DEFAULT_FOCUS_RESTORE_LAYOUT;
     setIsPdfDockVisible(false);
     window.requestAnimationFrame(() => {
+      if (wasPdfFocusMode) {
+        if (restored.sidebarCollapsed) {
+          sidebarPanelRef.current?.collapse();
+          setIsSidebarCollapsed(true);
+        } else {
+          sidebarPanelRef.current?.resize(`${restored.sidebar}%`);
+          setIsSidebarCollapsed(false);
+        }
+      }
       mainPanelRef.current?.resize("100%");
     });
-  }, []);
+  }, [isPdfFocusMode]);
 
   const handleInferenceModeChange = async (nextMode: InferenceMode) => {
     setIsSavingInferenceMode(true);
@@ -2181,6 +2477,61 @@ function App() {
 
   const handleCardSaved = () => {
     setCardsRefreshToken((value) => value + 1);
+  };
+
+  const beginEditCard = (card: SelectedCardView) => {
+    setSelectedCard(card);
+    setIsEditingCard(true);
+    const title = card.term || card.title || "";
+    setEditCardTitle(title);
+    setEditCardBody(
+      stripCardMetadata(card.markdown, card.term, card.title) || "",
+    );
+  };
+
+  const handleCancelEditCard = () => {
+    if (!selectedCard) {
+      setIsEditingCard(false);
+      return;
+    }
+    setEditCardTitle(selectedCard.term || selectedCard.title || "");
+    setEditCardBody(selectedCardBody);
+    setIsEditingCard(false);
+  };
+
+  const handleSaveEditCard = async () => {
+    if (!selectedCard || isSavingCardEdit) return;
+    const title = editCardTitle.trim();
+    if (!title) {
+      showTemporaryStatus("标题不能为空。", "error");
+      return;
+    }
+    setIsSavingCardEdit(true);
+    try {
+      await invoke("update_knowledge_card", {
+        request: {
+          card_path: selectedCard.path,
+          title,
+          body: editCardBody,
+        },
+      });
+      const refreshed = await invoke<{ markdown: string }>(
+        "read_knowledge_card",
+        { cardPath: selectedCard.path },
+      );
+      setSelectedCard((previous) =>
+        previous
+          ? { ...previous, term: title, title, markdown: refreshed.markdown }
+          : previous,
+      );
+      setCardsRefreshToken((value) => value + 1);
+      showTemporaryStatus("知识卡片已更新。", "info");
+      setIsEditingCard(false);
+    } catch (error) {
+      showTemporaryStatus(`保存失败：${String(error)}`, "error");
+    } finally {
+      setIsSavingCardEdit(false);
+    }
   };
 
   const handleRefreshMobilePairCode = async () => {
@@ -2294,7 +2645,6 @@ function App() {
       </>
     ) : activeSidebarTool === "cards" ? (
       <div className="sidebar-tool-scroll">
-        <div className="sidebar-tool-title">Knowledge Cards</div>
         <Suspense
           fallback={<div className="support-empty">Loading cards...</div>}
         >
@@ -2302,6 +2652,14 @@ function App() {
             refreshToken={cardsRefreshToken}
             activeRoot={cardSettings?.active_root}
             onStatus={handleChildStatus}
+            onSelectCard={(card) => setSelectedCard(card)}
+            onCardDeleted={(cardPath) => {
+              if (selectedCard?.path === cardPath) {
+                setSelectedCard(null);
+              }
+              setCardsRefreshToken((value) => value + 1);
+            }}
+            onEditCard={(card) => beginEditCard(card)}
           />
         </Suspense>
       </div>
@@ -2474,6 +2832,35 @@ function App() {
 
   const generalSettingsSection = (
     <>
+      <div className="settings-section">
+        <label>主题配色</label>
+        <div
+          className="settings-theme-toggle"
+          role="tablist"
+          aria-label="主题配色"
+        >
+          <button
+            type="button"
+            className={`settings-theme-option ${appTheme === "default" ? "active" : ""}`}
+            onClick={() => setAppTheme("default")}
+            aria-pressed={appTheme === "default"}
+          >
+            默认配色
+          </button>
+          <button
+            type="button"
+            className={`settings-theme-option ${appTheme === "dark" ? "active" : ""}`}
+            onClick={() => setAppTheme("dark")}
+            aria-pressed={appTheme === "dark"}
+          >
+            深色配色
+          </button>
+        </div>
+        <p className="settings-help-text">
+          默认配色沿用当前界面的浅色工作台风格；深色配色更适合夜间阅读。
+        </p>
+      </div>
+
       <div className="settings-section">
         <label htmlFor="inference-mode-select">推理模式</label>
         <select
@@ -2874,7 +3261,7 @@ function App() {
     : "";
 
   return (
-    <div className="app-shell">
+    <div className="app-shell" data-theme={appTheme}>
       {statusBanner && (
         <div
           className={`status-banner-shell ${statusBanner.tone} ${isStatusBannerExpanded ? "expanded" : "collapsed"}`}
@@ -2958,41 +3345,49 @@ function App() {
             defaultSize="23%"
             minSize={isPdfFocusMode ? "0%" : "16%"}
             maxSize="38%"
-            className={`sidebar-panel ${isPdfFocusMode ? "panel-collapsed" : ""}`}
+            collapsible
+            collapsedSize={`${SIDEBAR_COLLAPSED_WIDTH_PX}px`}
+            onResize={(panelSize) => {
+              setIsSidebarCollapsed(
+                !isPdfFocusMode &&
+                  panelSize.inPixels <= SIDEBAR_COLLAPSED_WIDTH_PX + 2,
+              );
+            }}
+            className={`sidebar-panel ${isPdfFocusMode ? "panel-collapsed" : ""} ${isSidebarCollapsed ? "sidebar-panel-collapsed" : ""}`}
           >
             <aside className="sidebar sidebar-with-rail">
               <div className="sidebar-rail">
                 <button
-                  className={`rail-button ${activeSidebarTool === "workspace" ? "active" : ""}`}
-                  onClick={() => setActiveSidebarTool("workspace")}
+                  className={`rail-button ${activeSidebarTool === "workspace" && !isSidebarCollapsed ? "active" : ""}`}
+                  onClick={() => handleSidebarToolToggle("workspace")}
                   title="Workspace"
                 >
                   <FolderOpen size={18} />
                 </button>
                 <button
-                  className={`rail-button ${activeSidebarTool === "citations" ? "active" : ""}`}
-                  onClick={() => setActiveSidebarTool("citations")}
+                  className={`rail-button ${activeSidebarTool === "citations" && !isSidebarCollapsed ? "active" : ""}`}
+                  onClick={() => handleSidebarToolToggle("citations")}
                   title="Citations"
                 >
                   <MessageSquareText size={18} />
                 </button>
                 <button
-                  className={`rail-button ${activeSidebarTool === "notes" ? "active" : ""}`}
-                  onClick={() => setActiveSidebarTool("notes")}
+                  className={`rail-button ${activeSidebarTool === "notes" && !isSidebarCollapsed ? "active" : ""}`}
+                  onClick={() => handleSidebarToolToggle("notes")}
                   title="Notes"
                 >
                   <StickyNote size={18} />
                 </button>
                 <button
-                  className={`rail-button ${activeSidebarTool === "knowledge" ? "active" : ""}`}
-                  onClick={() => setActiveSidebarTool("knowledge")}
+                  className={`rail-button ${activeSidebarTool === "knowledge" && !isSidebarCollapsed ? "active" : ""}`}
+                  onClick={() => handleSidebarToolToggle("knowledge")}
                   title="Knowledge Search"
                 >
                   <Search size={18} />
                 </button>
                 <button
-                  className={`rail-button ${activeSidebarTool === "cards" ? "active" : ""}`}
-                  onClick={() => setActiveSidebarTool("cards")}
+                  className={`rail-button ${activeSidebarTool === "cards" && !isSidebarCollapsed ? "active" : ""}`}
+                  onClick={() => handleSidebarToolToggle("cards")}
                   title="Knowledge Cards"
                 >
                   <LayoutGrid size={18} />
@@ -3007,7 +3402,9 @@ function App() {
                 </button>
               </div>
 
-              <div className="sidebar-content">
+              <div
+                className={`sidebar-content ${isSidebarCollapsed ? "collapsed" : ""}`}
+              >
                 <div className="sidebar-header">
                   <span>
                     {activeSidebarTool === "workspace"
@@ -3062,7 +3459,152 @@ function App() {
             className="main-panel pdf-center-panel"
           >
             <div className="pdf-center-shell">
-              {activePdfPath && isPdfDockVisible ? (
+              {activeSidebarTool === "cards" && selectedCard ? (
+                <div className="card-detail-view">
+                  <div className="card-detail-header">
+                    {isEditingCard ? (
+                      <input
+                        className="card-edit-title"
+                        value={editCardTitle}
+                        onChange={(event) =>
+                          setEditCardTitle(event.target.value)
+                        }
+                        placeholder="请输入标题"
+                      />
+                    ) : (
+                      <h2>{selectedCard.term || selectedCard.title}</h2>
+                    )}
+                    <div className="card-detail-actions">
+                      {isEditingCard ? (
+                        <>
+                          <button
+                            className="action-button"
+                            onClick={() => void handleSaveEditCard()}
+                            disabled={isSavingCardEdit}
+                          >
+                            {isSavingCardEdit ? "保存中..." : "保存"}
+                          </button>
+                          <button
+                            className="ghost-button"
+                            onClick={handleCancelEditCard}
+                            disabled={isSavingCardEdit}
+                          >
+                            取消
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          className="ghost-button"
+                          onClick={() => beginEditCard(selectedCard)}
+                        >
+                          编辑
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <div className="card-detail-body">
+                    {isEditingCard ? (
+                      <div className="card-edit-body">
+                        <textarea
+                          className="card-edit-textarea"
+                          value={editCardBody}
+                          onChange={(event) =>
+                            setEditCardBody(event.target.value)
+                          }
+                          placeholder="请输入正文内容（支持 Markdown）"
+                        />
+                      </div>
+                    ) : (
+                      <>
+                        <Suspense
+                          fallback={
+                            <div className="support-empty">Loading card...</div>
+                          }
+                        >
+                          <MarkdownRenderer content={selectedCardContent} />
+                        </Suspense>
+                        {selectedCardSource && (
+                          <div className="card-detail-source">
+                            <div className="card-detail-source-title">来源</div>
+                            <div className="card-detail-source-list">
+                              <div className="card-detail-source-row">
+                                <span className="card-detail-source-label">
+                                  来源提供方：
+                                </span>
+                                <span>
+                                  {selectedCardSource.sourceProvider ||
+                                    "未提供"}
+                                </span>
+                              </div>
+                              <div className="card-detail-source-row">
+                                <span className="card-detail-source-label">
+                                  来源链接：
+                                </span>
+                                {selectedCardSource.sourceUrl ? (
+                                  <a
+                                    className="card-detail-source-link"
+                                    href={selectedCardSource.sourceUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                  >
+                                    {selectedCardSource.sourceUrl}
+                                  </a>
+                                ) : (
+                                  <span>未提供</span>
+                                )}
+                              </div>
+                              <div className="card-detail-source-row">
+                                <span className="card-detail-source-label">
+                                  模型：
+                                </span>
+                                <span>
+                                  {selectedCardSource.model || "未提供"}
+                                </span>
+                              </div>
+                              <div className="card-detail-source-row">
+                                <span className="card-detail-source-label">
+                                  来源文件：
+                                </span>
+                                <span
+                                  className="card-detail-source-file"
+                                  title={selectedCardSource.sourceFile}
+                                >
+                                  {selectedCardSource.sourceFile || "未提供"}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="card-detail-params">
+                              <div className="card-detail-params-label">
+                                可用参数
+                              </div>
+                              <div className="card-detail-params-values">
+                                <span>
+                                  @title=
+                                  {selectedCard.title ||
+                                    selectedCard.term ||
+                                    "未提供"}
+                                </span>
+                                <span>
+                                  @source=
+                                  {selectedCardSource.sourceProvider ||
+                                    "未提供"}
+                                </span>
+                                <span>
+                                  @time={selectedCard.created_at || "未提供"}
+                                </span>
+                                <span>
+                                  @file=
+                                  {selectedCardSource.sourceFile || "none"}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
+              ) : activePdfPath && isPdfDockVisible ? (
                 <Suspense
                   fallback={
                     <div className="pdf-empty-state">

@@ -12,7 +12,10 @@ mod encyclopedia;
 mod mobile;
 pub mod research_memory;
 mod text_decode;
-use cards::{CardSettings, KnowledgeCardDetail, KnowledgeCardSummary, SaveKnowledgeCardRequest};
+use cards::{
+    CardSettings, KnowledgeCardDetail, KnowledgeCardSummary, SaveKnowledgeCardRequest,
+    UpdateKnowledgeCardRequest,
+};
 use encyclopedia::TermLookupMode;
 use research_memory::{
     ApplyReviewRequest, ComparePapersResult, DocumentResult, ExtractionProviderSettings,
@@ -1687,6 +1690,18 @@ async fn list_knowledge_cards(app: AppHandle) -> Result<Vec<KnowledgeCardSummary
 #[tauri::command]
 async fn read_knowledge_card(card_path: String) -> Result<KnowledgeCardDetail, String> {
     cards::read_knowledge_card(card_path)
+}
+
+#[tauri::command]
+async fn delete_knowledge_card(card_path: String) -> Result<(), String> {
+    cards::delete_knowledge_card(card_path)
+}
+
+#[tauri::command]
+async fn update_knowledge_card(
+    request: UpdateKnowledgeCardRequest,
+) -> Result<KnowledgeCardDetail, String> {
+    cards::update_knowledge_card(request)
 }
 
 #[tauri::command]
@@ -5146,6 +5161,8 @@ pub fn run() {
             open_card_root_in_explorer,
             list_knowledge_cards,
             read_knowledge_card,
+            delete_knowledge_card,
+            update_knowledge_card,
             save_knowledge_card_from_explanation,
             translate_pdf_selection,
             translate_pdf_page,
