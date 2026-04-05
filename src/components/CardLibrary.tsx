@@ -233,9 +233,12 @@ export const CardLibrary: React.FC<CardLibraryProps> = ({
       );
       await loadCards();
       if (onEditCard) {
-        const detail = await invoke<KnowledgeCardDetail>("read_knowledge_card", {
-          cardPath: created.path,
-        });
+        const detail = await invoke<KnowledgeCardDetail>(
+          "read_knowledge_card",
+          {
+            cardPath: created.path,
+          },
+        );
         onEditCard({ ...created, ...detail });
       }
       onStatus(`已创建知识卡片：${created.term}`, "info", false);

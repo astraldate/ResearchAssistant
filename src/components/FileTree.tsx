@@ -26,6 +26,8 @@ interface FileTreeProps {
   workspacePath?: string | null;
   onSelect?: (file: FileNode) => void;
   onIndexPath?: (node: FileNode) => Promise<void> | void;
+  onReindexPath?: (node: FileNode) => Promise<void> | void;
+  onResumeIndexPath?: (node: FileNode) => Promise<void> | void;
   onUnindexPath?: (node: FileNode) => Promise<void> | void;
   onLoadChildren?: (path: string) => Promise<FileNode[]>;
   onTreeChanged?: (payload: TreeMutationPayload) => Promise<void> | void;
@@ -237,6 +239,8 @@ export const FileTree: React.FC<FileTreeProps> = ({
   workspacePath,
   onSelect,
   onIndexPath,
+  onReindexPath,
+  onResumeIndexPath,
   onUnindexPath,
   onLoadChildren,
   onTreeChanged,
@@ -317,6 +321,24 @@ export const FileTree: React.FC<FileTreeProps> = ({
     if (!contextMenu?.node || !onIndexPath) return;
     try {
       await onIndexPath(contextMenu.node);
+    } finally {
+      closeMenus();
+    }
+  };
+
+  const handleReindexPath = async () => {
+    if (!contextMenu?.node || !onReindexPath) return;
+    try {
+      await onReindexPath(contextMenu.node);
+    } finally {
+      closeMenus();
+    }
+  };
+
+  const handleResumeIndexPath = async () => {
+    if (!contextMenu?.node || !onResumeIndexPath) return;
+    try {
+      await onResumeIndexPath(contextMenu.node);
     } finally {
       closeMenus();
     }
@@ -491,11 +513,19 @@ export const FileTree: React.FC<FileTreeProps> = ({
         label: "在资源管理器中显示",
         onClick: handleReveal,
       });
-      if (onIndexPath) {
+      if (onReindexPath || onIndexPath) {
         actions.push({
-          key: "index",
-          label: "建立索引",
-          onClick: () => void handleIndexPath(),
+          key: "reindex",
+          label: "从零重建索引",
+          onClick: () =>
+            void (onReindexPath ? handleReindexPath() : handleIndexPath()),
+        });
+      }
+      if (onResumeIndexPath) {
+        actions.push({
+          key: "resume-index",
+          label: "恢复上次进度",
+          onClick: () => void handleResumeIndexPath(),
         });
       }
       if (onUnindexPath) {
@@ -557,7 +587,15 @@ export const FileTree: React.FC<FileTreeProps> = ({
     }
 
     return actions;
-  }, [clipboardState, contextMenu, onIndexPath, onUnindexPath, workspacePath]);
+  }, [
+    clipboardState,
+    contextMenu,
+    onIndexPath,
+    onReindexPath,
+    onResumeIndexPath,
+    onUnindexPath,
+    workspacePath,
+  ]);
 
   return (
     <div

@@ -151,5 +151,14 @@ git push origin v0.1.1
 - [Design Specification](./Design%20Specification.md)
 - [coding_plan.md](./coding_plan.md)
 - [masterplan.md](./masterplan.md)
-- [RESEARCH_MEMORY_MANUAL.md](./RESEARCH_MEMORY_MANUAL.md)
 - [COPYRIGHT_NOTICE.md](./COPYRIGHT_NOTICE.md)
+
+`Research Memory` 的实现说明、运维约定和限制已经并入 `Design Specification.md`，不再单独维护 `RESEARCH_MEMORY_MANUAL.md`。
+
+## Research Memory 回归
+
+- 生成小样本标注骨架：`pnpm research-eval:scaffold`
+- 运行回归并输出报告：`pnpm research-eval:run`
+- 默认会读取当前桌面端 app data 下的 `research_memory.sqlite3`
+- 若库里已经有 `approved` 候选，会直接用它们生成第一批 gold
+- 若当前只有 `paper` 记录、没有候选或诊断，样本会被标记为 `needs_reingest_and_annotation`

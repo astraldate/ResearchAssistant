@@ -1,6 +1,6 @@
 # Design Specification
 
-更新日期：2026-03-24
+更新日期：2026-03-26
 
 ## 1. 目标
 
@@ -132,8 +132,9 @@ Windows + monorepo + Expo / React Native 原生构建链，主要风险来自：
 ### 6.2 抽取模型职责
 
 - 聊天默认模型：`qwen3.5:9b`
-- 快速候选抽取：`nuextract`
-- 关系抽取与失败兜底：`qwen3:8b`
+- 候选节点抽取：`qwen3:8b`
+- Pipeline Summary / Pipeline 命名：`qwen3.5:9b`
+- Edge 抽取 / Edge 校验：`qwen3.5:9b`
 - embedding 与聊天、抽取模型分离管理
 
 ### 6.3 抽取流水线
@@ -144,13 +145,18 @@ Windows + monorepo + Expo / React Native 原生构建链，主要风险来自：
 prepare_ingest
 -> prepare_models
 -> scan
+-> detect_sections
 -> parse_pages
 -> build_map_units
 -> candidate_extract
--> relation_extract
+-> pipeline_summarize
+-> pipeline_name_extract
+-> edge_extract
+-> edge_validate
 -> rust_reduce
--> canonicalize
+-> llm_canonicalize_small
 -> review_queue
+-> persist_graph
 -> materialize_stats
 -> index_vectors
 ```
@@ -159,8 +165,14 @@ prepare_ingest
 
 - 不允许整篇论文单次大 JSON 抽取
 - `candidate_extract` 只抽 `Task / Module / Challenge / Insight`
-- `relation_extract` 只在候选非空时补 `Pipeline` 和三类边
+- `candidate_extract` 会注入排他性定义、负面示例和 `kindRationale`
+- `Pipeline` 必须先做 `pipeline_summarize`，再做 `pipeline_name_extract`
+- `edge_extract` 只在稳定节点与已抽出的 `Pipeline` 之间连边
+- `edge_validate` 只负责删除、保留与重排，不得创建新边
 - 低信息片段直接过滤，减少无效模型调用
+- `map unit` 优先按章节切分，没有可靠章节时退化为页窗口
+- `Introduction / Method / Approach / Framework / Overview` 章节会使用更大的 relation map unit 和 overlap
+- 当前实现优先稳定吞吐、证据可审计和进度可见性，不追求整篇一次性全量结构化
 
 ### 6.4 图谱约束
 
@@ -189,9 +201,70 @@ Challenge -> Insight
   - `Ideas`
 - 面板顶部会显示：
   - 当前聊天模型
-  - 当前快速抽取模型
-  - 当前回退抽取模型
+  - 当前候选抽取模型
+  - 当前候选回退模型
+  - 当前 Pipeline Summary / Pipeline 命名模型
+  - 当前 Edge 抽取 / Edge 校验模型
   - 当前索引阶段
+- `Paper Status` 会显示每篇论文的最小抽取诊断：
+  - relation units
+  - candidate 冲突
+  - pipeline 空 summary / 空命名
+  - edge 候选 / 保留
+  - edge 校验回退
+- Chat 输入框当前支持：
+  - `@paper` 指定论文 scope
+  - `/brief` 生成单论文核心 Markdown 简报
+
+### 6.6 Review、Graph 与 Ideas
+
+- 导入后的候选默认不会直接进入正式图谱，必须先在 `Review` 页审核。
+- 候选分为：
+  - `node`
+  - `edge`
+- 审核通过后会触发：
+  - 图谱重建
+  - 统计物化
+  - 向量索引重建
+  - Idea 候选刷新
+- `Graph` 页当前提供：
+  - `Method DAG`
+  - `Problem DAG`
+- `Ideas` 当前已有 3 类规则：
+  - 热点 `Challenge` 缺少成熟 `Insight`
+  - 某个 `Task` 下已有多条 `Pipeline`，但模块覆盖仍不完整
+  - 基于 `Challenge` 与 `Module` 的跨文献语义近邻缺口推荐
+
+### 6.7 检索与证据使用
+
+- `Search` 页当前使用混合召回：
+  - `SQLite FTS5`
+  - `LanceDB`
+  - 分数合并后去重
+- 问答、论文比较和 `/brief` 都应优先消费证据块，而不是整篇论文正文。
+- 关键结果尽量能追溯到 `evidence_refs`，包括：
+  - 图节点
+  - 图边
+  - Search 结果
+  - Idea candidates
+  - 论文比较结果
+  - `/brief` 简报引用的 scoped 检索证据
+
+### 6.8 运维与故障处理
+
+- 如果 `LanceDB` 与 `SQLite` 漂移，当前策略仍以 `SQLite` 为准重建派生索引。
+- 如果索引时缺少候选、Pipeline 或 Edge 相关模型，前端会在 `prepare_models` 阶段尝试自动拉取并收敛到当前实际配置。
+- 仓库内提供小样本回归工具：
+  - `pnpm research-eval:scaffold`：从当前 `research_memory.sqlite3` 生成 `research_memory_eval_samples.json`
+  - `pnpm research-eval:run`：读取 gold 样本并生成 `research_memory_eval_report.json`
+- scaffold 优先绑定 `approved` 候选作为 gold；如果当前只有 paper 记录或只有 pending 候选，会在样本里明确标记需要重新 ingest 或人工修订。
+- 如果 `Review` 批准后图谱没有刷新，优先检查：
+  - 审核动作是否成功返回
+  - embedding 模型是否可用
+  - 批准后是否触发向量重建
+- 当前仓库约定：
+  - `PROTOC` 指向 `src-tauri/tools/protoc.exe`
+  - `PROTOC_INCLUDE` 指向 `src-tauri/tools/include`
 
 ## 7. 验收基线
 
@@ -213,3 +286,5 @@ Challenge -> Insight
 - `Research Memory` 的 `Graph` 仍是轻量 lane 视图，不是 Cytoscape 交互图。
 - `analyze_pdf_page_visual` 当前仍是页文本回退，不是真正的视觉模型解析。
 - `compare_papers` 已有后端实现，但前端完整工作流仍待补齐。
+- `/brief` 当前只做单论文核心简报，不支持多文献比较，也没有独立字段后处理层。
+- `Research Memory` 说明已经并入本文件，不再维护单独的 `RESEARCH_MEMORY_MANUAL.md`。

@@ -55,6 +55,7 @@ const ResearchMemoryPanel = lazy(() =>
 
 type InferenceMode = "single_mm" | "dual_pipeline";
 type IngestMode = "overwrite" | "incremental";
+type ExtractionRunMode = "fast" | "balanced";
 type SidebarTool = "workspace" | "citations" | "notes" | "knowledge" | "cards";
 type StatusTone = "info" | "error";
 type AiRequirement = "chat" | "index" | "translate";
@@ -217,6 +218,20 @@ interface InferenceSettings {
   mode: InferenceMode;
 }
 
+type ExtractionProviderKind = "ollama" | "open_ai_compatible";
+
+interface ExtractionProviderSettings {
+  provider: ExtractionProviderKind;
+  baseUrl?: string | null;
+  apiKey?: string | null;
+  extractFastModel?: string | null;
+  extractFallbackModel?: string | null;
+  extractPipelineSummaryModel?: string | null;
+  extractPipelineNameModel?: string | null;
+  extractEdgeModel?: string | null;
+  extractEdgeValidateModel?: string | null;
+}
+
 interface IngestProgress {
   stage: string;
   current: number;
@@ -225,6 +240,11 @@ interface IngestProgress {
   noCandidateCount?: number;
   fallbackSuccessCount?: number;
   doubleFailureCount?: number;
+}
+
+interface IngestStageSnapshot {
+  current: number;
+  total: number;
 }
 
 interface StatusBanner {
@@ -369,6 +389,10 @@ const REQUIRED_MODELS = {
   embedding: "nomic-embed-text",
   extractFast: "qwen3:8b",
   extractFallback: "qwen3.5:9b",
+  pipelineSummary: "qwen3.5:9b",
+  pipelineName: "qwen3.5:9b",
+  edgeExtract: "qwen3.5:9b",
+  edgeValidate: "qwen3.5:9b",
   chat: "qwen3.5:9b",
   translation: "MedAIBase/Tencent-HY-MT1.5:1.8b-q4_K_M",
 };
@@ -377,7 +401,12 @@ const OLLAMA_MIN_RECOMMENDED_VERSION = "0.17.7";
 const CHAT_MODEL_KEY = "ra_chat_model_v1";
 const EXTRACT_MODEL_KEY = "ra_extract_fast_model_v3";
 const EXTRACT_FALLBACK_MODEL_KEY = "ra_extract_fallback_model_v2";
+const PIPELINE_SUMMARY_MODEL_KEY = "ra_pipeline_summary_model_v1";
+const PIPELINE_NAME_MODEL_KEY = "ra_pipeline_name_model_v1";
+const EDGE_EXTRACT_MODEL_KEY = "ra_edge_extract_model_v1";
+const EDGE_VALIDATE_MODEL_KEY = "ra_edge_validate_model_v1";
 const TRANSLATION_MODEL_KEY = "ra_translation_model_v1";
+const INGEST_EXTRACTION_MODE_KEY = "ra_ingest_extraction_mode_v1";
 const APP_THEME_KEY = "ra_app_theme_v1";
 const SIDEBAR_COLLAPSED_WIDTH_PX = 58;
 
@@ -387,11 +416,57 @@ const STAGE_LABELS: Record<string, string> = {
   scan: "扫描文件",
   parse_pages: "解析页面",
   candidate_extract: "抽取候选概念",
-  relation_extract: "补全关系与 Pipeline",
+  pipeline_summarize: "总结 Pipeline 骨架",
+  pipeline_name_extract: "提取 Pipeline 名称",
+  edge_extract: "抽取 Edge",
+  edge_validate: "校验 Edge",
   canonicalize: "归并候选概念",
   index_vectors: "重建向量索引",
   finalize: "保存索引",
 };
+
+const INGEST_STAGE_ORDER = [
+  "prepare_ingest",
+  "prepare_models",
+  "scan",
+  "parse_pages",
+  "candidate_extract",
+  "pipeline_summarize",
+  "pipeline_name_extract",
+  "edge_extract",
+  "edge_validate",
+  "canonicalize",
+  "index_vectors",
+  "finalize",
+] as const;
+
+const EXTRACTION_SUBSTAGE_ORDER = [
+  "candidate_extract",
+  "pipeline_summarize",
+  "pipeline_name_extract",
+  "edge_extract",
+  "edge_validate",
+] as const;
+
+const INGEST_STAGE_WEIGHTS: Record<string, number> = {
+  prepare_ingest: 2,
+  prepare_models: 4,
+  scan: 4,
+  parse_pages: 10,
+  candidate_extract: 28,
+  pipeline_summarize: 14,
+  pipeline_name_extract: 8,
+  edge_extract: 14,
+  edge_validate: 10,
+  canonicalize: 3,
+  index_vectors: 2,
+  finalize: 1,
+};
+
+const TOTAL_INGEST_STAGE_WEIGHT = INGEST_STAGE_ORDER.reduce(
+  (sum, stage) => sum + (INGEST_STAGE_WEIGHTS[stage] ?? 0),
+  0,
+);
 
 const OLLAMA_VERSION_PATTERN = /(\d+)\.(\d+)\.(\d+)/;
 const CHAT_SESSION_KEY = "ra_chat_session_v3";
@@ -562,6 +637,22 @@ function App() {
     const stored = localStorage.getItem(EXTRACT_FALLBACK_MODEL_KEY)?.trim();
     return stored || REQUIRED_MODELS.extractFallback;
   });
+  const [pipelineSummaryModel, setPipelineSummaryModel] = useState(() => {
+    const stored = localStorage.getItem(PIPELINE_SUMMARY_MODEL_KEY)?.trim();
+    return stored || REQUIRED_MODELS.pipelineSummary;
+  });
+  const [pipelineNameModel, setPipelineNameModel] = useState(() => {
+    const stored = localStorage.getItem(PIPELINE_NAME_MODEL_KEY)?.trim();
+    return stored || REQUIRED_MODELS.pipelineName;
+  });
+  const [edgeExtractModel, setEdgeExtractModel] = useState(() => {
+    const stored = localStorage.getItem(EDGE_EXTRACT_MODEL_KEY)?.trim();
+    return stored || REQUIRED_MODELS.edgeExtract;
+  });
+  const [edgeValidateModel, setEdgeValidateModel] = useState(() => {
+    const stored = localStorage.getItem(EDGE_VALIDATE_MODEL_KEY)?.trim();
+    return stored || REQUIRED_MODELS.edgeValidate;
+  });
   const [translationModel, setTranslationModel] = useState(() => {
     const stored = localStorage.getItem(TRANSLATION_MODEL_KEY)?.trim();
     return stored || REQUIRED_MODELS.translation;
@@ -574,9 +665,16 @@ function App() {
     useState<SidebarTool>("workspace");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [ingestMode, setIngestMode] = useState<IngestMode>("overwrite");
+  const [ingestRunMode, setIngestRunMode] =
+    useState<ExtractionRunMode>("balanced");
   const [ingestProgress, setIngestProgress] = useState<IngestProgress | null>(
     null,
   );
+  const [ingestExtractionMode, setIngestExtractionMode] =
+    useState<ExtractionRunMode>("fast");
+  const [ingestStageSnapshots, setIngestStageSnapshots] = useState<
+    Record<string, IngestStageSnapshot>
+  >({});
   const [isIngesting, setIsIngesting] = useState(false);
   const [statusBanner, setStatusBanner] = useState<StatusBanner | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -586,6 +684,23 @@ function App() {
     useState<InferenceMode>("single_mm");
   const [isSavingInferenceMode, setIsSavingInferenceMode] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [extractionProviderSettings, setExtractionProviderSettings] =
+    useState<ExtractionProviderSettings>({
+      provider: "ollama",
+      baseUrl: "",
+      apiKey: "",
+      extractFastModel: "",
+      extractFallbackModel: "",
+      extractPipelineSummaryModel: "",
+      extractPipelineNameModel: "",
+      extractEdgeModel: "",
+      extractEdgeValidateModel: "",
+    });
+  const [extractionProviderError, setExtractionProviderError] = useState<
+    string | null
+  >(null);
+  const [isSavingExtractionProvider, setIsSavingExtractionProvider] =
+    useState(false);
   const [cardSettings, setCardSettings] = useState<CardSettings | null>(null);
   const [cardSettingsError, setCardSettingsError] = useState<string | null>(
     null,
@@ -673,19 +788,86 @@ function App() {
     }
   }, [selectedCard]);
 
-  const progressPercent = useMemo(() => {
+  const stageProgressPercent = useMemo(() => {
     if (!ingestProgress || ingestProgress.total <= 0) return 0;
     return Math.min(
       100,
       Math.round((ingestProgress.current / ingestProgress.total) * 100),
     );
   }, [ingestProgress]);
+  const cumulativeProgressPercent = useMemo(() => {
+    if (!ingestProgress) return 0;
+    const stageIndex = INGEST_STAGE_ORDER.indexOf(
+      ingestProgress.stage as (typeof INGEST_STAGE_ORDER)[number],
+    );
+    if (stageIndex === -1 || TOTAL_INGEST_STAGE_WEIGHT <= 0) {
+      return stageProgressPercent;
+    }
+    const completedWeight = INGEST_STAGE_ORDER.slice(0, stageIndex).reduce(
+      (sum, stage) => sum + (INGEST_STAGE_WEIGHTS[stage] ?? 0),
+      0,
+    );
+    const currentWeight = INGEST_STAGE_WEIGHTS[ingestProgress.stage] ?? 0;
+    const currentStageRatio =
+      ingestProgress.total > 0
+        ? Math.max(
+            0,
+            Math.min(
+              1,
+              ingestProgress.current / Math.max(ingestProgress.total, 1),
+            ),
+          )
+        : 0;
+    return Math.min(
+      100,
+      Math.round(
+        ((completedWeight + currentWeight * currentStageRatio) /
+          TOTAL_INGEST_STAGE_WEIGHT) *
+          100,
+      ),
+    );
+  }, [ingestProgress, stageProgressPercent]);
   const activePdfPath = useMemo(
     () => (isPdfFile(activeFilePath) ? activeFilePath : null),
     [activeFilePath],
   );
 
   const stageLabel = STAGE_LABELS[ingestProgress?.stage || ""] || "处理中";
+  const ingestStatusDetails = useMemo(() => {
+    if (!ingestProgress) return [] as string[];
+    const activeStageIndex = INGEST_STAGE_ORDER.indexOf(
+      ingestProgress.stage as (typeof INGEST_STAGE_ORDER)[number],
+    );
+    return EXTRACTION_SUBSTAGE_ORDER.map((stage) => {
+      const snapshot =
+        stage === ingestProgress.stage
+          ? { current: ingestProgress.current, total: ingestProgress.total }
+          : ingestStageSnapshots[stage];
+      const label = STAGE_LABELS[stage] || stage;
+      if (!snapshot) {
+        const substageIndex = INGEST_STAGE_ORDER.indexOf(stage);
+        const skipped =
+          activeStageIndex > substageIndex && ingestProgress.stage !== stage;
+        if (!skipped) {
+          return `${label} · 待开始`;
+        }
+        const skippedReason =
+          ingestExtractionMode === "fast"
+            ? "已跳过（当前为 fast 模式）"
+            : "已跳过（当前批次无可继续处理节点）";
+        return `${label} · ${skippedReason}`;
+      }
+      const ratioText =
+        snapshot.total > 0 ? ` ${snapshot.current}/${snapshot.total}` : "";
+      const statusText =
+        stage === ingestProgress.stage
+          ? "进行中"
+          : snapshot.total > 0 && snapshot.current >= snapshot.total
+            ? "已完成"
+            : "处理中";
+      return `${label}${ratioText} · ${statusText}`;
+    });
+  }, [ingestExtractionMode, ingestProgress, ingestStageSnapshots]);
 
   const clearStatusTimer = useCallback(() => {
     if (statusTimerRef.current !== null) {
@@ -1046,6 +1228,22 @@ function App() {
 
         let models = await getInstalledModels();
         let names = models.map((model) => model.name);
+        const indexModelTargets =
+          requirement === "index"
+            ? [
+                sanitizeExtractFastModel(extractModel) ||
+                  REQUIRED_MODELS.extractFast,
+                extractFallbackModel || REQUIRED_MODELS.extractFallback,
+                pipelineSummaryModel || REQUIRED_MODELS.pipelineSummary,
+                pipelineNameModel ||
+                  pipelineSummaryModel ||
+                  REQUIRED_MODELS.pipelineName,
+                edgeExtractModel || REQUIRED_MODELS.edgeExtract,
+                edgeValidateModel ||
+                  edgeExtractModel ||
+                  REQUIRED_MODELS.edgeValidate,
+              ].filter(Boolean)
+            : [];
 
         let didFallbackToExtractFallback = false;
         if (
@@ -1067,6 +1265,17 @@ function App() {
           !resolveInstalledModelName(names, REQUIRED_MODELS.embedding)
         ) {
           await pullModel(REQUIRED_MODELS.embedding);
+        }
+        if (requirement === "index") {
+          models = await getInstalledModels();
+          names = models.map((model) => model.name);
+          for (const modelName of indexModelTargets) {
+            if (!resolveInstalledModelName(names, modelName)) {
+              await pullModel(modelName);
+              models = await getInstalledModels();
+              names = models.map((model) => model.name);
+            }
+          }
         }
         if (
           requirement === "translate" &&
@@ -1112,6 +1321,30 @@ function App() {
           resolveInstalledModelName(names, REQUIRED_MODELS.extractFallback);
         const resolvedFallbackExtractModel =
           installedFallbackExtractModel || resolvedFastExtractModel;
+        const resolvedPipelineSummaryModel =
+          resolveInstalledModelName(names, pipelineSummaryModel) ||
+          resolveInstalledModelName(names, REQUIRED_MODELS.pipelineSummary) ||
+          pipelineSummaryModel ||
+          REQUIRED_MODELS.pipelineSummary;
+        const resolvedPipelineNameModel =
+          resolveInstalledModelName(names, pipelineNameModel) ||
+          resolveInstalledModelName(names, resolvedPipelineSummaryModel) ||
+          resolveInstalledModelName(names, REQUIRED_MODELS.pipelineName) ||
+          pipelineNameModel ||
+          resolvedPipelineSummaryModel ||
+          REQUIRED_MODELS.pipelineName;
+        const resolvedEdgeExtractModel =
+          resolveInstalledModelName(names, edgeExtractModel) ||
+          resolveInstalledModelName(names, REQUIRED_MODELS.edgeExtract) ||
+          edgeExtractModel ||
+          REQUIRED_MODELS.edgeExtract;
+        const resolvedEdgeValidateModel =
+          resolveInstalledModelName(names, edgeValidateModel) ||
+          resolveInstalledModelName(names, resolvedEdgeExtractModel) ||
+          resolveInstalledModelName(names, REQUIRED_MODELS.edgeValidate) ||
+          edgeValidateModel ||
+          resolvedEdgeExtractModel ||
+          REQUIRED_MODELS.edgeValidate;
         const selectedModel =
           requirement === "index"
             ? didFallbackToExtractFallback
@@ -1135,6 +1368,10 @@ function App() {
               extractFallbackModel ||
               REQUIRED_MODELS.extractFallback,
           );
+          setPipelineSummaryModel(resolvedPipelineSummaryModel);
+          setPipelineNameModel(resolvedPipelineNameModel);
+          setEdgeExtractModel(resolvedEdgeExtractModel);
+          setEdgeValidateModel(resolvedEdgeValidateModel);
         } else if (requirement === "translate") {
           setTranslationModel(selectedModel);
         } else {
@@ -1223,6 +1460,15 @@ function App() {
     if (storedMode === "overwrite" || storedMode === "incremental") {
       setIngestMode(storedMode);
     }
+    const storedExtractionMode = localStorage.getItem(
+      INGEST_EXTRACTION_MODE_KEY,
+    );
+    if (
+      storedExtractionMode === "fast" ||
+      storedExtractionMode === "balanced"
+    ) {
+      setIngestRunMode(storedExtractionMode);
+    }
   }, []);
 
   useEffect(() => {
@@ -1235,6 +1481,10 @@ function App() {
   useEffect(() => {
     localStorage.setItem("ra_ingest_mode_v1", ingestMode);
   }, [ingestMode]);
+
+  useEffect(() => {
+    localStorage.setItem(INGEST_EXTRACTION_MODE_KEY, ingestRunMode);
+  }, [ingestRunMode]);
 
   useEffect(() => {
     if (currentModel.trim()) {
@@ -1274,6 +1524,41 @@ function App() {
   }, [extractFallbackModel]);
 
   useEffect(() => {
+    if (pipelineSummaryModel.trim()) {
+      localStorage.setItem(
+        PIPELINE_SUMMARY_MODEL_KEY,
+        pipelineSummaryModel.trim(),
+      );
+    } else {
+      localStorage.removeItem(PIPELINE_SUMMARY_MODEL_KEY);
+    }
+  }, [pipelineSummaryModel]);
+
+  useEffect(() => {
+    if (pipelineNameModel.trim()) {
+      localStorage.setItem(PIPELINE_NAME_MODEL_KEY, pipelineNameModel.trim());
+    } else {
+      localStorage.removeItem(PIPELINE_NAME_MODEL_KEY);
+    }
+  }, [pipelineNameModel]);
+
+  useEffect(() => {
+    if (edgeExtractModel.trim()) {
+      localStorage.setItem(EDGE_EXTRACT_MODEL_KEY, edgeExtractModel.trim());
+    } else {
+      localStorage.removeItem(EDGE_EXTRACT_MODEL_KEY);
+    }
+  }, [edgeExtractModel]);
+
+  useEffect(() => {
+    if (edgeValidateModel.trim()) {
+      localStorage.setItem(EDGE_VALIDATE_MODEL_KEY, edgeValidateModel.trim());
+    } else {
+      localStorage.removeItem(EDGE_VALIDATE_MODEL_KEY);
+    }
+  }, [edgeValidateModel]);
+
+  useEffect(() => {
     if (translationModel.trim()) {
       localStorage.setItem(TRANSLATION_MODEL_KEY, translationModel.trim());
     } else {
@@ -1293,6 +1578,80 @@ function App() {
       setSettingsError(`加载推理模式失败：${String(error)}`);
     } finally {
       logTiming("loadInferenceSettings", startedAt);
+    }
+  };
+
+  const loadExtractionProviderSettings = async () => {
+    try {
+      const settings = await invoke<ExtractionProviderSettings>(
+        "get_research_extraction_provider_settings",
+      );
+      setExtractionProviderSettings({
+        provider: settings.provider ?? "ollama",
+        baseUrl: settings.baseUrl ?? "",
+        apiKey: settings.apiKey ?? "",
+        extractFastModel: settings.extractFastModel ?? "",
+        extractFallbackModel: settings.extractFallbackModel ?? "",
+        extractPipelineSummaryModel: settings.extractPipelineSummaryModel ?? "",
+        extractPipelineNameModel: settings.extractPipelineNameModel ?? "",
+        extractEdgeModel: settings.extractEdgeModel ?? "",
+        extractEdgeValidateModel: settings.extractEdgeValidateModel ?? "",
+      });
+      setExtractionProviderError(null);
+    } catch (error) {
+      setExtractionProviderError(
+        `加载抽取实验 provider 失败：${String(error)}`,
+      );
+    }
+  };
+
+  const handleSaveExtractionProviderSettings = async () => {
+    setIsSavingExtractionProvider(true);
+    try {
+      const saved = await invoke<ExtractionProviderSettings>(
+        "set_research_extraction_provider_settings",
+        {
+          settings: {
+            ...extractionProviderSettings,
+            baseUrl: extractionProviderSettings.baseUrl?.trim() || null,
+            apiKey: extractionProviderSettings.apiKey?.trim() || null,
+            extractFastModel:
+              extractionProviderSettings.extractFastModel?.trim() || null,
+            extractFallbackModel:
+              extractionProviderSettings.extractFallbackModel?.trim() || null,
+            extractPipelineSummaryModel:
+              extractionProviderSettings.extractPipelineSummaryModel?.trim() ||
+              null,
+            extractPipelineNameModel:
+              extractionProviderSettings.extractPipelineNameModel?.trim() ||
+              null,
+            extractEdgeModel:
+              extractionProviderSettings.extractEdgeModel?.trim() || null,
+            extractEdgeValidateModel:
+              extractionProviderSettings.extractEdgeValidateModel?.trim() ||
+              null,
+          },
+        },
+      );
+      setExtractionProviderSettings({
+        provider: saved.provider ?? "ollama",
+        baseUrl: saved.baseUrl ?? "",
+        apiKey: saved.apiKey ?? "",
+        extractFastModel: saved.extractFastModel ?? "",
+        extractFallbackModel: saved.extractFallbackModel ?? "",
+        extractPipelineSummaryModel: saved.extractPipelineSummaryModel ?? "",
+        extractPipelineNameModel: saved.extractPipelineNameModel ?? "",
+        extractEdgeModel: saved.extractEdgeModel ?? "",
+        extractEdgeValidateModel: saved.extractEdgeValidateModel ?? "",
+      });
+      setExtractionProviderError(null);
+      showTemporaryStatus("已保存抽取实验 provider 设置。");
+    } catch (error) {
+      setExtractionProviderError(
+        `保存抽取实验 provider 失败：${String(error)}`,
+      );
+    } finally {
+      setIsSavingExtractionProvider(false);
     }
   };
 
@@ -1421,6 +1780,7 @@ function App() {
   useEffect(() => {
     console.info("[startup] App mounted");
     void loadInferenceSettings();
+    void loadExtractionProviderSettings();
     void loadWorkspaceSnapshot();
     void loadCardSettings();
   }, []);
@@ -1438,6 +1798,13 @@ function App() {
     let unlistenFn: (() => void) | null = null;
     listen<IngestProgress>("ingest-progress", (event) => {
       setIngestProgress(event.payload);
+      setIngestStageSnapshots((current) => ({
+        ...current,
+        [event.payload.stage]: {
+          current: event.payload.current,
+          total: event.payload.total,
+        },
+      }));
     }).then((unlisten) => {
       unlistenFn = unlisten;
     });
@@ -1448,26 +1815,20 @@ function App() {
 
   useEffect(() => {
     if (!isIngesting || !ingestProgress) return;
-    const hasTotal =
-      typeof ingestProgress.total === "number" && ingestProgress.total > 0;
-    const percent = hasTotal
-      ? Math.max(
-          0,
-          Math.min(
-            100,
-            Math.round((ingestProgress.current / ingestProgress.total) * 100),
-          ),
-        )
-      : undefined;
-    const stageText =
-      STAGE_LABELS[ingestProgress.stage] || ingestProgress.stage;
-    const detail = ingestProgress.message?.trim();
     showPersistentStatus(
-      detail ? `${stageText} · ${detail}` : stageText,
+      `总进度 ${cumulativeProgressPercent}% · 当前阶段：${stageLabel}`,
       "info",
-      percent,
+      cumulativeProgressPercent,
+      ingestStatusDetails,
     );
-  }, [ingestProgress, isIngesting, showPersistentStatus]);
+  }, [
+    cumulativeProgressPercent,
+    ingestStatusDetails,
+    ingestProgress,
+    isIngesting,
+    stageLabel,
+    showPersistentStatus,
+  ]);
 
   useEffect(() => {
     let unlistenFn: (() => void) | null = null;
@@ -1600,9 +1961,19 @@ function App() {
     };
   }, [currentModel, getInstalledModels]);
 
-  const ingestWorkspacePath = async (path: string) => {
+  const ingestWorkspacePath = async (
+    path: string,
+    modeOverride?: IngestMode,
+  ) => {
     setActiveSidebarTool("workspace");
     setIsIngesting(true);
+    setIngestStageSnapshots({
+      prepare_ingest: {
+        current: 0,
+        total: 1,
+      },
+    });
+    setIngestExtractionMode(ingestRunMode);
     setIngestProgress({
       stage: "prepare_ingest",
       current: 0,
@@ -1611,33 +1982,85 @@ function App() {
     });
     showPersistentStatus("正在准备论文导入...", "info", 0);
     try {
-      const fastModel = await ensureAiReady("index");
-      const installedFallbackModel = await invoke<OllamaModelSummary[]>(
-        "get_ollama_models",
-      ).then((models) => {
-        const names = models.map((model) => model.name);
-        return (
-          resolveInstalledModelName(
-            names,
-            extractFallbackModel || REQUIRED_MODELS.extractFallback,
-          ) || fastModel
-        );
-      });
+      const effectiveIngestMode = modeOverride ?? ingestMode;
+      const useApiProvider =
+        extractionProviderSettings.provider === "open_ai_compatible";
+      let fastModel = "";
+      let installedFallbackModel = "";
+      if (useApiProvider) {
+        fastModel =
+          extractionProviderSettings.extractFastModel?.trim() ||
+          extractModel.trim() ||
+          REQUIRED_MODELS.extractFast;
+        installedFallbackModel =
+          extractionProviderSettings.extractFallbackModel?.trim() ||
+          extractFallbackModel.trim() ||
+          fastModel;
+      } else {
+        fastModel = await ensureAiReady("index");
+        installedFallbackModel = await invoke<OllamaModelSummary[]>(
+          "get_ollama_models",
+        ).then((models) => {
+          const names = models.map((model) => model.name);
+          return (
+            resolveInstalledModelName(
+              names,
+              extractFallbackModel || REQUIRED_MODELS.extractFallback,
+            ) || fastModel
+          );
+        });
+      }
       setIngestProgress({
         stage: "prepare_models",
         current: 0,
         total: 1,
-        message: `索引模型已就绪：候选 ${fastModel} / 回退 ${installedFallbackModel}`,
+        message: `索引模型已就绪：${useApiProvider ? "OpenAI-compatible" : "Ollama"} / 模式 ${ingestRunMode} / 候选 ${fastModel} / 回退 ${installedFallbackModel}`,
       });
       const count = await invoke<number>("ingest_research_corpus", {
         options: {
-          extractFastModel: fastModel,
-          extractFallbackModel: installedFallbackModel,
+          extractFastModel: useApiProvider ? null : fastModel,
+          extractFallbackModel: useApiProvider ? null : installedFallbackModel,
+          extractPipelineSummaryModel: useApiProvider
+            ? null
+            : pipelineSummaryModel.trim() || installedFallbackModel,
+          extractPipelineNameModel: useApiProvider
+            ? null
+            : pipelineNameModel.trim() ||
+              pipelineSummaryModel.trim() ||
+              installedFallbackModel,
+          extractEdgeModel: useApiProvider
+            ? null
+            : edgeExtractModel.trim() || installedFallbackModel,
+          extractEdgeValidateModel: useApiProvider
+            ? null
+            : edgeValidateModel.trim() ||
+              edgeExtractModel.trim() ||
+              installedFallbackModel,
           allowAutoPullExtractModel: true,
-          extractionMode: "balanced",
+          extractionMode: ingestRunMode,
+          extractProvider: {
+            provider: extractionProviderSettings.provider,
+            baseUrl: extractionProviderSettings.baseUrl?.trim() || null,
+            apiKey: extractionProviderSettings.apiKey?.trim() || null,
+            extractFastModel:
+              extractionProviderSettings.extractFastModel?.trim() || null,
+            extractFallbackModel:
+              extractionProviderSettings.extractFallbackModel?.trim() || null,
+            extractPipelineSummaryModel:
+              extractionProviderSettings.extractPipelineSummaryModel?.trim() ||
+              null,
+            extractPipelineNameModel:
+              extractionProviderSettings.extractPipelineNameModel?.trim() ||
+              null,
+            extractEdgeModel:
+              extractionProviderSettings.extractEdgeModel?.trim() || null,
+            extractEdgeValidateModel:
+              extractionProviderSettings.extractEdgeValidateModel?.trim() ||
+              null,
+          },
           embeddingModel: null,
           visionModel: null,
-          mode: ingestMode,
+          mode: effectiveIngestMode,
         },
         path,
       });
@@ -2144,13 +2567,19 @@ function App() {
             <div className="ingest-title">{stageLabel}</div>
             <div className="ingest-subtitle">
               {ingestProgress?.total
-                ? `${ingestProgress.current}/${ingestProgress.total}`
-                : "Preparing..."}
+                ? `总进度 ${cumulativeProgressPercent}% · 当前阶段 ${ingestProgress.current}/${ingestProgress.total}`
+                : `总进度 ${cumulativeProgressPercent}%`}
             </div>
             <div className="ingest-progress-track">
               <div
                 className="ingest-progress-fill"
-                style={{ width: `${progressPercent}%` }}
+                style={{ width: `${cumulativeProgressPercent}%` }}
+              />
+            </div>
+            <div className="ingest-subprogress-track">
+              <div
+                className="ingest-subprogress-fill"
+                style={{ width: `${stageProgressPercent}%` }}
               />
             </div>
           </div>
@@ -2171,7 +2600,23 @@ function App() {
               type_name: node.type_name,
               name: node.name,
             });
-            await ingestWorkspacePath(node.path);
+            await ingestWorkspacePath(node.path, "overwrite");
+          }}
+          onReindexPath={async (node) => {
+            setWorkspaceSelection({
+              path: node.path,
+              type_name: node.type_name,
+              name: node.name,
+            });
+            await ingestWorkspacePath(node.path, "overwrite");
+          }}
+          onResumeIndexPath={async (node) => {
+            setWorkspaceSelection({
+              path: node.path,
+              type_name: node.type_name,
+              name: node.name,
+            });
+            await ingestWorkspacePath(node.path, "incremental");
           }}
           onUnindexPath={async (node) => {
             setWorkspaceSelection({
@@ -2261,6 +2706,12 @@ function App() {
           extractFallbackModel={
             extractFallbackModel || REQUIRED_MODELS.extractFallback
           }
+          pipelineSummaryModel={
+            pipelineSummaryModel || REQUIRED_MODELS.pipelineSummary
+          }
+          pipelineNameModel={pipelineNameModel || REQUIRED_MODELS.pipelineName}
+          edgeExtractModel={edgeExtractModel || REQUIRED_MODELS.edgeExtract}
+          edgeValidateModel={edgeValidateModel || REQUIRED_MODELS.edgeValidate}
           translationModel={translationModel || REQUIRED_MODELS.translation}
           onOpenPathInApp={handleOpenPathInApp}
           ingestProgress={ingestProgress}
@@ -2443,7 +2894,25 @@ function App() {
           <option value="incremental">增量导入</option>
         </select>
         <p className="settings-help-text">
-          覆盖导入会重建当前导入目标的索引；增量导入会尽量保留已存在内容。
+          覆盖导入会从零重建当前导入目标；增量导入会尽量保留已有内容，并在可恢复时续跑未完成索引。
+        </p>
+      </div>
+
+      <div className="settings-section">
+        <label htmlFor="ingest-extraction-mode-select">抽取深度</label>
+        <select
+          id="ingest-extraction-mode-select"
+          value={ingestRunMode}
+          onChange={(event) =>
+            setIngestRunMode(event.target.value as ExtractionRunMode)
+          }
+        >
+          <option value="balanced">完整抽取（候选 + Pipeline + Edge）</option>
+          <option value="fast">快速抽取（仅候选优先）</option>
+        </select>
+        <p className="settings-help-text">
+          `balanced` 会继续执行 Pipeline 与 Edge 阶段，适合正式建图；`fast`
+          只做快速候选播种，速度更快但通常不会产出完整边。
         </p>
       </div>
 
@@ -2501,6 +2970,169 @@ function App() {
       </div>
 
       <div className="settings-section">
+        <label>Research Memory Extraction Provider</label>
+        <p className="settings-help-text">
+          默认仍使用本地 Ollama。切换到外部 API
+          后，抽取测试与实验索引会把论文片段发送到外部服务。
+        </p>
+        <div className="settings-model-stack">
+          <div className="settings-model-card">
+            <div className="settings-model-card-head">
+              <strong>实验 Provider</strong>
+              <span>仅作用于 Research Memory 抽取评测与实验索引</span>
+            </div>
+            <div className="settings-provider-grid">
+              <label className="settings-provider-field">
+                <span>Provider</span>
+                <select
+                  value={extractionProviderSettings.provider}
+                  onChange={(event) =>
+                    setExtractionProviderSettings((current) => ({
+                      ...current,
+                      provider: event.target.value as ExtractionProviderKind,
+                    }))
+                  }
+                >
+                  <option value="ollama">Ollama</option>
+                  <option value="open_ai_compatible">OpenAI-compatible</option>
+                </select>
+              </label>
+              <label className="settings-provider-field">
+                <span>Base URL</span>
+                <input
+                  type="text"
+                  value={extractionProviderSettings.baseUrl ?? ""}
+                  onChange={(event) =>
+                    setExtractionProviderSettings((current) => ({
+                      ...current,
+                      baseUrl: event.target.value,
+                    }))
+                  }
+                  placeholder="https://api.openai.com/v1"
+                />
+              </label>
+              <label className="settings-provider-field">
+                <span>API Key</span>
+                <input
+                  type="password"
+                  value={extractionProviderSettings.apiKey ?? ""}
+                  onChange={(event) =>
+                    setExtractionProviderSettings((current) => ({
+                      ...current,
+                      apiKey: event.target.value,
+                    }))
+                  }
+                  placeholder="sk-..."
+                />
+              </label>
+              <label className="settings-provider-field">
+                <span>Fast Model</span>
+                <input
+                  type="text"
+                  value={extractionProviderSettings.extractFastModel ?? ""}
+                  onChange={(event) =>
+                    setExtractionProviderSettings((current) => ({
+                      ...current,
+                      extractFastModel: event.target.value,
+                    }))
+                  }
+                  placeholder="gpt-4.1-mini"
+                />
+              </label>
+              <label className="settings-provider-field">
+                <span>Fallback Model</span>
+                <input
+                  type="text"
+                  value={extractionProviderSettings.extractFallbackModel ?? ""}
+                  onChange={(event) =>
+                    setExtractionProviderSettings((current) => ({
+                      ...current,
+                      extractFallbackModel: event.target.value,
+                    }))
+                  }
+                  placeholder="gpt-4.1"
+                />
+              </label>
+              <label className="settings-provider-field">
+                <span>Pipeline Summary Model</span>
+                <input
+                  type="text"
+                  value={
+                    extractionProviderSettings.extractPipelineSummaryModel ?? ""
+                  }
+                  onChange={(event) =>
+                    setExtractionProviderSettings((current) => ({
+                      ...current,
+                      extractPipelineSummaryModel: event.target.value,
+                    }))
+                  }
+                  placeholder="gpt-4.1"
+                />
+              </label>
+              <label className="settings-provider-field">
+                <span>Pipeline Name Model</span>
+                <input
+                  type="text"
+                  value={
+                    extractionProviderSettings.extractPipelineNameModel ?? ""
+                  }
+                  onChange={(event) =>
+                    setExtractionProviderSettings((current) => ({
+                      ...current,
+                      extractPipelineNameModel: event.target.value,
+                    }))
+                  }
+                  placeholder="gpt-4.1-mini"
+                />
+              </label>
+              <label className="settings-provider-field">
+                <span>Edge Model</span>
+                <input
+                  type="text"
+                  value={extractionProviderSettings.extractEdgeModel ?? ""}
+                  onChange={(event) =>
+                    setExtractionProviderSettings((current) => ({
+                      ...current,
+                      extractEdgeModel: event.target.value,
+                    }))
+                  }
+                  placeholder="gpt-4.1"
+                />
+              </label>
+              <label className="settings-provider-field">
+                <span>Edge Validate Model</span>
+                <input
+                  type="text"
+                  value={
+                    extractionProviderSettings.extractEdgeValidateModel ?? ""
+                  }
+                  onChange={(event) =>
+                    setExtractionProviderSettings((current) => ({
+                      ...current,
+                      extractEdgeValidateModel: event.target.value,
+                    }))
+                  }
+                  placeholder="gpt-4.1-mini"
+                />
+              </label>
+            </div>
+            <div className="settings-button-row">
+              <button
+                className="action-button"
+                onClick={() => void handleSaveExtractionProviderSettings()}
+                disabled={isSavingExtractionProvider}
+              >
+                {isSavingExtractionProvider ? "保存中..." : "保存抽取实验设置"}
+              </button>
+            </div>
+            {extractionProviderError && (
+              <p className="settings-error-text">{extractionProviderError}</p>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="settings-section">
         <label>聊天模型</label>
         <p className="settings-help-text">
           默认对话模型，当前建议使用 `qwen3.5:9b`。
@@ -2517,7 +3149,8 @@ function App() {
       <div className="settings-section">
         <label>抽取模型</label>
         <p className="settings-help-text">
-          `快速抽取` 优先用于候选概念；`回退抽取` 只在本机已安装时用于关系补全。
+          候选节点、Pipeline、Edge
+          和校验现在拆成独立模型职责，默认值会直接参与论文索引。
         </p>
         <div className="settings-model-stack">
           <div className="settings-model-card">
@@ -2535,14 +3168,68 @@ function App() {
           </div>
           <div className="settings-model-card">
             <div className="settings-model-card-head">
-              <strong>回退抽取模型</strong>
-              <span>关系补全与复杂片段兜底</span>
+              <strong>节点回退模型</strong>
+              <span>Candidate 抽取失败时兜底</span>
             </div>
             <ModelSelector
               currentModel={extractFallbackModel}
               onModelChange={setExtractFallbackModel}
               onStatus={handleChildStatus}
-              label="回退抽取模型"
+              label="节点回退模型"
+              variant="compact"
+            />
+          </div>
+          <div className="settings-model-card">
+            <div className="settings-model-card-head">
+              <strong>Pipeline Summary 模型</strong>
+              <span>先总结方法骨架，再做命名</span>
+            </div>
+            <ModelSelector
+              currentModel={pipelineSummaryModel}
+              onModelChange={setPipelineSummaryModel}
+              onStatus={handleChildStatus}
+              label="Pipeline Summary 模型"
+              variant="compact"
+            />
+          </div>
+          <div className="settings-model-card">
+            <div className="settings-model-card-head">
+              <strong>Pipeline 命名模型</strong>
+              <span>从 summary 中提取稳定 pipeline 名称</span>
+            </div>
+            <ModelSelector
+              currentModel={pipelineNameModel}
+              onModelChange={setPipelineNameModel}
+              onStatus={handleChildStatus}
+              label="Pipeline 命名模型"
+              variant="compact"
+            />
+          </div>
+          <div className="settings-model-card">
+            <div className="settings-model-card-head">
+              <strong>Edge 抽取模型</strong>
+              <span>
+                抽取 task-pipeline、pipeline-module、challenge-insight
+              </span>
+            </div>
+            <ModelSelector
+              currentModel={edgeExtractModel}
+              onModelChange={setEdgeExtractModel}
+              onStatus={handleChildStatus}
+              label="Edge 抽取模型"
+              variant="compact"
+            />
+          </div>
+          <div className="settings-model-card">
+            <div className="settings-model-card-head">
+              <strong>Edge 校验模型</strong>
+              <span>删除证据不足或语义不稳的边</span>
+            </div>
+            <ModelSelector
+              currentModel={edgeValidateModel}
+              onModelChange={setEdgeValidateModel}
+              onStatus={handleChildStatus}
+              label="Edge 校验模型"
               variant="compact"
             />
           </div>

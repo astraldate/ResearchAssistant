@@ -39,6 +39,12 @@ mobile-app/android/app/*.jks
 
 # Temporary files
 TEMP_app_slice.txt
+tmp-ollama-out.log
+tmp-ollama-err.log
+hs_err_pid*.log
+replay_pid*.log
+research_memory_eval_report.json
+research_memory_eval_samples.json
 
 # Editor directories and files
 .vscode/*

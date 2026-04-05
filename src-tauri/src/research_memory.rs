@@ -28,11 +28,16 @@ use crate::text_decode::read_text_file_auto;
 const SCHEMA_VERSION: &str = "research_memory_v1";
 const SQLITE_FILE: &str = "research_memory.sqlite3";
 const LANCEDB_DIR: &str = "research_memory_lancedb";
+const EXTRACTION_PROVIDER_SETTINGS_FILE: &str = "research_extraction_provider_settings.json";
 const CHUNK_VECTOR_TABLE: &str = "chunk_vectors";
 const PAGE_VECTOR_TABLE: &str = "page_vectors";
 const CONCEPT_VECTOR_TABLE: &str = "concept_vectors";
 const MAP_UNIT_CHAR_LIMIT: usize = 5000;
 const MAP_UNIT_OVERLAP: usize = 120;
+const RELATION_MAP_UNIT_CHAR_LIMIT: usize = 7600;
+const RELATION_MAP_UNIT_OVERLAP: usize = 1800;
+const RELATION_FOCUSED_PAGE_WINDOW_CHAR_LIMIT: usize = 5600;
+const RELATION_FOCUSED_PAGE_WINDOW_OVERLAP: usize = 1200;
 const MAP_PROMPT_CHAR_LIMIT: usize = 3600;
 const MAP_MAX_ITEMS_PER_KIND: usize = 4;
 const MAP_EXTRACT_CONCURRENCY: usize = 2;
@@ -41,10 +46,11 @@ const READY_STATUS: &str = "ready";
 const PENDING_STATUS: &str = "pending";
 const APPROVED_STATUS: &str = "approved";
 const REJECTED_STATUS: &str = "rejected";
-const REVIEW_PENDING_STATUS: &str = "pending";
+const REVIEW_PENDING_STATUS: &str = "review_pending";
 const REVIEW_DONE_STATUS: &str = "done";
 const MAP_MIN_CONFIDENCE: f32 = 0.62;
-const REDUCE_MIN_CONFIDENCE: f32 = 0.6;
+const REDUCE_NODE_MIN_CONFIDENCE: f32 = 0.6;
+const REDUCE_EDGE_MIN_CONFIDENCE: f32 = 0.35;
 const VISUAL_TEXT_FALLBACK_LIMIT: usize = 2200;
 const RULE3_CHALLENGE_LIMIT: usize = 8;
 const RULE3_MODULE_SEARCH_LIMIT: usize = 8;
@@ -103,13 +109,40 @@ impl IngestProgress {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtractionProviderKind {
+    #[default]
+    Ollama,
+    OpenAiCompatible,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtractionProviderSettings {
+    pub provider: ExtractionProviderKind,
+    pub base_url: Option<String>,
+    pub api_key: Option<String>,
+    pub extract_fast_model: Option<String>,
+    pub extract_fallback_model: Option<String>,
+    pub extract_pipeline_summary_model: Option<String>,
+    pub extract_pipeline_name_model: Option<String>,
+    pub extract_edge_model: Option<String>,
+    pub extract_edge_validate_model: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ResearchIngestOptions {
     pub extract_model: Option<String>,
     pub extract_fast_model: Option<String>,
     pub extract_fallback_model: Option<String>,
+    pub extract_pipeline_summary_model: Option<String>,
+    pub extract_pipeline_name_model: Option<String>,
+    pub extract_edge_model: Option<String>,
+    pub extract_edge_validate_model: Option<String>,
     pub allow_auto_pull_extract_model: Option<bool>,
     pub extraction_mode: Option<String>,
+    pub extract_provider: Option<ExtractionProviderSettings>,
     pub embedding_model: Option<String>,
     pub vision_model: Option<String>,
     pub mode: Option<IngestMode>,
@@ -254,6 +287,94 @@ pub struct ResearchPaperRecord {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
+pub struct ResearchExtractionDiagnosticsRecord {
+    pub paper_id: String,
+    pub title: String,
+    pub path: String,
+    pub relation_map_unit_count: usize,
+    pub candidate_conflict_count: usize,
+    pub pipeline_summary_empty_count: usize,
+    pub pipeline_name_empty_count: usize,
+    pub edge_candidate_count: usize,
+    pub edge_validated_count: usize,
+    pub edge_validate_fallback_count: usize,
+    pub updated_at: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtractionPreviewRequest {
+    pub path: String,
+    pub extract_provider: Option<ExtractionProviderSettings>,
+    pub extract_fast_model: Option<String>,
+    pub extract_fallback_model: Option<String>,
+    pub extract_pipeline_summary_model: Option<String>,
+    pub extract_pipeline_name_model: Option<String>,
+    pub extract_edge_model: Option<String>,
+    pub extract_edge_validate_model: Option<String>,
+    pub unit_limit: Option<usize>,
+    pub stage: Option<String>,
+    pub extraction_mode: Option<String>,
+    pub show_content: Option<bool>,
+    pub show_sections: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtractionPreviewDiagnostics {
+    pub candidate_conflict_count: usize,
+    pub pipeline_summary_empty: bool,
+    pub pipeline_name_empty: bool,
+    pub edge_candidate_count: usize,
+    pub edge_validated_count: usize,
+    pub edge_validate_used_fallback: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtractionPreviewUnit {
+    pub unit_id: String,
+    pub heading: String,
+    pub page_start: i64,
+    pub page_end: i64,
+    pub candidate_status: String,
+    pub tasks: Vec<String>,
+    pub modules: Vec<String>,
+    pub challenges: Vec<String>,
+    pub insights: Vec<String>,
+    pub pipelines: Vec<String>,
+    pub task_pipeline_count: usize,
+    pub task_module_count: usize,
+    pub pipeline_module_count: usize,
+    pub challenge_insight_count: usize,
+    pub diagnostics: ExtractionPreviewDiagnostics,
+    pub content_preview: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtractionPreviewSection {
+    pub heading: String,
+    pub start_page: i64,
+    pub end_page: i64,
+    pub content_preview: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtractionPreviewResult {
+    pub title: String,
+    pub path: String,
+    pub paper_type: String,
+    pub stage: String,
+    pub total_candidate_units: usize,
+    pub total_relation_units: usize,
+    pub detected_sections: Option<Vec<ExtractionPreviewSection>>,
+    pub previewed_units: Vec<ExtractionPreviewUnit>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct ReviewRecord {
     pub review_id: String,
     pub candidate_id: String,
@@ -333,6 +454,8 @@ pub struct LocalExtractionItem {
     pub summary: Option<String>,
     pub confidence: Option<f32>,
     pub evidence_snippet: Option<String>,
+    #[serde(default)]
+    pub kind_rationale: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -355,11 +478,45 @@ pub struct CandidateExtraction {
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct RelationExtraction {
+pub struct PipelineSummary {
+    pub summary: String,
+    #[serde(default)]
+    pub evidence_snippet: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineExtraction {
     pub pipelines: Vec<LocalExtractionItem>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct EdgeExtraction {
     pub task_pipeline_pairs: Vec<LocalExtractionEdge>,
+    pub task_module_pairs: Vec<LocalExtractionEdge>,
     pub pipeline_module_pairs: Vec<LocalExtractionEdge>,
     pub challenge_insight_pairs: Vec<LocalExtractionEdge>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidatedEdgeExtraction {
+    pub task_pipeline_pairs: Vec<LocalExtractionEdge>,
+    pub task_module_pairs: Vec<LocalExtractionEdge>,
+    pub pipeline_module_pairs: Vec<LocalExtractionEdge>,
+    pub challenge_insight_pairs: Vec<LocalExtractionEdge>,
+}
+
+impl From<EdgeExtraction> for ValidatedEdgeExtraction {
+    fn from(value: EdgeExtraction) -> Self {
+        Self {
+            task_pipeline_pairs: value.task_pipeline_pairs,
+            task_module_pairs: value.task_module_pairs,
+            pipeline_module_pairs: value.pipeline_module_pairs,
+            challenge_insight_pairs: value.challenge_insight_pairs,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -371,6 +528,7 @@ pub struct LocalExtraction {
     pub challenges: Vec<LocalExtractionItem>,
     pub insights: Vec<LocalExtractionItem>,
     pub task_pipeline_pairs: Vec<LocalExtractionEdge>,
+    pub task_module_pairs: Vec<LocalExtractionEdge>,
     pub pipeline_module_pairs: Vec<LocalExtractionEdge>,
     pub challenge_insight_pairs: Vec<LocalExtractionEdge>,
 }
@@ -391,12 +549,105 @@ impl LocalExtraction {
     }
 }
 
+fn merge_local_extraction_items(
+    kind: &str,
+    primary: &[LocalExtractionItem],
+    secondary: &[LocalExtractionItem],
+) -> Vec<LocalExtractionItem> {
+    let mut merged = Vec::with_capacity(primary.len() + secondary.len());
+    merged.extend(primary.iter().cloned());
+    merged.extend(secondary.iter().cloned());
+    sanitize_local_extraction_items(kind, merged)
+}
+
+fn build_seed_context(
+    seed_candidates: &[CandidateExtraction],
+) -> LocalExtraction {
+    let mut context = LocalExtraction::default();
+    for candidate in seed_candidates {
+        context.tasks = merge_local_extraction_items("task", &context.tasks, &candidate.tasks);
+        context.modules =
+            merge_local_extraction_items("module", &context.modules, &candidate.modules);
+        context.challenges = merge_local_extraction_items(
+            "challenge",
+            &context.challenges,
+            &candidate.challenges,
+        );
+        context.insights = merge_local_extraction_items(
+            "insight",
+            &context.insights,
+            &candidate.insights,
+        );
+    }
+    context
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CandidatePhaseStatus {
     FastHit,
     NoCandidate,
     FallbackSuccess,
     DoubleFailure,
+}
+
+impl CandidatePhaseStatus {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::FastHit => "fast_hit",
+            Self::NoCandidate => "no_candidate",
+            Self::FallbackSuccess => "fallback_success",
+            Self::DoubleFailure => "double_failure",
+        }
+    }
+
+    fn from_str(value: &str) -> Self {
+        match value {
+            "fast_hit" => Self::FastHit,
+            "no_candidate" => Self::NoCandidate,
+            "fallback_success" => Self::FallbackSuccess,
+            "double_failure" => Self::DoubleFailure,
+            _ => Self::DoubleFailure,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PersistedUnitExtraction {
+    unit_id: String,
+    chunk_id: String,
+    candidate_status: CandidatePhaseStatus,
+    diagnostics: ExtractionDiagnostics,
+    nodes: Vec<ReducedNodeCandidate>,
+    edges: Vec<ReducedEdgeCandidate>,
+}
+
+#[derive(Clone, Debug)]
+struct ResumePaperState {
+    index_status: String,
+    extraction_status: String,
+    has_checkpoint: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExtractionMode {
+    Fast,
+    Balanced,
+}
+
+fn parse_extraction_mode(value: Option<&str>) -> ExtractionMode {
+    match value.unwrap_or("fast").trim().to_ascii_lowercase().as_str() {
+        "balanced" | "quality" | "full" => ExtractionMode::Balanced,
+        _ => ExtractionMode::Fast,
+    }
+}
+
+fn candidate_phase_status_label(status: CandidatePhaseStatus) -> &'static str {
+    match status {
+        CandidatePhaseStatus::FastHit => "fast_hit",
+        CandidatePhaseStatus::NoCandidate => "no_candidate",
+        CandidatePhaseStatus::FallbackSuccess => "fallback_success",
+        CandidatePhaseStatus::DoubleFailure => "double_failure",
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -407,6 +658,46 @@ struct FileDocument {
     pages: Vec<PageRecord>,
     full_text: String,
     content_hash: String,
+}
+
+fn dedupe_map_units_by_id(units: Vec<MapUnit>) -> Vec<MapUnit> {
+    let mut seen = HashSet::new();
+    let mut result = Vec::new();
+    for unit in units {
+        if seen.insert(unit.unit_id.clone()) {
+            result.push(unit);
+        }
+    }
+    result
+}
+
+fn build_front_matter_seed_unit(document: &FileDocument) -> Option<MapUnit> {
+    let content = document
+        .pages
+        .iter()
+        .take(2)
+        .map(|page| page.content.clone())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if content.trim().is_empty() {
+        return None;
+    }
+    let end_page = document
+        .pages
+        .iter()
+        .take(2)
+        .last()
+        .map(|page| page.page_number)
+        .unwrap_or(1);
+    Some(MapUnit {
+        unit_id: "seed-fallback-pages-1-2".to_string(),
+        section_id: None,
+        unit_kind: "page_seed_fallback".to_string(),
+        heading: "Front Matter [seed-fallback]".to_string(),
+        page_start: 1,
+        page_end: end_page,
+        content,
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -435,7 +726,30 @@ struct MapUnit {
     content: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct ExtractionDiagnostics {
+    candidate_conflict_count: usize,
+    pipeline_summary_empty: bool,
+    pipeline_name_empty: bool,
+    edge_candidate_count: usize,
+    edge_validated_count: usize,
+    edge_validate_used_fallback: bool,
+}
+
+impl Default for ExtractionDiagnostics {
+    fn default() -> Self {
+        Self {
+            candidate_conflict_count: 0,
+            pipeline_summary_empty: true,
+            pipeline_name_empty: true,
+            edge_candidate_count: 0,
+            edge_validated_count: 0,
+            edge_validate_used_fallback: false,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 struct ReducedNodeCandidate {
     paper_id: String,
     kind: String,
@@ -447,7 +761,7 @@ struct ReducedNodeCandidate {
     evidence: Vec<EvidenceRef>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 struct ReducedEdgeCandidate {
     paper_id: String,
     edge_type: String,
@@ -559,14 +873,56 @@ pub async fn ingest_research_corpus(
         ),
     );
     let mode = options.mode.unwrap_or_default();
-    let extract_fast_model = options
-        .extract_fast_model
-        .or(options.extract_model.clone())
-        .unwrap_or_else(|| "qwen3:8b".to_string());
-    let extract_fallback_model = options
-        .extract_fallback_model
-        .or(options.extract_model.clone())
-        .unwrap_or_else(|| "qwen3.5:9b".to_string());
+    let extraction_mode = parse_extraction_mode(options.extraction_mode.as_deref());
+    let stored_provider_settings = load_extraction_provider_settings(app).unwrap_or_default();
+    let provider_settings =
+        merge_extraction_provider_settings(&stored_provider_settings, options.extract_provider.as_ref());
+    let provider_runtime = resolve_extraction_provider_runtime(&provider_settings)?;
+    let extract_model = options.extract_model.clone();
+    let extract_fast_model = resolve_extraction_model(
+        options.extract_fast_model.clone(),
+        extract_model.clone(),
+        provider_settings.extract_fast_model.clone(),
+        || "qwen3:8b".to_string(),
+    );
+    let extract_fallback_model = resolve_extraction_model(
+        options.extract_fallback_model.clone(),
+        extract_model.clone(),
+        provider_settings.extract_fallback_model.clone(),
+        || "qwen3.5:9b".to_string(),
+    );
+    let extract_pipeline_summary_model = resolve_extraction_model(
+        options.extract_pipeline_summary_model.clone(),
+        options.extract_fallback_model.clone().or(extract_model.clone()),
+        provider_settings.extract_pipeline_summary_model.clone(),
+        || "qwen3.5:9b".to_string(),
+    );
+    let extract_pipeline_name_model = resolve_extraction_model(
+        options.extract_pipeline_name_model.clone(),
+        options
+            .extract_pipeline_summary_model
+            .clone()
+            .or(options.extract_fallback_model.clone())
+            .or(extract_model.clone()),
+        provider_settings.extract_pipeline_name_model.clone(),
+        || extract_pipeline_summary_model.clone(),
+    );
+    let extract_edge_model = resolve_extraction_model(
+        options.extract_edge_model.clone(),
+        options.extract_fallback_model.clone().or(extract_model.clone()),
+        provider_settings.extract_edge_model.clone(),
+        || "qwen3.5:9b".to_string(),
+    );
+    let extract_edge_validate_model = resolve_extraction_model(
+        options.extract_edge_validate_model.clone(),
+        options
+            .extract_edge_model
+            .clone()
+            .or(options.extract_fallback_model.clone())
+            .or(extract_model.clone()),
+        provider_settings.extract_edge_validate_model.clone(),
+        || extract_edge_model.clone(),
+    );
     emit_progress(
         window,
         IngestProgress::new(
@@ -574,8 +930,17 @@ pub async fn ingest_research_corpus(
             0,
             1,
             format!(
-                "正在检查索引模型与 embedding：候选 {} / 回退 {}",
-                extract_fast_model, extract_fallback_model
+                "正在检查索引模型与 embedding（{} / {:?}）：候选 {} / 节点回退 {} / Pipeline {} / Edge {} / 校验 {}",
+                match extraction_mode {
+                    ExtractionMode::Fast => "fast",
+                    ExtractionMode::Balanced => "balanced",
+                },
+                provider_settings.provider,
+                extract_fast_model,
+                extract_fallback_model,
+                extract_pipeline_summary_model,
+                extract_edge_model,
+                extract_edge_validate_model
             ),
         ),
     );
@@ -602,6 +967,20 @@ pub async fn ingest_research_corpus(
         let mut conn = open_sqlite(app)?;
         create_schema(&mut conn)?;
         clear_research_memory(&conn)?;
+    } else {
+        let mut conn = open_sqlite(app)?;
+        create_schema(&mut conn)?;
+        if has_resumable_work(&conn, path)? {
+            emit_progress(
+                window,
+                IngestProgress::new(
+                    "prepare_ingest",
+                    0,
+                    1,
+                    "检测到未完成索引任务，正在恢复上次进度...",
+                ),
+            );
+        }
     }
 
     emit_progress(
@@ -611,10 +990,16 @@ pub async fn ingest_research_corpus(
                 0,
                 documents.len(),
             format!(
-                "已发现 {} 篇待处理论文，候选模型 {}，回退模型 {}",
+                "已发现 {} 篇待处理论文（{}），候选 {} / 节点回退 {} / Pipeline {} / Edge {}",
                 documents.len(),
+                match extraction_mode {
+                    ExtractionMode::Fast => "fast",
+                    ExtractionMode::Balanced => "balanced",
+                },
                 extract_fast_model,
-                extract_fallback_model
+                extract_fallback_model,
+                extract_pipeline_summary_model,
+                extract_edge_model
             ),
         ),
     );
@@ -624,11 +1009,11 @@ pub async fn ingest_research_corpus(
         emit_progress(
             window,
             IngestProgress::new(
-                "candidate_extract",
+                "parse_pages",
                 index + 1,
                 documents.len(),
                 format!(
-                    "正在解析与候选抽取（{}/{}）：{}",
+                    "正在准备论文（{}/{}）：{}",
                     index + 1,
                     documents.len(),
                     document.title
@@ -639,8 +1024,14 @@ pub async fn ingest_research_corpus(
             app,
             window,
             document,
+            extraction_mode,
+            &provider_runtime,
             &extract_fast_model,
             &extract_fallback_model,
+            &extract_pipeline_summary_model,
+            &extract_pipeline_name_model,
+            &extract_edge_model,
+            &extract_edge_validate_model,
         )
         .await?;
         processed += 1;
@@ -784,9 +1175,14 @@ pub async fn query_knowledge_base(
 pub async fn get_research_graph(app: &AppHandle, view: &str) -> Result<ResearchGraph> {
     initialize(app).await?;
     let conn = open_sqlite(app)?;
+    backfill_missing_edge_candidates_from_checkpoints(&conn)?;
+    repair_approved_edge_endpoint_nodes(&conn)?;
     let (allowed_kinds, allowed_edges): (&[&str], &[&str]) = match view {
         "problem" => (&["challenge", "insight"], &["challenge_insight"]),
-        _ => (&["task", "pipeline", "module"], &["task_pipeline", "pipeline_module"]),
+        _ => (
+            &["task", "pipeline", "module"],
+            &["task_pipeline", "task_module", "pipeline_module"],
+        ),
     };
 
     let node_placeholders = allowed_kinds.iter().map(|_| "?").collect::<Vec<_>>().join(",");
@@ -853,6 +1249,8 @@ pub async fn get_research_graph(app: &AppHandle, view: &str) -> Result<ResearchG
 pub async fn list_extraction_reviews(app: &AppHandle) -> Result<Vec<ReviewRecord>> {
     initialize(app).await?;
     let conn = open_sqlite(app)?;
+    backfill_missing_edge_candidates_from_checkpoints(&conn)?;
+    repair_approved_edge_endpoint_nodes(&conn)?;
     let mut stmt = conn.prepare(
         "SELECT r.review_id, r.candidate_id, c.paper_id, p.title, p.path, c.candidate_kind, c.entity_kind,
                 c.label, c.description, c.confidence, c.from_kind, c.from_label, c.to_kind, c.to_label,
@@ -975,6 +1373,8 @@ pub async fn get_research_graph_edge_detail(
 pub async fn list_research_papers(app: &AppHandle) -> Result<Vec<ResearchPaperRecord>> {
     initialize(app).await?;
     let conn = open_sqlite(app)?;
+    backfill_missing_edge_candidates_from_checkpoints(&conn)?;
+    repair_approved_edge_endpoint_nodes(&conn)?;
     let mut stmt = conn.prepare(
         "SELECT p.paper_id,
                 p.title,
@@ -1041,6 +1441,258 @@ pub async fn list_research_papers(app: &AppHandle) -> Result<Vec<ResearchPaperRe
     Ok(papers)
 }
 
+pub async fn list_research_extraction_diagnostics(
+    app: &AppHandle,
+) -> Result<Vec<ResearchExtractionDiagnosticsRecord>> {
+    initialize(app).await?;
+    let conn = open_sqlite(app)?;
+    let mut stmt = conn.prepare(
+        "SELECT p.paper_id,
+                p.title,
+                p.path,
+                d.relation_map_unit_count,
+                d.candidate_conflict_count,
+                d.pipeline_summary_empty_count,
+                d.pipeline_name_empty_count,
+                d.edge_candidate_count,
+                d.edge_validated_count,
+                d.edge_validate_fallback_count,
+                d.updated_at
+         FROM extraction_diagnostics d
+         JOIN papers p ON p.paper_id = d.paper_id
+         ORDER BY d.updated_at DESC, p.title COLLATE NOCASE ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(ResearchExtractionDiagnosticsRecord {
+            paper_id: row.get(0)?,
+            title: row.get(1)?,
+            path: row.get(2)?,
+            relation_map_unit_count: row.get::<_, i64>(3).unwrap_or(0).max(0) as usize,
+            candidate_conflict_count: row.get::<_, i64>(4).unwrap_or(0).max(0) as usize,
+            pipeline_summary_empty_count: row.get::<_, i64>(5).unwrap_or(0).max(0) as usize,
+            pipeline_name_empty_count: row.get::<_, i64>(6).unwrap_or(0).max(0) as usize,
+            edge_candidate_count: row.get::<_, i64>(7).unwrap_or(0).max(0) as usize,
+            edge_validated_count: row.get::<_, i64>(8).unwrap_or(0).max(0) as usize,
+            edge_validate_fallback_count: row.get::<_, i64>(9).unwrap_or(0).max(0) as usize,
+            updated_at: row.get(10)?,
+        })
+    })?;
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row?);
+    }
+    Ok(records)
+}
+
+pub async fn preview_extract_path(
+    request: ExtractionPreviewRequest,
+) -> Result<ExtractionPreviewResult> {
+    let file_path = PathBuf::from(request.path.trim());
+    if !file_path.is_file() {
+        return Err(anyhow!("Preview path is not a file: {}", file_path.display()));
+    }
+    let document = spawn_blocking(move || load_document_from_path(&file_path)).await??;
+    let sections = detect_sections(&document);
+    let paper_type = classify_paper_type(&document, &sections);
+    let show_content = request.show_content.unwrap_or(false);
+    let show_sections = request.show_sections.unwrap_or(false);
+    let mut seed_units = build_seed_map_units(&document, &sections)
+        .into_iter()
+        .filter(|unit| should_extract_map_unit(unit))
+        .collect::<Vec<_>>();
+    if seed_units.is_empty() {
+        if let Some(unit) = build_front_matter_seed_unit(&document) {
+            if should_extract_map_unit(&unit) {
+                seed_units.push(unit);
+            }
+        }
+    }
+    let relation_units = build_map_units(&document, &sections)
+        .into_iter()
+        .filter(|unit| should_extract_map_unit(unit))
+        .collect::<Vec<_>>();
+    let unit_limit = request.unit_limit.unwrap_or(3).max(1);
+    let stage = request
+        .stage
+        .unwrap_or_else(|| "candidate".to_string())
+        .trim()
+        .to_lowercase();
+    let extraction_mode = parse_extraction_mode(request.extraction_mode.as_deref());
+    let provider_settings = request.extract_provider.clone().unwrap_or_default();
+    let provider_runtime = resolve_extraction_provider_runtime(&provider_settings)?;
+    let extract_fast_model = resolve_extraction_model(
+        request.extract_fast_model.clone(),
+        None,
+        provider_settings.extract_fast_model.clone(),
+        || "qwen3:8b".to_string(),
+    );
+    let extract_fallback_model = resolve_extraction_model(
+        request.extract_fallback_model.clone(),
+        None,
+        provider_settings.extract_fallback_model.clone(),
+        || "qwen3.5:9b".to_string(),
+    );
+    let extract_pipeline_summary_model = resolve_extraction_model(
+        request.extract_pipeline_summary_model.clone(),
+        request.extract_fallback_model.clone(),
+        provider_settings.extract_pipeline_summary_model.clone(),
+        || extract_fallback_model.clone(),
+    );
+    let extract_pipeline_name_model = resolve_extraction_model(
+        request.extract_pipeline_name_model.clone(),
+        request
+            .extract_pipeline_summary_model
+            .clone()
+            .or(request.extract_fallback_model.clone()),
+        provider_settings.extract_pipeline_name_model.clone(),
+        || extract_pipeline_summary_model.clone(),
+    );
+    let extract_edge_model = resolve_extraction_model(
+        request.extract_edge_model.clone(),
+        request.extract_fallback_model.clone(),
+        provider_settings.extract_edge_model.clone(),
+        || extract_fallback_model.clone(),
+    );
+    let extract_edge_validate_model = resolve_extraction_model(
+        request.extract_edge_validate_model.clone(),
+        request
+            .extract_edge_model
+            .clone()
+            .or(request.extract_fallback_model.clone()),
+        provider_settings.extract_edge_validate_model.clone(),
+        || extract_edge_model.clone(),
+    );
+    let mut seed_context = LocalExtraction::default();
+    if !seed_units.is_empty() {
+        let mut seed_candidates = Vec::new();
+        for unit in &seed_units {
+            let (candidate, _) = extract_candidate_with_fallback(
+                unit,
+                &document,
+                &provider_runtime,
+                &extract_fast_model,
+                &extract_fallback_model,
+            )
+            .await;
+            let (candidate, _) = resolve_candidate_kind_conflicts(candidate);
+            if candidate.item_count() > 0 {
+                seed_candidates.push(candidate);
+            }
+        }
+        seed_context = build_seed_context(&seed_candidates);
+    }
+
+    let mut previewed_units = Vec::new();
+    let selected_units = if stage == "full" {
+        let mut combined = Vec::new();
+        combined.extend(relation_units.iter().cloned());
+        combined.extend(seed_units.iter().cloned());
+        dedupe_map_units_by_id(combined)
+    } else if !seed_units.is_empty() {
+        seed_units.clone()
+    } else {
+        relation_units.clone()
+    };
+
+    for unit in selected_units.into_iter().take(unit_limit) {
+        if stage == "full" {
+            let should_use_seed_context = !unit.unit_kind.contains("seed");
+            let (local, candidate_status, diagnostics) = extract_map_unit(
+                &unit,
+                &document,
+                &paper_type,
+                should_use_seed_context.then_some(&seed_context),
+                extraction_mode,
+                &provider_runtime,
+                &extract_fast_model,
+                &extract_fallback_model,
+                &extract_pipeline_summary_model,
+                &extract_pipeline_name_model,
+                &extract_edge_model,
+                &extract_edge_validate_model,
+            )
+            .await?;
+            previewed_units.push(ExtractionPreviewUnit {
+                unit_id: unit.unit_id,
+                heading: unit.heading,
+                page_start: unit.page_start,
+                page_end: unit.page_end,
+                candidate_status: candidate_phase_status_label(candidate_status).to_string(),
+                tasks: local.tasks.into_iter().map(|item| item.label).collect(),
+                modules: local.modules.into_iter().map(|item| item.label).collect(),
+                challenges: local.challenges.into_iter().map(|item| item.label).collect(),
+                insights: local.insights.into_iter().map(|item| item.label).collect(),
+                pipelines: local.pipelines.into_iter().map(|item| item.label).collect(),
+                task_pipeline_count: local.task_pipeline_pairs.len(),
+                task_module_count: local.task_module_pairs.len(),
+                pipeline_module_count: local.pipeline_module_pairs.len(),
+                challenge_insight_count: local.challenge_insight_pairs.len(),
+                diagnostics: ExtractionPreviewDiagnostics {
+                    candidate_conflict_count: diagnostics.candidate_conflict_count,
+                    pipeline_summary_empty: diagnostics.pipeline_summary_empty,
+                    pipeline_name_empty: diagnostics.pipeline_name_empty,
+                    edge_candidate_count: diagnostics.edge_candidate_count,
+                    edge_validated_count: diagnostics.edge_validated_count,
+                    edge_validate_used_fallback: diagnostics.edge_validate_used_fallback,
+                },
+                content_preview: show_content.then(|| truncate_chars(&unit.content, 1200)),
+            });
+        } else {
+            let (candidate, candidate_status) = extract_candidate_with_fallback(
+                &unit,
+                &document,
+                &provider_runtime,
+                &extract_fast_model,
+                &extract_fallback_model,
+            )
+            .await;
+            let (candidate, candidate_conflict_count) = resolve_candidate_kind_conflicts(candidate);
+            previewed_units.push(ExtractionPreviewUnit {
+                unit_id: unit.unit_id,
+                heading: unit.heading,
+                page_start: unit.page_start,
+                page_end: unit.page_end,
+                candidate_status: candidate_phase_status_label(candidate_status).to_string(),
+                tasks: candidate.tasks.into_iter().map(|item| item.label).collect(),
+                modules: candidate.modules.into_iter().map(|item| item.label).collect(),
+                challenges: candidate.challenges.into_iter().map(|item| item.label).collect(),
+                insights: candidate.insights.into_iter().map(|item| item.label).collect(),
+                pipelines: Vec::new(),
+                task_pipeline_count: 0,
+                task_module_count: 0,
+                pipeline_module_count: 0,
+                challenge_insight_count: 0,
+                diagnostics: ExtractionPreviewDiagnostics {
+                    candidate_conflict_count,
+                    ..Default::default()
+                },
+                content_preview: show_content.then(|| truncate_chars(&unit.content, 1200)),
+            });
+        }
+    }
+
+    Ok(ExtractionPreviewResult {
+        title: document.title,
+        path: document.path,
+        paper_type,
+        stage,
+        total_candidate_units: seed_units.len(),
+        total_relation_units: relation_units.len(),
+        detected_sections: show_sections.then(|| {
+            sections
+                .iter()
+                .map(|section| ExtractionPreviewSection {
+                    heading: section.heading.clone(),
+                    start_page: section.start_page,
+                    end_page: section.end_page,
+                    content_preview: show_content.then(|| truncate_chars(&section.content, 500)),
+                })
+                .collect::<Vec<_>>()
+        }),
+        previewed_units,
+    })
+}
+
 #[derive(Clone, Copy, Debug)]
 struct CandidateBudget {
     tasks: usize,
@@ -1077,13 +1729,13 @@ fn budget_for_paper_type(paper_type: &str) -> CandidateBudget {
 }
 
 fn classify_paper_type(document: &FileDocument, sections: &[SectionRecord]) -> String {
-    let title = document.title.to_lowercase();
-    let headings = sections
+    let title_raw = document.title.to_lowercase();
+    let headings_raw = sections
         .iter()
         .map(|section| section.heading.to_lowercase())
         .collect::<Vec<_>>()
         .join("\n");
-    let summary_text = document
+    let summary_text_raw = document
         .pages
         .iter()
         .take(2)
@@ -1091,6 +1743,9 @@ fn classify_paper_type(document: &FileDocument, sections: &[SectionRecord]) -> S
         .collect::<Vec<_>>()
         .join("\n")
         .to_lowercase();
+    let title = normalize_label(&title_raw);
+    let headings = normalize_label(&headings_raw);
+    let summary_text = normalize_label(&summary_text_raw);
 
     let review_markers = [
         "review",
@@ -1102,9 +1757,21 @@ fn classify_paper_type(document: &FileDocument, sections: &[SectionRecord]) -> S
         "meta-analysis",
         "systematic review",
     ];
-    if review_markers.iter().any(|marker| title.contains(marker))
-        || (review_markers.iter().filter(|marker| headings.contains(**marker)).count() >= 1
+    if review_markers
+        .iter()
+        .map(|marker| normalize_label(marker))
+        .any(|marker| title.contains(&marker))
+        || (review_markers
+            .iter()
+            .map(|marker| normalize_label(marker))
+            .filter(|marker| headings.contains(marker))
+            .count()
+            >= 1
             && summary_text.contains("we review"))
+        || summary_text.contains("in this perspective")
+        || summary_text.contains("this perspective")
+        || summary_text.contains("in this review")
+        || summary_text.contains("in this survey")
     {
         return PAPER_TYPE_REVIEW.to_string();
     }
@@ -1345,6 +2012,78 @@ pub async fn apply_extraction_review(
                 "UPDATE review_queue SET status = ?2 WHERE candidate_id = ?1",
                 params![decision.candidate_id, REVIEW_DONE_STATUS],
             )?;
+            if next_status == APPROVED_STATUS {
+                let edge_context = tx
+                    .query_row(
+                        "SELECT paper_id, candidate_kind, from_kind, normalized_from_label, to_kind, normalized_to_label
+                         FROM extraction_candidates
+                         WHERE candidate_id = ?1",
+                        [decision.candidate_id.as_str()],
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, Option<String>>(2)?,
+                                row.get::<_, Option<String>>(3)?,
+                                row.get::<_, Option<String>>(4)?,
+                                row.get::<_, Option<String>>(5)?,
+                            ))
+                        },
+                    )
+                    .optional()?;
+                if let Some((
+                    paper_id,
+                    candidate_kind,
+                    from_kind,
+                    normalized_from_label,
+                    to_kind,
+                    normalized_to_label,
+                )) = edge_context
+                {
+                    if candidate_kind == "edge" {
+                        for (kind_opt, label_opt) in [
+                            (from_kind.as_deref(), normalized_from_label.as_deref()),
+                            (to_kind.as_deref(), normalized_to_label.as_deref()),
+                        ] {
+                            let (Some(kind), Some(normalized_label)) = (kind_opt, label_opt) else {
+                                continue;
+                            };
+                            tx.execute(
+                                "UPDATE extraction_candidates
+                                 SET review_status = ?1
+                                 WHERE paper_id = ?2
+                                   AND candidate_kind = 'node'
+                                   AND entity_kind = ?3
+                                   AND normalized_label = ?4",
+                                params![
+                                    APPROVED_STATUS,
+                                    paper_id,
+                                    kind,
+                                    normalized_label
+                                ],
+                            )?;
+                            tx.execute(
+                                "UPDATE review_queue
+                                 SET status = ?1
+                                 WHERE candidate_id IN (
+                                   SELECT candidate_id
+                                   FROM extraction_candidates
+                                   WHERE paper_id = ?2
+                                     AND candidate_kind = 'node'
+                                     AND entity_kind = ?3
+                                     AND normalized_label = ?4
+                                 )",
+                                params![
+                                    REVIEW_DONE_STATUS,
+                                    paper_id,
+                                    kind,
+                                    normalized_label
+                                ],
+                            )?;
+                        }
+                    }
+                }
+            }
             affected += 1;
         }
         tx.commit()?;
@@ -1599,6 +2338,35 @@ fn create_schema(conn: &mut SqliteConnection) -> Result<()> {
             FOREIGN KEY (candidate_id) REFERENCES extraction_candidates(candidate_id) ON DELETE CASCADE,
             FOREIGN KEY (paper_id) REFERENCES papers(paper_id) ON DELETE CASCADE
         );
+        CREATE TABLE IF NOT EXISTS extraction_diagnostics (
+            paper_id TEXT PRIMARY KEY,
+            relation_map_unit_count INTEGER NOT NULL,
+            candidate_conflict_count INTEGER NOT NULL,
+            pipeline_summary_empty_count INTEGER NOT NULL,
+            pipeline_name_empty_count INTEGER NOT NULL,
+            edge_candidate_count INTEGER NOT NULL,
+            edge_validated_count INTEGER NOT NULL,
+            edge_validate_fallback_count INTEGER NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (paper_id) REFERENCES papers(paper_id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS extraction_unit_results (
+            paper_id TEXT NOT NULL,
+            unit_id TEXT NOT NULL,
+            chunk_id TEXT NOT NULL,
+            candidate_status TEXT NOT NULL,
+            candidate_conflict_count INTEGER NOT NULL,
+            pipeline_summary_empty INTEGER NOT NULL,
+            pipeline_name_empty INTEGER NOT NULL,
+            edge_candidate_count INTEGER NOT NULL,
+            edge_validated_count INTEGER NOT NULL,
+            edge_validate_used_fallback INTEGER NOT NULL,
+            nodes_json TEXT NOT NULL,
+            edges_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (paper_id, unit_id),
+            FOREIGN KEY (paper_id) REFERENCES papers(paper_id) ON DELETE CASCADE
+        );
         CREATE TABLE IF NOT EXISTS graph_nodes (
             node_id TEXT PRIMARY KEY,
             kind TEXT NOT NULL,
@@ -1689,6 +2457,7 @@ fn create_schema(conn: &mut SqliteConnection) -> Result<()> {
         "UPDATE extraction_candidates
          SET entity_kind = CASE
              WHEN from_kind = 'task' AND to_kind = 'pipeline' THEN 'task_pipeline'
+             WHEN from_kind = 'task' AND to_kind = 'module' THEN 'task_module'
              WHEN from_kind = 'pipeline' AND to_kind = 'module' THEN 'pipeline_module'
              WHEN from_kind = 'challenge' AND to_kind = 'insight' THEN 'challenge_insight'
              ELSE entity_kind
@@ -1696,6 +2465,18 @@ fn create_schema(conn: &mut SqliteConnection) -> Result<()> {
          WHERE candidate_kind = 'edge' AND (entity_kind IS NULL OR entity_kind = '')",
         [],
     )?;
+    conn.execute(
+        "UPDATE papers
+         SET extraction_status = ?1
+         WHERE extraction_status = ?2
+           AND EXISTS (
+             SELECT 1
+             FROM extraction_candidates
+             WHERE extraction_candidates.paper_id = papers.paper_id
+           )",
+        params![REVIEW_PENDING_STATUS, PENDING_STATUS],
+    )
+    .ok();
     set_meta(conn, "schema_version", SCHEMA_VERSION)?;
     Ok(())
 }
@@ -1704,63 +2485,128 @@ async fn ingest_single_document(
     app: &AppHandle,
     window: &Window,
     document: &FileDocument,
+    extraction_mode: ExtractionMode,
+    provider: &ExtractionProviderRuntime,
     extract_fast_model: &str,
     extract_fallback_model: &str,
+    extract_pipeline_summary_model: &str,
+    extract_pipeline_name_model: &str,
+    extract_edge_model: &str,
+    extract_edge_validate_model: &str,
 ) -> Result<()> {
     let conn = open_sqlite(app)?;
-    delete_paper(&conn, &document.paper_id, &document.path)?;
+    let resume_state = load_resume_paper_state(&conn, document)?;
+    let has_any_checkpoint = resume_state
+        .as_ref()
+        .map(|state| state.has_checkpoint)
+        .unwrap_or(false);
+    let has_completed_extraction = resume_state
+        .as_ref()
+        .map(|state| state.extraction_status == REVIEW_PENDING_STATUS)
+        .unwrap_or(false);
+    if !has_any_checkpoint && !has_completed_extraction {
+        delete_paper(&conn, &document.paper_id, &document.path)?;
+    }
     let sections = detect_sections(document);
     let paper_type = classify_paper_type(document, &sections);
     let now = cards::current_timestamp_iso_utc();
-    conn.execute(
-        "INSERT INTO papers (paper_id, path, title, paper_type, content_hash, index_status, extraction_status, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
-        params![
-            document.paper_id,
-            document.path,
-            document.title,
-            paper_type,
-            document.content_hash,
-            PENDING_STATUS,
-            PENDING_STATUS,
-            now,
-        ],
-    )?;
-
-    for page in &document.pages {
+    if has_any_checkpoint || has_completed_extraction {
         conn.execute(
-            "INSERT INTO pages (page_id, paper_id, page_number, content, visual_note)
-             VALUES (?1, ?2, ?3, ?4, NULL)",
+            "UPDATE papers
+             SET title = ?2,
+                 paper_type = ?3,
+                 content_hash = ?4,
+                 index_status = ?5,
+                 extraction_status = ?6,
+                 updated_at = ?7
+             WHERE paper_id = ?1",
             params![
-                stable_id("page", format!("{}:{}", document.paper_id, page.page_number)),
                 document.paper_id,
-                page.page_number,
-                page.content,
+                document.title,
+                paper_type,
+                document.content_hash,
+                PENDING_STATUS,
+                PENDING_STATUS,
+                now,
             ],
         )?;
-    }
-
-    for section in &sections {
+    } else {
         conn.execute(
-            "INSERT INTO sections (section_id, paper_id, heading, start_page, end_page, content)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO papers (paper_id, path, title, paper_type, content_hash, index_status, extraction_status, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
             params![
-                section.section_id,
                 document.paper_id,
-                section.heading,
-                section.start_page,
-                section.end_page,
-                section.content,
+                document.path,
+                document.title,
+                paper_type,
+                document.content_hash,
+                PENDING_STATUS,
+                PENDING_STATUS,
+                now,
             ],
         )?;
+
+        for page in &document.pages {
+            conn.execute(
+                "INSERT INTO pages (page_id, paper_id, page_number, content, visual_note)
+                 VALUES (?1, ?2, ?3, ?4, NULL)",
+                params![
+                    stable_id("page", format!("{}:{}", document.paper_id, page.page_number)),
+                    document.paper_id,
+                    page.page_number,
+                    page.content,
+                ],
+            )?;
+        }
+
+        for section in &sections {
+            conn.execute(
+                "INSERT INTO sections (section_id, paper_id, heading, start_page, end_page, content)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    section.section_id,
+                    document.paper_id,
+                    section.heading,
+                    section.start_page,
+                    section.end_page,
+                    section.content,
+                ],
+            )?;
+        }
     }
 
     drop(conn);
 
-    let seed_units = build_seed_map_units(document, &sections)
+    let mut seed_units = build_seed_map_units(document, &sections)
         .into_iter()
         .filter(|unit| should_extract_map_unit(unit))
         .collect::<Vec<_>>();
+    if seed_units.is_empty() {
+        if let Some(unit) = build_front_matter_seed_unit(document) {
+            if should_extract_map_unit(&unit) {
+                seed_units.push(unit);
+            }
+        }
+    }
+    let mut seed_context = LocalExtraction::default();
+    if !seed_units.is_empty() {
+        let mut seed_candidates = Vec::new();
+        for unit in &seed_units {
+            let (candidate, _) = extract_candidate_with_fallback(
+                unit,
+                document,
+                provider,
+                extract_fast_model,
+                extract_fallback_model,
+            )
+            .await;
+            let (candidate, _) = resolve_candidate_kind_conflicts(candidate);
+            if candidate.item_count() > 0 {
+                seed_candidates.push(candidate);
+            }
+        }
+        seed_context = build_seed_context(&seed_candidates);
+    }
     let map_units = build_map_units(document, &sections)
         .into_iter()
         .filter(|unit| should_extract_map_unit(unit))
@@ -1769,13 +2615,54 @@ async fn ingest_single_document(
     combined_units.extend(seed_units);
     combined_units.extend(map_units);
     let map_unit_total = combined_units.len().max(1);
+    let conn = open_sqlite(app)?;
+    let persisted_units = if has_any_checkpoint {
+        load_persisted_unit_extractions(&conn, &document.paper_id)?
+    } else {
+        HashMap::new()
+    };
+    let completed_unit_count = persisted_units.len();
+    let candidates_already_materialized =
+        has_materialized_candidates(&conn, &document.paper_id)?;
+    let diagnostics_already_materialized =
+        has_persisted_extraction_diagnostics(&conn, &document.paper_id)?;
+    let extraction_already_complete = has_completed_extraction
+        && completed_unit_count >= map_unit_total
+        && candidates_already_materialized
+        && diagnostics_already_materialized;
+    if extraction_already_complete {
+        return Ok(());
+    }
+    let should_finalize_from_checkpoint = has_any_checkpoint
+        && completed_unit_count >= map_unit_total
+        && (!candidates_already_materialized || !diagnostics_already_materialized);
+    if should_finalize_from_checkpoint {
+        emit_progress(
+            window,
+            IngestProgress::new(
+                "canonicalize",
+                0,
+                1,
+                format!(
+                    "检测到完整 checkpoint，正在从已保存抽取结果恢复候选与边：{}",
+                    document.title
+                ),
+            ),
+        );
+    }
     let mut prepared_units = Vec::with_capacity(combined_units.len());
     for unit in &combined_units {
-        let conn = open_sqlite(app)?;
         let chunk_id = stable_id("chunk", format!("{}:{}", document.paper_id, unit.unit_id));
         conn.execute(
             "INSERT INTO chunks (chunk_id, paper_id, section_id, unit_kind, page_start, page_end, content, embedding_status, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
+             ON CONFLICT(chunk_id) DO UPDATE SET
+               section_id = excluded.section_id,
+               unit_kind = excluded.unit_kind,
+               page_start = excluded.page_start,
+               page_end = excluded.page_end,
+               content = excluded.content,
+               updated_at = excluded.updated_at",
             params![
                 chunk_id,
                 document.paper_id,
@@ -1789,7 +2676,7 @@ async fn ingest_single_document(
             ],
         )?;
         conn.execute(
-            "INSERT INTO chunk_fts (chunk_id, paper_id, text) VALUES (?1, ?2, ?3)",
+            "INSERT OR REPLACE INTO chunk_fts (chunk_id, paper_id, text) VALUES (?1, ?2, ?3)",
             params![chunk_id, document.paper_id, unit.content],
         )?;
         prepared_units.push((unit.clone(), chunk_id));
@@ -1797,28 +2684,95 @@ async fn ingest_single_document(
 
     let mut all_nodes = Vec::new();
     let mut all_edges = Vec::new();
-    let mut candidate_completed_units = 0usize;
+    let mut candidate_completed_units = persisted_units.len();
     let mut no_candidate_count = 0usize;
     let mut candidate_fallback_success_count = 0usize;
     let mut candidate_double_failure_count = 0usize;
-    let mut relation_completed_units = 0usize;
-    let mut relation_fallback_count = 0usize;
-    let extraction_stream = stream::iter(prepared_units.into_iter().map(|(unit, chunk_id)| {
+    let mut pipeline_summary_completed_units = 0usize;
+    let mut pipeline_name_completed_units = 0usize;
+    let mut edge_completed_units = 0usize;
+    let mut edge_validate_completed_units = 0usize;
+    let mut candidate_conflict_count = 0usize;
+    let mut pipeline_summary_empty_count = 0usize;
+    let mut pipeline_name_empty_count = 0usize;
+    let mut edge_candidate_count = 0usize;
+    let mut edge_validated_count = 0usize;
+    let mut edge_validate_fallback_count = 0usize;
+    for persisted in persisted_units.values() {
+        all_nodes.extend(persisted.nodes.clone());
+        all_edges.extend(persisted.edges.clone());
+        candidate_conflict_count += persisted.diagnostics.candidate_conflict_count;
+        if persisted.diagnostics.pipeline_summary_empty {
+            pipeline_summary_empty_count += 1;
+        }
+        if persisted.diagnostics.pipeline_name_empty {
+            pipeline_name_empty_count += 1;
+        }
+        edge_candidate_count += persisted.diagnostics.edge_candidate_count;
+        edge_validated_count += persisted.diagnostics.edge_validated_count;
+        if persisted.diagnostics.edge_validate_used_fallback {
+            edge_validate_fallback_count += 1;
+        }
+        match persisted.candidate_status {
+            CandidatePhaseStatus::NoCandidate => no_candidate_count += 1,
+            CandidatePhaseStatus::FallbackSuccess => candidate_fallback_success_count += 1,
+            CandidatePhaseStatus::DoubleFailure => candidate_double_failure_count += 1,
+            CandidatePhaseStatus::FastHit => {}
+        }
+        if !persisted.nodes.is_empty() && extraction_mode == ExtractionMode::Balanced {
+            pipeline_summary_completed_units += 1;
+            pipeline_name_completed_units += 1;
+            edge_completed_units += 1;
+            edge_validate_completed_units += 1;
+        }
+    }
+    let pending_units = if should_finalize_from_checkpoint {
+        Vec::new()
+    } else {
+        prepared_units
+            .into_iter()
+            .filter(|(unit, _)| !persisted_units.contains_key(&unit.unit_id))
+            .collect::<Vec<_>>()
+    };
+    let extraction_stream = stream::iter(pending_units.into_iter().map(|(unit, chunk_id)| {
         let document = document.clone();
+        let seed_context = seed_context.clone();
+        let paper_type = paper_type.clone();
+        let provider = provider.clone();
         let fast_model = extract_fast_model.to_string();
         let fallback_model = extract_fallback_model.to_string();
+        let pipeline_summary_model = extract_pipeline_summary_model.to_string();
+        let pipeline_name_model = extract_pipeline_name_model.to_string();
+        let edge_model = extract_edge_model.to_string();
+        let edge_validate_model = extract_edge_validate_model.to_string();
         async move {
-            let (local, candidate_status, used_relation_fallback, did_relation_extract) =
-                extract_map_unit(&unit, &document, &fast_model, &fallback_model)
-                    .await
-                    .unwrap_or((LocalExtraction::default(), CandidatePhaseStatus::DoubleFailure, false, false));
+            let use_seed_context = !unit.unit_kind.contains("seed");
+            let (local, candidate_status, diagnostics) = extract_map_unit(
+                &unit,
+                &document,
+                &paper_type,
+                use_seed_context.then_some(&seed_context),
+                extraction_mode,
+                &provider,
+                &fast_model,
+                &fallback_model,
+                &pipeline_summary_model,
+                &pipeline_name_model,
+                &edge_model,
+                &edge_validate_model,
+            )
+            .await
+            .unwrap_or((
+                LocalExtraction::default(),
+                CandidatePhaseStatus::DoubleFailure,
+                ExtractionDiagnostics::default(),
+            ));
             (
                 unit,
                 chunk_id,
                 local,
                 candidate_status,
-                used_relation_fallback,
-                did_relation_extract,
+                diagnostics,
             )
         }
     }))
@@ -1830,11 +2784,11 @@ async fn ingest_single_document(
         chunk_id,
         local,
         candidate_status,
-        used_relation_fallback,
-        did_relation_extract,
+        diagnostics,
     )) = extraction_stream.next().await
     {
         candidate_completed_units += 1;
+        candidate_conflict_count += diagnostics.candidate_conflict_count;
         match candidate_status {
             CandidatePhaseStatus::NoCandidate => {
                 no_candidate_count += 1;
@@ -1869,60 +2823,513 @@ async fn ingest_single_document(
                 candidate_double_failure_count,
             ),
         );
-        if did_relation_extract {
-            relation_completed_units += 1;
-            if used_relation_fallback {
-                relation_fallback_count += 1;
+        if local.node_count() > 0 && extraction_mode == ExtractionMode::Balanced {
+            pipeline_summary_completed_units += 1;
+            if diagnostics.pipeline_summary_empty {
+                pipeline_summary_empty_count += 1;
             }
             emit_progress(
                 window,
                 IngestProgress::new(
-                    "relation_extract",
-                    relation_completed_units,
+                    "pipeline_summarize",
+                    pipeline_summary_completed_units,
                     map_unit_total,
                     format!(
-                        "正在补全关系与 Pipeline（{}/{}，回退 {} 次）：{}",
-                        relation_completed_units,
+                        "正在总结 Pipeline 骨架（{}/{}，候选冲突 {}，summary 为空 {}）：{}",
+                        pipeline_summary_completed_units,
                         map_unit_total,
-                        relation_fallback_count,
+                        candidate_conflict_count,
+                        pipeline_summary_empty_count,
+                        document.title
+                    ),
+                ),
+            );
+            pipeline_name_completed_units += 1;
+            if diagnostics.pipeline_name_empty {
+                pipeline_name_empty_count += 1;
+            }
+            emit_progress(
+                window,
+                IngestProgress::new(
+                    "pipeline_name_extract",
+                    pipeline_name_completed_units,
+                    map_unit_total,
+                    format!(
+                        "正在提取 Pipeline 名称（{}/{}，空命名 {}）：{}",
+                        pipeline_name_completed_units,
+                        map_unit_total,
+                        pipeline_name_empty_count,
+                        document.title
+                    ),
+                ),
+            );
+            edge_completed_units += 1;
+            edge_candidate_count += diagnostics.edge_candidate_count;
+            emit_progress(
+                window,
+                IngestProgress::new(
+                    "edge_extract",
+                    edge_completed_units,
+                    map_unit_total,
+                    format!(
+                        "正在抽取 Edge（{}/{}，候选边累计 {}）：{}",
+                        edge_completed_units,
+                        map_unit_total,
+                        edge_candidate_count,
+                        document.title
+                    ),
+                ),
+            );
+            edge_validate_completed_units += 1;
+            edge_validated_count += diagnostics.edge_validated_count;
+            if diagnostics.edge_validate_used_fallback {
+                edge_validate_fallback_count += 1;
+            }
+            emit_progress(
+                window,
+                IngestProgress::new(
+                    "edge_validate",
+                    edge_validate_completed_units,
+                    map_unit_total,
+                    format!(
+                        "正在校验 Edge（{}/{}，保留边累计 {}，校验回退 {}）：{}",
+                        edge_validate_completed_units,
+                        map_unit_total,
+                        edge_validated_count,
+                        edge_validate_fallback_count,
                         document.title
                     ),
                 ),
             );
         }
         let (nodes, edges) = reduce_local_extraction(document, &unit, &chunk_id, local);
+        let conn = open_sqlite(app)?;
+        persist_unit_extraction_result(
+            &conn,
+            &document.paper_id,
+            &unit.unit_id,
+            &chunk_id,
+            candidate_status,
+            &diagnostics,
+            &nodes,
+            &edges,
+        )?;
         all_nodes.extend(nodes);
         all_edges.extend(edges);
     }
 
-    emit_progress(
-        window,
-        IngestProgress::new(
-            "canonicalize",
-            1,
-            1,
-            format!("正在归并候选概念：{}", document.title),
-        ),
-    );
-    let (canonical_nodes, canonical_edges) =
+    let (canonical_nodes, canonical_edges) = if extraction_mode == ExtractionMode::Balanced {
+        emit_progress(
+            window,
+            IngestProgress::new(
+                "canonicalize",
+                1,
+                1,
+                format!("正在归并候选概念：{}", document.title),
+            ),
+        );
         canonicalize_candidates_small(
+            provider,
             extract_fallback_model,
             &document.title,
             all_nodes,
             all_edges,
         )
         .await
-        .unwrap_or_else(|_| (Vec::new(), Vec::new()));
+        .unwrap_or_else(|_| (Vec::new(), Vec::new()))
+    } else {
+        (all_nodes, all_edges)
+    };
     let (canonical_nodes, canonical_edges) =
         apply_candidate_budget(&paper_type, canonical_nodes, canonical_edges);
     let conn = open_sqlite(app)?;
     persist_candidates(&conn, document, &canonical_nodes, &canonical_edges)?;
+    persist_extraction_diagnostics(
+        &conn,
+        document,
+        map_unit_total,
+        candidate_conflict_count,
+        pipeline_summary_empty_count,
+        pipeline_name_empty_count,
+        edge_candidate_count,
+        edge_validated_count,
+        edge_validate_fallback_count,
+    )?;
     conn.execute(
         "UPDATE papers SET extraction_status = ?2, updated_at = ?3 WHERE paper_id = ?1",
         params![
             document.paper_id,
             REVIEW_PENDING_STATUS,
             cards::current_timestamp_iso_utc()
+        ],
+    )?;
+    Ok(())
+}
+
+fn persist_extraction_diagnostics(
+    conn: &SqliteConnection,
+    document: &FileDocument,
+    relation_map_unit_count: usize,
+    candidate_conflict_count: usize,
+    pipeline_summary_empty_count: usize,
+    pipeline_name_empty_count: usize,
+    edge_candidate_count: usize,
+    edge_validated_count: usize,
+    edge_validate_fallback_count: usize,
+) -> Result<()> {
+    let now = cards::current_timestamp_iso_utc();
+    conn.execute(
+        "INSERT INTO extraction_diagnostics (
+            paper_id,
+            relation_map_unit_count,
+            candidate_conflict_count,
+            pipeline_summary_empty_count,
+            pipeline_name_empty_count,
+            edge_candidate_count,
+            edge_validated_count,
+            edge_validate_fallback_count,
+            updated_at
+         )
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT(paper_id) DO UPDATE SET
+            relation_map_unit_count = excluded.relation_map_unit_count,
+            candidate_conflict_count = excluded.candidate_conflict_count,
+            pipeline_summary_empty_count = excluded.pipeline_summary_empty_count,
+            pipeline_name_empty_count = excluded.pipeline_name_empty_count,
+            edge_candidate_count = excluded.edge_candidate_count,
+            edge_validated_count = excluded.edge_validated_count,
+            edge_validate_fallback_count = excluded.edge_validate_fallback_count,
+            updated_at = excluded.updated_at",
+        params![
+            document.paper_id,
+            relation_map_unit_count as i64,
+            candidate_conflict_count as i64,
+            pipeline_summary_empty_count as i64,
+            pipeline_name_empty_count as i64,
+            edge_candidate_count as i64,
+            edge_validated_count as i64,
+            edge_validate_fallback_count as i64,
+            now
+        ],
+    )?;
+    Ok(())
+}
+
+fn load_resume_paper_state(
+    conn: &SqliteConnection,
+    document: &FileDocument,
+) -> Result<Option<ResumePaperState>> {
+    conn.query_row(
+        "SELECT index_status,
+                extraction_status,
+                EXISTS(
+                    SELECT 1
+                    FROM extraction_unit_results
+                    WHERE paper_id = papers.paper_id
+                ) AS has_checkpoint
+         FROM papers
+         WHERE (paper_id = ?1 OR path = ?2) AND content_hash = ?3
+         LIMIT 1",
+        params![document.paper_id, document.path, document.content_hash],
+        |row| {
+            Ok(ResumePaperState {
+                index_status: row.get(0)?,
+                extraction_status: row.get(1)?,
+                has_checkpoint: row.get::<_, i64>(2).unwrap_or(0) != 0,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn load_persisted_unit_extractions(
+    conn: &SqliteConnection,
+    paper_id: &str,
+) -> Result<HashMap<String, PersistedUnitExtraction>> {
+    let mut stmt = conn.prepare(
+        "SELECT unit_id,
+                chunk_id,
+                candidate_status,
+                candidate_conflict_count,
+                pipeline_summary_empty,
+                pipeline_name_empty,
+                edge_candidate_count,
+                edge_validated_count,
+                edge_validate_used_fallback,
+                nodes_json,
+                edges_json
+         FROM extraction_unit_results
+         WHERE paper_id = ?1",
+    )?;
+    let rows = stmt.query_map([paper_id], |row| {
+        let nodes_json: String = row.get(9)?;
+        let edges_json: String = row.get(10)?;
+        Ok(PersistedUnitExtraction {
+            unit_id: row.get(0)?,
+            chunk_id: row.get(1)?,
+            candidate_status: CandidatePhaseStatus::from_str(&row.get::<_, String>(2)?),
+            diagnostics: ExtractionDiagnostics {
+                candidate_conflict_count: row.get::<_, i64>(3).unwrap_or(0).max(0) as usize,
+                pipeline_summary_empty: row.get::<_, i64>(4).unwrap_or(0) != 0,
+                pipeline_name_empty: row.get::<_, i64>(5).unwrap_or(0) != 0,
+                edge_candidate_count: row.get::<_, i64>(6).unwrap_or(0).max(0) as usize,
+                edge_validated_count: row.get::<_, i64>(7).unwrap_or(0).max(0) as usize,
+                edge_validate_used_fallback: row.get::<_, i64>(8).unwrap_or(0) != 0,
+            },
+            nodes: serde_json::from_str(&nodes_json).unwrap_or_default(),
+            edges: serde_json::from_str(&edges_json).unwrap_or_default(),
+        })
+    })?;
+    let mut results = HashMap::new();
+    for row in rows {
+        let entry = row?;
+        results.insert(entry.unit_id.clone(), entry);
+    }
+    Ok(results)
+}
+
+fn has_materialized_candidates(conn: &SqliteConnection, paper_id: &str) -> Result<bool> {
+    let exists = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1
+            FROM extraction_candidates
+            WHERE paper_id = ?1
+        )",
+        [paper_id],
+        |row| row.get::<_, i64>(0),
+    )?;
+    Ok(exists != 0)
+}
+
+fn has_persisted_extraction_diagnostics(conn: &SqliteConnection, paper_id: &str) -> Result<bool> {
+    let exists = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1
+            FROM extraction_diagnostics
+            WHERE paper_id = ?1
+        )",
+        [paper_id],
+        |row| row.get::<_, i64>(0),
+    )?;
+    Ok(exists != 0)
+}
+
+fn reduce_edge_candidates_for_backfill(
+    edge_candidates: Vec<ReducedEdgeCandidate>,
+) -> Vec<ReducedEdgeCandidate> {
+    let mut grouped_edges: HashMap<(String, String, String), AggregatedEdgeCandidate> =
+        HashMap::new();
+    for edge in edge_candidates {
+        let key = (
+            edge.edge_type.clone(),
+            edge.normalized_from_label.clone(),
+            edge.normalized_to_label.clone(),
+        );
+        let entry = grouped_edges.entry(key).or_insert_with(|| AggregatedEdgeCandidate {
+            edge_type: edge.edge_type.clone(),
+            from_kind: edge.from_kind.clone(),
+            from_label: edge.from_label.clone(),
+            normalized_from_label: edge.normalized_from_label.clone(),
+            to_kind: edge.to_kind.clone(),
+            to_label: edge.to_label.clone(),
+            normalized_to_label: edge.normalized_to_label.clone(),
+            confidence_sum: 0.0,
+            confidence_count: 0,
+            paper_ids: HashSet::new(),
+            evidence: Vec::new(),
+        });
+        entry.confidence_sum += edge.confidence;
+        entry.confidence_count += 1;
+        entry.paper_ids.insert(edge.paper_id.clone());
+        entry.evidence.extend(edge.evidence);
+    }
+
+    grouped_edges
+        .into_values()
+        .map(|entry| ReducedEdgeCandidate {
+            paper_id: entry.paper_ids.iter().next().cloned().unwrap_or_default(),
+            edge_type: entry.edge_type,
+            from_kind: entry.from_kind,
+            from_label: entry.from_label,
+            normalized_from_label: entry.normalized_from_label,
+            to_kind: entry.to_kind,
+            to_label: entry.to_label,
+            normalized_to_label: entry.normalized_to_label,
+            confidence: if entry.confidence_count == 0 {
+                0.0
+            } else {
+                entry.confidence_sum / entry.confidence_count as f32
+            },
+            evidence: entry.evidence,
+        })
+        .filter(|candidate| candidate.confidence >= REDUCE_EDGE_MIN_CONFIDENCE)
+        .collect()
+}
+
+fn backfill_missing_edge_candidates_from_checkpoints(conn: &SqliteConnection) -> Result<usize> {
+    let mut stmt = conn.prepare(
+        "SELECT p.paper_id, p.path, p.title
+         FROM papers p
+         WHERE EXISTS (
+             SELECT 1
+             FROM extraction_unit_results eur
+             WHERE eur.paper_id = p.paper_id
+         )
+           AND NOT EXISTS (
+             SELECT 1
+             FROM extraction_candidates ec
+             WHERE ec.paper_id = p.paper_id
+               AND ec.candidate_kind = 'edge'
+         )",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    let mut repaired = 0usize;
+    for row in rows {
+        let (paper_id, path, title) = row?;
+        let persisted_units = load_persisted_unit_extractions(conn, &paper_id)?;
+        let reduced_edges = reduce_edge_candidates_for_backfill(
+            persisted_units
+                .into_values()
+                .flat_map(|unit| unit.edges.into_iter())
+                .collect(),
+        );
+        if reduced_edges.is_empty() {
+            continue;
+        }
+        let document = FileDocument {
+            paper_id,
+            path,
+            title,
+            pages: Vec::new(),
+            full_text: String::new(),
+            content_hash: String::new(),
+        };
+        persist_candidates(conn, &document, &[], &reduced_edges)?;
+        repaired += 1;
+    }
+    Ok(repaired)
+}
+
+fn repair_approved_edge_endpoint_nodes(conn: &SqliteConnection) -> Result<usize> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT
+                edge.paper_id,
+                edge.from_kind,
+                edge.normalized_from_label,
+                edge.to_kind,
+                edge.normalized_to_label
+         FROM extraction_candidates edge
+         WHERE edge.candidate_kind = 'edge'
+           AND edge.review_status = ?1",
+    )?;
+    let rows = stmt.query_map([APPROVED_STATUS], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+        ))
+    })?;
+    let mut repaired = 0usize;
+    for row in rows {
+        let (paper_id, from_kind, from_label, to_kind, to_label) = row?;
+        for (kind, normalized_label) in [(from_kind, from_label), (to_kind, to_label)] {
+            let changed = conn.execute(
+                "UPDATE extraction_candidates
+                 SET review_status = ?1
+                 WHERE paper_id = ?2
+                   AND candidate_kind = 'node'
+                   AND entity_kind = ?3
+                   AND normalized_label = ?4
+                   AND review_status != ?1",
+                params![APPROVED_STATUS, paper_id, kind, normalized_label],
+            )?;
+            if changed > 0 {
+                repaired += changed;
+            }
+            conn.execute(
+                "UPDATE review_queue
+                 SET status = ?1
+                 WHERE candidate_id IN (
+                   SELECT candidate_id
+                   FROM extraction_candidates
+                   WHERE paper_id = ?2
+                     AND candidate_kind = 'node'
+                     AND entity_kind = ?3
+                     AND normalized_label = ?4
+                 )",
+                params![REVIEW_DONE_STATUS, paper_id, kind, normalized_label],
+            )?;
+        }
+    }
+    if repaired > 0 {
+        materialize_graph_from_approved_candidates(conn)?;
+        materialize_stats(conn)?;
+    }
+    Ok(repaired)
+}
+
+fn persist_unit_extraction_result(
+    conn: &SqliteConnection,
+    paper_id: &str,
+    unit_id: &str,
+    chunk_id: &str,
+    candidate_status: CandidatePhaseStatus,
+    diagnostics: &ExtractionDiagnostics,
+    nodes: &[ReducedNodeCandidate],
+    edges: &[ReducedEdgeCandidate],
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO extraction_unit_results (
+            paper_id,
+            unit_id,
+            chunk_id,
+            candidate_status,
+            candidate_conflict_count,
+            pipeline_summary_empty,
+            pipeline_name_empty,
+            edge_candidate_count,
+            edge_validated_count,
+            edge_validate_used_fallback,
+            nodes_json,
+            edges_json,
+            updated_at
+         )
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+         ON CONFLICT(paper_id, unit_id) DO UPDATE SET
+            chunk_id = excluded.chunk_id,
+            candidate_status = excluded.candidate_status,
+            candidate_conflict_count = excluded.candidate_conflict_count,
+            pipeline_summary_empty = excluded.pipeline_summary_empty,
+            pipeline_name_empty = excluded.pipeline_name_empty,
+            edge_candidate_count = excluded.edge_candidate_count,
+            edge_validated_count = excluded.edge_validated_count,
+            edge_validate_used_fallback = excluded.edge_validate_used_fallback,
+            nodes_json = excluded.nodes_json,
+            edges_json = excluded.edges_json,
+            updated_at = excluded.updated_at",
+        params![
+            paper_id,
+            unit_id,
+            chunk_id,
+            candidate_status.as_str(),
+            diagnostics.candidate_conflict_count as i64,
+            if diagnostics.pipeline_summary_empty { 1 } else { 0 },
+            if diagnostics.pipeline_name_empty { 1 } else { 0 },
+            diagnostics.edge_candidate_count as i64,
+            diagnostics.edge_validated_count as i64,
+            if diagnostics.edge_validate_used_fallback { 1 } else { 0 },
+            serde_json::to_string(nodes)?,
+            serde_json::to_string(edges)?,
+            cards::current_timestamp_iso_utc(),
         ],
     )?;
     Ok(())
@@ -1965,7 +3372,15 @@ fn reduce_local_extraction(
                 label: label.to_string(),
                 normalized_label: normalize_label(label),
                 aliases: vec![label.to_string()],
-                description: item.summary.unwrap_or_default(),
+                description: match (
+                    item.summary.filter(|value| !value.trim().is_empty()),
+                    item.kind_rationale.filter(|value| !value.trim().is_empty()),
+                ) {
+                    (Some(summary), Some(rationale)) => format!("{} | {}", summary.trim(), rationale.trim()),
+                    (Some(summary), None) => summary,
+                    (None, Some(rationale)) => rationale,
+                    (None, None) => String::new(),
+                },
                 confidence,
                 evidence: vec![EvidenceRef {
                     paper_id: document.paper_id.clone(),
@@ -2041,6 +3456,7 @@ fn reduce_local_extraction(
             }
         };
     push_edges("task_pipeline", "task", "pipeline", local.task_pipeline_pairs);
+    push_edges("task_module", "task", "module", local.task_module_pairs);
     push_edges(
         "pipeline_module",
         "pipeline",
@@ -2057,6 +3473,7 @@ fn reduce_local_extraction(
 }
 
 async fn canonicalize_candidates_small(
+    provider: &ExtractionProviderRuntime,
     model: &str,
     paper_title: &str,
     node_candidates: Vec<ReducedNodeCandidate>,
@@ -2135,7 +3552,7 @@ async fn canonicalize_candidates_small(
             },
             evidence: entry.evidence,
         })
-        .filter(|candidate| candidate.confidence >= REDUCE_MIN_CONFIDENCE)
+        .filter(|candidate| candidate.confidence >= REDUCE_NODE_MIN_CONFIDENCE)
         .collect::<Vec<_>>();
 
     if node_list.len() > 8 {
@@ -2153,6 +3570,7 @@ async fn canonicalize_candidates_small(
             }).collect::<Vec<_>>()
         });
         if let Ok(value) = run_structured_json(
+            provider,
             model,
             "You are a careful research concept normalizer. Merge only obvious alias variants and preserve technical distinctions.",
             &format!(
@@ -2247,7 +3665,7 @@ async fn canonicalize_candidates_small(
             },
             evidence: entry.evidence,
         })
-        .filter(|candidate| candidate.confidence >= REDUCE_MIN_CONFIDENCE)
+        .filter(|candidate| candidate.confidence >= REDUCE_EDGE_MIN_CONFIDENCE)
         .collect::<Vec<_>>();
 
     Ok((node_list, edge_list))
@@ -2273,7 +3691,20 @@ fn persist_candidates(
              (candidate_id, paper_id, map_unit_id, candidate_kind, entity_kind, label, normalized_label, aliases_json,
               description, confidence, from_kind, from_label, normalized_from_label, to_kind, to_label, normalized_to_label,
               evidence_json, review_status, created_at, updated_at)
-             VALUES (?1, ?2, NULL, 'node', ?3, ?4, ?5, ?6, ?7, ?8, NULL, NULL, NULL, NULL, NULL, NULL, ?9, ?10, ?11, ?11)",
+             VALUES (?1, ?2, NULL, 'node', ?3, ?4, ?5, ?6, ?7, ?8, NULL, NULL, NULL, NULL, NULL, NULL, ?9, ?10, ?11, ?11)
+             ON CONFLICT(candidate_id) DO UPDATE SET
+               entity_kind = excluded.entity_kind,
+               label = excluded.label,
+               normalized_label = excluded.normalized_label,
+               aliases_json = excluded.aliases_json,
+               description = excluded.description,
+               confidence = MAX(extraction_candidates.confidence, excluded.confidence),
+               evidence_json = excluded.evidence_json,
+               review_status = CASE
+                 WHEN extraction_candidates.review_status = 'done' THEN extraction_candidates.review_status
+                 ELSE excluded.review_status
+               END,
+               updated_at = excluded.updated_at",
             params![
                 candidate_id,
                 document.paper_id,
@@ -2290,7 +3721,13 @@ fn persist_candidates(
         )?;
         conn.execute(
             "INSERT INTO review_queue (review_id, candidate_id, paper_id, status, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+             ON CONFLICT(candidate_id) DO UPDATE SET
+               status = CASE
+                 WHEN review_queue.status = 'done' THEN review_queue.status
+                 ELSE excluded.status
+               END,
+               updated_at = excluded.updated_at",
             params![
                 stable_id("review", candidate_id.clone()),
                 candidate_id,
@@ -2317,7 +3754,22 @@ fn persist_candidates(
              (candidate_id, paper_id, map_unit_id, candidate_kind, entity_kind, label, normalized_label, aliases_json,
               description, confidence, from_kind, from_label, normalized_from_label, to_kind, to_label, normalized_to_label,
               evidence_json, review_status, created_at, updated_at)
-             VALUES (?1, ?2, NULL, 'edge', ?3, NULL, NULL, '[]', NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)",
+             VALUES (?1, ?2, NULL, 'edge', ?3, NULL, NULL, '[]', NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)
+             ON CONFLICT(candidate_id) DO UPDATE SET
+               entity_kind = excluded.entity_kind,
+               confidence = MAX(extraction_candidates.confidence, excluded.confidence),
+               from_kind = excluded.from_kind,
+               from_label = excluded.from_label,
+               normalized_from_label = excluded.normalized_from_label,
+               to_kind = excluded.to_kind,
+               to_label = excluded.to_label,
+               normalized_to_label = excluded.normalized_to_label,
+               evidence_json = excluded.evidence_json,
+               review_status = CASE
+                 WHEN extraction_candidates.review_status = 'done' THEN extraction_candidates.review_status
+                 ELSE excluded.review_status
+               END,
+               updated_at = excluded.updated_at",
             params![
                 candidate_id,
                 document.paper_id,
@@ -2336,7 +3788,13 @@ fn persist_candidates(
         )?;
         conn.execute(
             "INSERT INTO review_queue (review_id, candidate_id, paper_id, status, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+             ON CONFLICT(candidate_id) DO UPDATE SET
+               status = CASE
+                 WHEN review_queue.status = 'done' THEN review_queue.status
+                 ELSE excluded.status
+               END,
+               updated_at = excluded.updated_at",
             params![
                 stable_id("review", candidate_id.clone()),
                 candidate_id,
@@ -2886,28 +4344,31 @@ async fn count_lance_rows(db: &Connection, table_name: &str) -> Result<usize> {
 async fn extract_map_unit(
     unit: &MapUnit,
     document: &FileDocument,
+    paper_type: &str,
+    seed_context: Option<&LocalExtraction>,
+    extraction_mode: ExtractionMode,
+    provider: &ExtractionProviderRuntime,
     extract_fast_model: &str,
     extract_fallback_model: &str,
-) -> Result<(LocalExtraction, CandidatePhaseStatus, bool, bool)> {
-    let candidate_result = extract_candidate_items(unit, document, extract_fast_model).await;
-    let (candidate, candidate_status) = match candidate_result {
-        Ok(candidate) => {
-            if candidate.item_count() > 0 {
-                (candidate, CandidatePhaseStatus::FastHit)
-            } else {
-                (candidate, CandidatePhaseStatus::NoCandidate)
-            }
-        }
-        Err(_) => match extract_candidate_items(unit, document, extract_fallback_model).await {
-            Ok(candidate) => {
-                if candidate.item_count() > 0 {
-                    (candidate, CandidatePhaseStatus::FallbackSuccess)
-                } else {
-                    (candidate, CandidatePhaseStatus::NoCandidate)
-                }
-            }
-            Err(_) => (CandidateExtraction::default(), CandidatePhaseStatus::DoubleFailure),
-        },
+    extract_pipeline_summary_model: &str,
+    extract_pipeline_name_model: &str,
+    extract_edge_model: &str,
+    extract_edge_validate_model: &str,
+) -> Result<(LocalExtraction, CandidatePhaseStatus, ExtractionDiagnostics)> {
+    let (candidate, candidate_status) =
+        extract_candidate_with_fallback(
+            unit,
+            document,
+            provider,
+            extract_fast_model,
+            extract_fallback_model,
+        )
+            .await;
+
+    let (candidate, candidate_conflict_count) = resolve_candidate_kind_conflicts(candidate);
+    let mut diagnostics = ExtractionDiagnostics {
+        candidate_conflict_count,
+        ..Default::default()
     };
 
     let mut local = LocalExtraction {
@@ -2917,29 +4378,157 @@ async fn extract_map_unit(
         insights: candidate.insights,
         ..Default::default()
     };
-
-    if local.node_count() == 0 {
-        return Ok((local, candidate_status, false, false));
+    if let Some(seed_context) = seed_context {
+        local.tasks = merge_local_extraction_items("task", &local.tasks, &seed_context.tasks);
+        local.modules =
+            merge_local_extraction_items("module", &local.modules, &seed_context.modules);
+        local.challenges = merge_local_extraction_items(
+            "challenge",
+            &local.challenges,
+            &seed_context.challenges,
+        );
+        local.insights =
+            merge_local_extraction_items("insight", &local.insights, &seed_context.insights);
     }
 
-    let relation_result =
-        extract_relation_items(unit, document, &local, extract_fallback_model).await;
-    let (relation, used_relation_fallback) = match relation_result {
-        Ok(relation) => (relation, false),
-        Err(_) if extract_fallback_model != "qwen3.5:9b" => (
-            extract_relation_items(unit, document, &local, "qwen3.5:9b")
-                .await
-                .unwrap_or_default(),
-            true,
-        ),
-        Err(_) => (RelationExtraction::default(), false),
-    };
+    if local.node_count() == 0 {
+        return Ok((local, candidate_status, diagnostics));
+    }
 
-    local.pipelines = relation.pipelines;
-    local.task_pipeline_pairs = relation.task_pipeline_pairs;
-    local.pipeline_module_pairs = relation.pipeline_module_pairs;
-    local.challenge_insight_pairs = relation.challenge_insight_pairs;
-    Ok((local, candidate_status, used_relation_fallback, true))
+    if extraction_mode == ExtractionMode::Fast {
+        return Ok((local, candidate_status, diagnostics));
+    }
+
+    let should_try_pipeline = should_try_pipeline_for_paper_type(paper_type);
+    let pipeline_summary = if should_try_pipeline {
+        extract_pipeline_summary(
+            unit,
+            document,
+            &local,
+            provider,
+            extract_pipeline_summary_model,
+        )
+        .await
+        .unwrap_or_default()
+    } else {
+        PipelineSummary::default()
+    };
+    diagnostics.pipeline_summary_empty = pipeline_summary.summary.trim().is_empty();
+
+    let pipelines = if should_try_pipeline && !diagnostics.pipeline_summary_empty {
+        extract_pipeline_names(
+            unit,
+            document,
+            &local,
+            &pipeline_summary,
+            provider,
+            extract_pipeline_name_model,
+        )
+        .await
+        .unwrap_or_default()
+        .pipelines
+    } else {
+        Vec::new()
+    };
+    diagnostics.pipeline_name_empty = pipelines.is_empty();
+    local.pipelines = pipelines;
+
+    let edge_candidates = extract_edge_items(
+        unit,
+        document,
+        &local,
+        paper_type,
+        provider,
+        extract_edge_model,
+    )
+        .await
+        .unwrap_or_default();
+    diagnostics.edge_candidate_count = edge_candidates.task_pipeline_pairs.len()
+        + edge_candidates.task_module_pairs.len()
+        + edge_candidates.pipeline_module_pairs.len()
+        + edge_candidates.challenge_insight_pairs.len();
+
+    let validated_edges = match validate_edge_items(
+        unit,
+        document,
+        &local,
+        &edge_candidates,
+        provider,
+        extract_edge_validate_model,
+    )
+    .await
+    {
+        Ok(edges) => edges,
+        Err(_) if extract_edge_validate_model != extract_edge_model => {
+            diagnostics.edge_validate_used_fallback = true;
+            validate_edge_items(
+                unit,
+                document,
+                &local,
+                &edge_candidates,
+                provider,
+                extract_edge_model,
+            )
+                .await
+                .unwrap_or(edge_candidates.clone().into())
+        }
+        Err(_) => edge_candidates.clone().into(),
+    };
+    let validated_edges = if validated_edges.task_pipeline_pairs.is_empty()
+        && validated_edges.task_module_pairs.is_empty()
+        && validated_edges.pipeline_module_pairs.is_empty()
+        && validated_edges.challenge_insight_pairs.is_empty()
+        && (!edge_candidates.task_pipeline_pairs.is_empty()
+            || !edge_candidates.task_module_pairs.is_empty()
+            || !edge_candidates.pipeline_module_pairs.is_empty()
+            || !edge_candidates.challenge_insight_pairs.is_empty())
+    {
+        edge_candidates.clone().into()
+    } else {
+        validated_edges
+    };
+    diagnostics.edge_validated_count = validated_edges.task_pipeline_pairs.len()
+        + validated_edges.task_module_pairs.len()
+        + validated_edges.pipeline_module_pairs.len()
+        + validated_edges.challenge_insight_pairs.len();
+
+    local.task_pipeline_pairs = validated_edges.task_pipeline_pairs;
+    local.task_module_pairs = top_task_module_edges(validated_edges.task_module_pairs, 4);
+    local.pipeline_module_pairs = validated_edges.pipeline_module_pairs;
+    local.challenge_insight_pairs = validated_edges.challenge_insight_pairs;
+    diagnostics.edge_validated_count = local.task_pipeline_pairs.len()
+        + local.task_module_pairs.len()
+        + local.pipeline_module_pairs.len()
+        + local.challenge_insight_pairs.len();
+    Ok((local, candidate_status, diagnostics))
+}
+
+async fn extract_candidate_with_fallback(
+    unit: &MapUnit,
+    document: &FileDocument,
+    provider: &ExtractionProviderRuntime,
+    extract_fast_model: &str,
+    extract_fallback_model: &str,
+) -> (CandidateExtraction, CandidatePhaseStatus) {
+    match extract_candidate_items(unit, document, provider, extract_fast_model).await {
+        Ok(candidate) if candidate.item_count() > 0 => {
+            (candidate, CandidatePhaseStatus::FastHit)
+        }
+        Ok(_) | Err(_) => match extract_candidate_items(
+            unit,
+            document,
+            provider,
+            extract_fallback_model,
+        )
+        .await
+        {
+            Ok(candidate) if candidate.item_count() > 0 => {
+                (candidate, CandidatePhaseStatus::FallbackSuccess)
+            }
+            Ok(candidate) => (candidate, CandidatePhaseStatus::NoCandidate),
+            Err(_) => (CandidateExtraction::default(), CandidatePhaseStatus::DoubleFailure),
+        },
+    }
 }
 
 fn candidate_extraction_schema() -> serde_json::Value {
@@ -2949,9 +4538,10 @@ fn candidate_extraction_schema() -> serde_json::Value {
             "label": { "type": "string" },
             "summary": { "type": ["string", "null"] },
             "confidence": { "type": ["number", "null"] },
-            "evidenceSnippet": { "type": ["string", "null"] }
+            "evidenceSnippet": { "type": ["string", "null"] },
+            "kindRationale": { "type": ["string", "null"] }
         },
-        "required": ["label", "summary", "confidence", "evidenceSnippet"],
+        "required": ["label", "summary", "confidence", "evidenceSnippet", "kindRationale"],
         "additionalProperties": false
     });
     json!({
@@ -2967,18 +4557,42 @@ fn candidate_extraction_schema() -> serde_json::Value {
     })
 }
 
-fn relation_extraction_schema() -> serde_json::Value {
+fn pipeline_summary_schema() -> serde_json::Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "summary": { "type": "string" },
+            "evidenceSnippet": { "type": ["string", "null"] }
+        },
+        "required": ["summary", "evidenceSnippet"],
+        "additionalProperties": false
+    })
+}
+
+fn pipeline_name_extraction_schema() -> serde_json::Value {
     let item_schema = json!({
         "type": "object",
         "properties": {
             "label": { "type": "string" },
             "summary": { "type": ["string", "null"] },
             "confidence": { "type": ["number", "null"] },
-            "evidenceSnippet": { "type": ["string", "null"] }
+            "evidenceSnippet": { "type": ["string", "null"] },
+            "kindRationale": { "type": ["string", "null"] }
         },
-        "required": ["label", "summary", "confidence", "evidenceSnippet"],
+        "required": ["label", "summary", "confidence", "evidenceSnippet", "kindRationale"],
         "additionalProperties": false
     });
+    json!({
+        "type": "object",
+        "properties": {
+            "pipelines": { "type": "array", "items": item_schema }
+        },
+        "required": ["pipelines"],
+        "additionalProperties": false
+    })
+}
+
+fn edge_extraction_schema() -> serde_json::Value {
     let edge_schema = json!({
         "type": "object",
         "properties": {
@@ -2993,24 +4607,29 @@ fn relation_extraction_schema() -> serde_json::Value {
     json!({
         "type": "object",
         "properties": {
-            "pipelines": { "type": "array", "items": item_schema },
             "taskPipelinePairs": { "type": "array", "items": edge_schema },
+            "taskModulePairs": { "type": "array", "items": edge_schema },
             "pipelineModulePairs": { "type": "array", "items": edge_schema },
             "challengeInsightPairs": { "type": "array", "items": edge_schema }
         },
-        "required": ["pipelines","taskPipelinePairs","pipelineModulePairs","challengeInsightPairs"],
+        "required": ["taskPipelinePairs","taskModulePairs","pipelineModulePairs","challengeInsightPairs"],
         "additionalProperties": false
     })
+}
+
+fn edge_validation_schema() -> serde_json::Value {
+    edge_extraction_schema()
 }
 
 async fn extract_candidate_items(
     unit: &MapUnit,
     document: &FileDocument,
+    provider: &ExtractionProviderRuntime,
     model: &str,
 ) -> Result<CandidateExtraction> {
     let prompt_content = truncate_chars(&unit.content, MAP_PROMPT_CHAR_LIMIT);
     let prompt = format!(
-        "你会收到一段学术论文片段。请提取该片段中有明确上下文支持的局部 Task、Module、Challenge、Insight，返回 JSON。\n\n规则：\n1. 每个数组最多返回 {max_items} 项。\n2. 不要求术语逐字出现，只要该片段能明确支持该局部概念即可。\n3. 允许从摘要、引言、方法段落中做保守抽象，但不要编造超出片段的信息。\n4. 每个条目都必须带简短 evidenceSnippet，优先直接引用或贴近原句改写。\n5. 如果该片段没有某类概念，就返回空数组。\n6. 不要输出数组以外的字段。\n\n论文标题：{title}\n片段标题：{heading}\n页码：{start_page}-{end_page}\n\n片段内容：\n{content}",
+        "你会收到一段学术论文片段。请提取该片段中有明确上下文支持的局部 Task、Module、Challenge、Insight，返回 JSON。\n\n排他性定义：\n1. Task = 研究任务、目标、问题设定，不是具体实现手段。例如“单细胞因果推断”“空间转录组去卷积”可视为 Task。\n2. Module = 具体算法组件、子模块、机制或可替换部件，不是泛泛研究方向。像“graph neural network encoder”“cross-attention fusion block”是 Module；“foundation model for biology”“causal machine learning”不是 Module。\n3. Challenge = 当前方法或任务中的技术困难、失效点、瓶颈。\n4. Insight = 针对 Challenge 的高层解决思想、关键观察或设计原则，不是完整实现细节。\n\n规则：\n1. 每个数组最多返回 {max_items} 项。\n2. 不要求术语逐字出现，只要该片段能明确支持该局部概念即可。\n3. 允许从摘要、引言、方法段落中做保守抽象，但不要编造超出片段的信息。\n4. 每个条目都必须带简短 evidenceSnippet，优先直接引用或贴近原句改写。\n5. 每个条目都必须带 kindRationale，简要解释为什么它属于该 kind。\n6. 如果该片段没有某类概念，就返回空数组。\n7. 不要输出数组以外的字段。\n\n论文标题：{title}\n片段标题：{heading}\n页码：{start_page}-{end_page}\n\n片段内容：\n{content}",
         max_items = MAP_MAX_ITEMS_PER_KIND,
         title = document.title,
         heading = unit.heading,
@@ -3018,41 +4637,610 @@ async fn extract_candidate_items(
         end_page = unit.page_end,
         content = prompt_content
     );
-    let value = run_structured_json(
+    let value = run_structured_json_with_fallback(
+        provider,
         model,
         "You extract evidence-backed local research concepts from paper excerpts. Be conservative but not overly literal; summary and intro sections may require brief abstraction grounded in the text.",
         &prompt,
         candidate_extraction_schema(),
     )
+    .await;
+    match value {
+        Ok(value) => Ok(sanitize_candidate_extraction(serde_json::from_value(value)?)),
+        Err(primary_error) => extract_candidate_items_lenient(unit, document, provider, model)
+            .await
+            .map_err(|fallback_error| {
+                anyhow!(
+                    "candidate structured extraction failed: {primary_error}; lenient fallback failed: {fallback_error}"
+                )
+            }),
+    }
+}
+
+async fn extract_candidate_items_lenient(
+    unit: &MapUnit,
+    document: &FileDocument,
+    provider: &ExtractionProviderRuntime,
+    model: &str,
+) -> Result<CandidateExtraction> {
+    let prompt = format!(
+        "Read the paper excerpt and extract evidence-backed local concepts.\n\nReturn plain text only in this exact format:\nTASKS:\n- ...\nMODULES:\n- ...\nCHALLENGES:\n- ...\nINSIGHTS:\n- ...\n\nRules:\n1. Use short technical phrases, not sentences.\n2. If a section has no items, keep the heading and leave it empty.\n3. Do not output any explanations before or after the four sections.\n\nPaper title: {title}\nHeading: {heading}\nPages: {start_page}-{end_page}\n\nExcerpt:\n{content}",
+        title = document.title,
+        heading = unit.heading,
+        start_page = unit.page_start,
+        end_page = unit.page_end,
+        content = truncate_chars(&unit.content, MAP_PROMPT_CHAR_LIMIT),
+    );
+    let raw = run_chat_text(
+        provider,
+        model,
+        vec![
+            json!({
+                "role": "system",
+                "content": "You extract local research concepts from excerpts. Follow the requested plain-text format exactly."
+            }),
+            json!({
+                "role": "user",
+                "content": prompt
+            }),
+        ],
+    )
+    .await?;
+    Ok(parse_lenient_candidate_output(&raw, &unit.content))
+}
+
+fn parse_lenient_candidate_output(raw: &str, content: &str) -> CandidateExtraction {
+    let mut current = "";
+    let mut tasks = Vec::new();
+    let mut modules = Vec::new();
+    let mut challenges = Vec::new();
+    let mut insights = Vec::new();
+
+    for line in strip_code_fences(raw).lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        match trimmed.to_ascii_uppercase().as_str() {
+            "TASKS:" => {
+                current = "task";
+                continue;
+            }
+            "MODULES:" => {
+                current = "module";
+                continue;
+            }
+            "CHALLENGES:" => {
+                current = "challenge";
+                continue;
+            }
+            "INSIGHTS:" => {
+                current = "insight";
+                continue;
+            }
+            _ => {}
+        }
+        if !trimmed.starts_with("- ") {
+            continue;
+        }
+        let label = trimmed.trim_start_matches("- ").trim();
+        if label.is_empty() {
+            continue;
+        }
+        let item = LocalExtractionItem {
+            label: label.to_string(),
+            summary: None,
+            confidence: Some(0.7),
+            evidence_snippet: try_build_evidence_snippet(content, label),
+            kind_rationale: None,
+        };
+        match current {
+            "task" => tasks.push(item),
+            "module" => modules.push(item),
+            "challenge" => challenges.push(item),
+            "insight" => insights.push(item),
+            _ => {}
+        }
+    }
+
+    sanitize_candidate_extraction(CandidateExtraction {
+        tasks,
+        modules,
+        challenges,
+        insights,
+    })
+}
+
+fn join_candidate_labels(items: &[LocalExtractionItem]) -> String {
+    let labels = items
+        .iter()
+        .map(|item| item.label.trim())
+        .filter(|label| !label.is_empty())
+        .collect::<Vec<_>>();
+    if labels.is_empty() {
+        "无".to_string()
+    } else {
+        labels.join(", ")
+    }
+}
+
+fn sanitize_candidate_extraction(candidate: CandidateExtraction) -> CandidateExtraction {
+    CandidateExtraction {
+        tasks: sanitize_local_extraction_items("task", candidate.tasks),
+        modules: sanitize_local_extraction_items("module", candidate.modules),
+        challenges: sanitize_local_extraction_items("challenge", candidate.challenges),
+        insights: sanitize_local_extraction_items("insight", candidate.insights),
+    }
+}
+
+fn should_try_pipeline_for_paper_type(paper_type: &str) -> bool {
+    !matches!(paper_type, PAPER_TYPE_REVIEW)
+}
+
+fn merge_edge_extractions(primary: EdgeExtraction, fallback: EdgeExtraction) -> EdgeExtraction {
+    EdgeExtraction {
+        task_pipeline_pairs: merge_local_extraction_edges(
+            &primary.task_pipeline_pairs,
+            &fallback.task_pipeline_pairs,
+        ),
+        task_module_pairs: merge_local_extraction_edges(
+            &primary.task_module_pairs,
+            &fallback.task_module_pairs,
+        ),
+        pipeline_module_pairs: merge_local_extraction_edges(
+            &primary.pipeline_module_pairs,
+            &fallback.pipeline_module_pairs,
+        ),
+        challenge_insight_pairs: merge_local_extraction_edges(
+            &primary.challenge_insight_pairs,
+            &fallback.challenge_insight_pairs,
+        ),
+    }
+}
+
+fn merge_local_extraction_edges(
+    primary: &[LocalExtractionEdge],
+    secondary: &[LocalExtractionEdge],
+) -> Vec<LocalExtractionEdge> {
+    let mut merged = Vec::new();
+    let mut seen = HashSet::new();
+    for edge in primary.iter().chain(secondary.iter()) {
+        let key = format!(
+            "{}=>{}",
+            normalize_label(&edge.from_label),
+            normalize_label(&edge.to_label)
+        );
+        if key == "=>" || !seen.insert(key) {
+            continue;
+        }
+        merged.push(edge.clone());
+    }
+    merged
+}
+
+fn edge_evidence_score(edge: &LocalExtractionEdge) -> usize {
+    let snippet = edge.evidence_snippet.as_deref().unwrap_or("").trim();
+    let mut score = snippet.chars().count();
+    if segment_mentions_label(snippet, &edge.from_label) {
+        score += 60;
+    }
+    if segment_mentions_label(snippet, &edge.to_label) {
+        score += 60;
+    }
+    if !is_generic_background_evidence(snippet) {
+        score += 40;
+    }
+    score
+}
+
+fn top_task_module_edges(mut edges: Vec<LocalExtractionEdge>, max_items: usize) -> Vec<LocalExtractionEdge> {
+    edges.sort_by(|left, right| {
+        edge_evidence_score(right)
+            .cmp(&edge_evidence_score(left))
+            .then_with(|| {
+                right
+                    .confidence
+                    .partial_cmp(&left.confidence)
+                    .unwrap_or(Ordering::Equal)
+            })
+    });
+    edges.truncate(max_items);
+    edges
+}
+
+fn heuristic_edge_fallback(
+    unit: &MapUnit,
+    candidate: &LocalExtraction,
+    paper_type: &str,
+) -> EdgeExtraction {
+    let sentences = split_evidence_segments(&unit.content);
+    let mut challenge_insight_pairs = Vec::new();
+    let mut task_module_pairs = Vec::new();
+
+    for challenge in &candidate.challenges {
+        for insight in &candidate.insights {
+            let overlap = lexical_overlap_score(&challenge.label, &insight.label);
+            if overlap < 1 {
+                continue;
+            }
+            let snippet = sentences
+                .iter()
+                .find(|segment| {
+                    segment_mentions_label(segment, &challenge.label)
+                        || segment_mentions_label(segment, &insight.label)
+                })
+                .cloned()
+                .or_else(|| challenge.evidence_snippet.clone())
+                .or_else(|| insight.evidence_snippet.clone());
+            let Some(snippet) = snippet else {
+                continue;
+            };
+            if is_generic_background_evidence(&snippet) {
+                continue;
+            }
+            challenge_insight_pairs.push(LocalExtractionEdge {
+                from_label: challenge.label.clone(),
+                to_label: insight.label.clone(),
+                confidence: Some(0.68),
+                evidence_snippet: Some(truncate_chars(&snippet, 220)),
+            });
+        }
+    }
+
+    if challenge_insight_pairs.is_empty() && !candidate.challenges.is_empty() && !candidate.insights.is_empty() {
+        for (challenge, insight) in candidate
+            .challenges
+            .iter()
+            .zip(candidate.insights.iter())
+            .take(3)
+        {
+            let snippet = challenge
+                .evidence_snippet
+                .clone()
+                .or_else(|| insight.evidence_snippet.clone())
+                .or_else(|| {
+                    sentences
+                        .iter()
+                        .find(|segment| {
+                            segment_mentions_label(segment, &challenge.label)
+                                || segment_mentions_label(segment, &insight.label)
+                        })
+                        .cloned()
+                });
+            let Some(snippet) = snippet else {
+                continue;
+            };
+            if is_generic_background_evidence(&snippet) {
+                continue;
+            }
+            challenge_insight_pairs.push(LocalExtractionEdge {
+                from_label: challenge.label.clone(),
+                to_label: insight.label.clone(),
+                confidence: Some(0.56),
+                evidence_snippet: Some(truncate_chars(&snippet, 220)),
+                });
+        }
+    }
+
+    if challenge_insight_pairs.is_empty() && !candidate.challenges.is_empty() && !candidate.insights.is_empty() {
+        for (challenge, insight) in candidate
+            .challenges
+            .iter()
+            .zip(candidate.insights.iter())
+            .take(2)
+        {
+            let snippet = challenge
+                .evidence_snippet
+                .clone()
+                .or_else(|| insight.evidence_snippet.clone())
+                .unwrap_or_else(|| build_evidence_snippet(&unit.content, &challenge.label));
+            challenge_insight_pairs.push(LocalExtractionEdge {
+                from_label: challenge.label.clone(),
+                to_label: insight.label.clone(),
+                confidence: Some(0.45),
+                evidence_snippet: Some(truncate_chars(&snippet, 220)),
+            });
+        }
+    }
+
+    if paper_type == PAPER_TYPE_REVIEW {
+        for task in &candidate.tasks {
+            for module in &candidate.modules {
+                let overlap = lexical_overlap_score(&task.label, &module.label);
+                if overlap < 1 && !segment_mentions_label(&unit.content, &module.label) {
+                    continue;
+                }
+                let snippet = sentences
+                    .iter()
+                    .find(|segment| {
+                        segment_mentions_label(segment, &task.label)
+                            && segment_mentions_label(segment, &module.label)
+                    })
+                    .cloned()
+                    .or_else(|| module.evidence_snippet.clone());
+                let Some(snippet) = snippet else {
+                    continue;
+                };
+                if is_generic_background_evidence(&snippet) {
+                    continue;
+                }
+                task_module_pairs.push(LocalExtractionEdge {
+                    from_label: task.label.clone(),
+                    to_label: module.label.clone(),
+                    confidence: Some(0.64),
+                    evidence_snippet: Some(truncate_chars(&snippet, 220)),
+                });
+            }
+        }
+
+        if task_module_pairs.is_empty() && !candidate.tasks.is_empty() {
+            let task = &candidate.tasks[0];
+            for module in candidate.modules.iter().take(3) {
+                let snippet = module
+                    .evidence_snippet
+                    .clone()
+                    .or_else(|| task.evidence_snippet.clone());
+                let Some(snippet) = snippet else {
+                    continue;
+                };
+                if is_generic_background_evidence(&snippet) {
+                    continue;
+                }
+                task_module_pairs.push(LocalExtractionEdge {
+                    from_label: task.label.clone(),
+                    to_label: module.label.clone(),
+                    confidence: Some(0.54),
+                    evidence_snippet: Some(truncate_chars(&snippet, 220)),
+                });
+            }
+        }
+
+        if task_module_pairs.is_empty() && !candidate.tasks.is_empty() && !candidate.modules.is_empty() {
+            let task = &candidate.tasks[0];
+            for module in candidate.modules.iter().take(2) {
+                let snippet = module
+                    .evidence_snippet
+                    .clone()
+                    .unwrap_or_else(|| build_evidence_snippet(&unit.content, &module.label));
+                task_module_pairs.push(LocalExtractionEdge {
+                    from_label: task.label.clone(),
+                    to_label: module.label.clone(),
+                    confidence: Some(0.42),
+                    evidence_snippet: Some(truncate_chars(&snippet, 220)),
+                });
+            }
+        }
+    }
+
+    EdgeExtraction {
+        task_pipeline_pairs: Vec::new(),
+        task_module_pairs,
+        pipeline_module_pairs: Vec::new(),
+        challenge_insight_pairs,
+    }
+}
+
+fn sanitize_local_extraction_items(kind: &str, items: Vec<LocalExtractionItem>) -> Vec<LocalExtractionItem> {
+    let mut seen = HashSet::new();
+    let mut sanitized = Vec::new();
+    for mut item in items {
+        let label = item.label.trim();
+        let normalized = normalize_label(label);
+        if normalized.is_empty() || !seen.insert(normalized.clone()) {
+            continue;
+        }
+        if is_overly_generic_label(kind, label) || is_overlong_problem_label(kind, label) {
+            continue;
+        }
+        if is_background_candidate_label(kind, label) {
+            continue;
+        }
+        if matches!(
+            normalized.as_str(),
+            "task" | "tasks" | "module" | "modules" | "challenge" | "challenges" | "insight" | "insights"
+        ) {
+            continue;
+        }
+        if let Some(snippet) = item.evidence_snippet.as_ref() {
+            let trimmed = snippet.trim();
+            if trimmed.is_empty() || trimmed.eq_ignore_ascii_case(label) {
+                item.evidence_snippet = None;
+            } else if is_generic_background_evidence(trimmed) {
+                continue;
+            }
+        }
+        item.label = label.to_string();
+        sanitized.push(item);
+    }
+    let limit = match kind {
+        "task" => 3,
+        "module" | "challenge" | "insight" => 5,
+        _ => MAP_MAX_ITEMS_PER_KIND,
+    };
+    sanitized.into_iter().take(limit).collect()
+}
+
+fn resolve_candidate_kind_conflicts(
+    candidate: CandidateExtraction,
+) -> (CandidateExtraction, usize) {
+    let mut label_to_kinds: HashMap<String, HashSet<&'static str>> = HashMap::new();
+    for (kind, items) in [
+        ("task", &candidate.tasks),
+        ("module", &candidate.modules),
+        ("challenge", &candidate.challenges),
+        ("insight", &candidate.insights),
+    ] {
+        for item in items {
+            let normalized = normalize_label(&item.label);
+            if normalized.is_empty() {
+                continue;
+            }
+            label_to_kinds
+                .entry(normalized)
+                .or_default()
+                .insert(kind);
+        }
+    }
+
+    let conflicted = label_to_kinds
+        .into_iter()
+        .filter_map(|(label, kinds)| if kinds.len() > 1 { Some(label) } else { None })
+        .collect::<HashSet<_>>();
+
+    let filter_items = |items: Vec<LocalExtractionItem>| {
+        items.into_iter()
+            .filter(|item| !conflicted.contains(&normalize_label(&item.label)))
+            .collect::<Vec<_>>()
+    };
+
+    (
+        CandidateExtraction {
+            tasks: filter_items(candidate.tasks),
+            modules: filter_items(candidate.modules),
+            challenges: filter_items(candidate.challenges),
+            insights: filter_items(candidate.insights),
+        },
+        conflicted.len(),
+    )
+}
+
+async fn extract_pipeline_summary(
+    unit: &MapUnit,
+    document: &FileDocument,
+    candidate: &LocalExtraction,
+    provider: &ExtractionProviderRuntime,
+    model: &str,
+) -> Result<PipelineSummary> {
+    let prompt_content = truncate_chars(&unit.content, MAP_PROMPT_CHAR_LIMIT);
+    let prompt = format!(
+        "你会收到一段论文片段，以及已经抽出的候选节点。请先用 2-4 句总结当前切片的方法论骨架，输出 pipeline summary，而不是直接命名实体。\n\n规则：\n1. summary 只描述当前切片能支持的方法骨架。\n2. summary 要说明任务如何经过若干关键步骤或机制走到输出。\n3. 不要输出 pipeline 列表，不要输出边。\n4. 若片段不足以稳定总结方法骨架，summary 置空。\n5. 只返回 JSON。\n\n论文标题：{title}\n片段标题：{heading}\n页码：{start_page}-{end_page}\n候选 Task：{tasks}\n候选 Module：{modules}\n候选 Challenge：{challenges}\n候选 Insight：{insights}\n\n片段内容：\n{content}",
+        title = document.title,
+        heading = unit.heading,
+        start_page = unit.page_start,
+        end_page = unit.page_end,
+        tasks = join_candidate_labels(&candidate.tasks),
+        modules = join_candidate_labels(&candidate.modules),
+        challenges = join_candidate_labels(&candidate.challenges),
+        insights = join_candidate_labels(&candidate.insights),
+        content = prompt_content
+    );
+    let value = run_structured_json_with_fallback(
+        provider,
+        model,
+        "You summarize only the supported local method skeleton from a paper excerpt. Be conservative and keep the summary short.",
+        &prompt,
+        pipeline_summary_schema(),
+    )
     .await?;
     Ok(serde_json::from_value(value)?)
 }
 
-async fn extract_relation_items(
+async fn extract_pipeline_names(
     unit: &MapUnit,
     document: &FileDocument,
     candidate: &LocalExtraction,
+    summary: &PipelineSummary,
+    provider: &ExtractionProviderRuntime,
     model: &str,
-) -> Result<RelationExtraction> {
-    let prompt_content = truncate_chars(&unit.content, MAP_PROMPT_CHAR_LIMIT);
+) -> Result<PipelineExtraction> {
     let prompt = format!(
-        "你会收到一段论文片段，以及已经抽出的候选节点。请补全片段内部明确支持的 Pipeline，以及 task->pipeline、pipeline->module、challenge->insight 三种关系。\n\n规则：\n1. Pipeline 最多 {max_items} 项。\n2. 不要发明新 Task、Module、Challenge、Insight；优先使用候选列表中的标签。\n3. 关系必须有片段证据支持，每条都带 evidenceSnippet。\n4. 只返回 JSON。\n\n论文标题：{title}\n片段标题：{heading}\n页码：{start_page}-{end_page}\n\n候选 Task：{tasks}\n候选 Module：{modules}\n候选 Challenge：{challenges}\n候选 Insight：{insights}\n\n片段内容：\n{content}",
+        "你会收到一段论文片段的 pipeline_summary，以及候选节点。请从 summary 中提取最多 {max_items} 个标准化 pipeline 名称。\n\n规则：\n1. pipeline_name 必须能从 summary 中直接归纳出来，不能重新发散命名。\n2. pipeline 是方法路线、框架骨架，不是具体 Module，也不是泛泛 Task。\n3. 每个 pipeline 都要带 evidenceSnippet 与 kindRationale。\n4. 如果 summary 无法支持稳定命名，返回空数组。\n5. 只返回 JSON。\n\n论文标题：{title}\n片段标题：{heading}\n页码：{start_page}-{end_page}\n候选 Task：{tasks}\n候选 Module：{modules}\n\npipeline_summary：\n{summary}\n\n原始片段锚点：\n{content}",
         max_items = MAP_MAX_ITEMS_PER_KIND,
         title = document.title,
         heading = unit.heading,
         start_page = unit.page_start,
         end_page = unit.page_end,
-        tasks = candidate.tasks.iter().map(|item| item.label.clone()).collect::<Vec<_>>().join(", "),
-        modules = candidate.modules.iter().map(|item| item.label.clone()).collect::<Vec<_>>().join(", "),
-        challenges = candidate.challenges.iter().map(|item| item.label.clone()).collect::<Vec<_>>().join(", "),
-        insights = candidate.insights.iter().map(|item| item.label.clone()).collect::<Vec<_>>().join(", "),
+        tasks = join_candidate_labels(&candidate.tasks),
+        modules = join_candidate_labels(&candidate.modules),
+        summary = truncate_chars(&summary.summary, 500),
+        content = truncate_chars(&unit.content, MAP_PROMPT_CHAR_LIMIT),
+    );
+    let value = run_structured_json_with_fallback(
+        provider,
+        model,
+        "You derive standardized pipeline names from a controlled pipeline summary. Keep names stable, concise, and evidence-backed.",
+        &prompt,
+        pipeline_name_extraction_schema(),
+    )
+    .await?;
+    Ok(PipelineExtraction {
+        pipelines: sanitize_local_extraction_items(
+            "pipeline",
+            serde_json::from_value::<PipelineExtraction>(value)?.pipelines,
+        ),
+    })
+}
+
+async fn extract_edge_items(
+    unit: &MapUnit,
+    document: &FileDocument,
+    candidate: &LocalExtraction,
+    paper_type: &str,
+    provider: &ExtractionProviderRuntime,
+    model: &str,
+) -> Result<EdgeExtraction> {
+    let prompt_content = truncate_chars(&unit.content, MAP_PROMPT_CHAR_LIMIT);
+    let prompt = format!(
+        "你会收到一段论文片段，以及已经确认的候选节点。请只补全片段内部明确支持的 task->pipeline、task->module、pipeline->module、challenge->insight 四种关系。\n\n规则：\n1. 不要创造新节点；只能在给定候选标签之间连边。\n2. 对 review / survey / perspective 风格论文，如果缺少稳定 pipeline，可直接抽 task->module 与 challenge->insight。\n3. 每条边必须有当前片段中的直接证据支持，并带 evidenceSnippet。\n4. 如果某类边没有足够证据，返回空数组。\n5. 只返回 JSON。\n\n论文标题：{title}\n片段标题：{heading}\n页码：{start_page}-{end_page}\n候选 Task：{tasks}\n候选 Pipeline：{pipelines}\n候选 Module：{modules}\n候选 Challenge：{challenges}\n候选 Insight：{insights}\n\n片段内容：\n{content}",
+        title = document.title,
+        heading = unit.heading,
+        start_page = unit.page_start,
+        end_page = unit.page_end,
+        tasks = join_candidate_labels(&candidate.tasks),
+        pipelines = join_candidate_labels(&candidate.pipelines),
+        modules = join_candidate_labels(&candidate.modules),
+        challenges = join_candidate_labels(&candidate.challenges),
+        insights = join_candidate_labels(&candidate.insights),
         content = prompt_content
     );
-    let value = run_structured_json(
+    let fallback = heuristic_edge_fallback(unit, candidate, paper_type);
+    let value = run_structured_json_with_fallback(
+        provider,
         model,
-        "You extract only local pipeline nodes and bounded method/problem relations from a paper excerpt. Do not invent unsupported links.",
+        "You extract only supported method/problem edges between provided nodes. Never invent unsupported links.",
         &prompt,
-        relation_extraction_schema(),
+        edge_extraction_schema(),
+    )
+    .await;
+    match value {
+        Ok(value) => {
+            match serde_json::from_value::<EdgeExtraction>(value) {
+                Ok(extracted) => Ok(merge_edge_extractions(extracted, fallback)),
+                Err(_) => Ok(fallback),
+            }
+        }
+        Err(_) => Ok(fallback),
+    }
+}
+
+async fn validate_edge_items(
+    unit: &MapUnit,
+    document: &FileDocument,
+    candidate: &LocalExtraction,
+    edges: &EdgeExtraction,
+    provider: &ExtractionProviderRuntime,
+    model: &str,
+) -> Result<ValidatedEdgeExtraction> {
+    let prompt = format!(
+        "你会收到一段论文片段、候选节点与候选边。请删除证据不足或语义不稳的边，只保留当前片段中可以直接支撑的边。\n\n规则：\n1. 不要新增任何边。\n2. 如果 evidenceSnippet 太泛或无法直接回指当前片段，应删除。\n3. task->pipeline、task->module、pipeline->module、challenge->insight 四类边独立判断。\n4. 综述或 perspective 文本中，task->module 可以保留，但必须是该片段明确讨论的方法组件关系。\n5. 只返回 JSON。\n\n论文标题：{title}\n片段标题：{heading}\n页码：{start_page}-{end_page}\n候选 Task：{tasks}\n候选 Pipeline：{pipelines}\n候选 Module：{modules}\n候选 Challenge：{challenges}\n候选 Insight：{insights}\n\n候选边 JSON：\n{edge_json}\n\n原始片段：\n{content}",
+        title = document.title,
+        heading = unit.heading,
+        start_page = unit.page_start,
+        end_page = unit.page_end,
+        tasks = join_candidate_labels(&candidate.tasks),
+        pipelines = join_candidate_labels(&candidate.pipelines),
+        modules = join_candidate_labels(&candidate.modules),
+        challenges = join_candidate_labels(&candidate.challenges),
+        insights = join_candidate_labels(&candidate.insights),
+        edge_json = serde_json::to_string_pretty(edges).unwrap_or_default(),
+        content = truncate_chars(&unit.content, MAP_PROMPT_CHAR_LIMIT),
+    );
+    let value = run_structured_json_with_fallback(
+        provider,
+        model,
+        "You validate extracted edges and keep only evidence-backed links. Never add new edges.",
+        &prompt,
+        edge_validation_schema(),
     )
     .await?;
     Ok(serde_json::from_value(value)?)
@@ -3081,61 +5269,194 @@ fn node_canonicalize_schema() -> serde_json::Value {
     })
 }
 
-async fn run_structured_json(model: &str, system_prompt: &str, user_prompt: &str, schema: serde_json::Value) -> Result<serde_json::Value> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(OLLAMA_REQUEST_TIMEOUT_SECS))
-        .build()?;
-    let res = client
-        .post("http://localhost:11434/api/chat")
-        .json(&json!({
-            "model": model,
-            "stream": false,
-            "format": schema,
-            "messages": [
-                { "role": "system", "content": system_prompt },
-                { "role": "user", "content": user_prompt }
-            ],
-            "options": { "temperature": 0.1 }
-        }))
-        .send()
-        .await?;
-    if !res.status().is_success() {
-        return Err(anyhow!("Ollama structured output failed: {}", res.status()));
+async fn run_structured_json(
+    provider: &ExtractionProviderRuntime,
+    model: &str,
+    system_prompt: &str,
+    user_prompt: &str,
+    schema: serde_json::Value,
+) -> Result<serde_json::Value> {
+    match provider {
+        ExtractionProviderRuntime::Ollama => {
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(OLLAMA_REQUEST_TIMEOUT_SECS))
+                .build()?;
+            let res = client
+                .post("http://localhost:11434/api/chat")
+                .json(&json!({
+                    "model": model,
+                    "stream": false,
+                    "format": schema,
+                    "messages": [
+                        { "role": "system", "content": system_prompt },
+                        { "role": "user", "content": user_prompt }
+                    ],
+                    "options": { "temperature": 0.1 }
+                }))
+                .send()
+                .await?;
+            if !res.status().is_success() {
+                return Err(anyhow!("Ollama structured output failed: {}", res.status()));
+            }
+            let value: serde_json::Value = res.json().await?;
+            let raw = value
+                .get("message")
+                .and_then(|message| message.get("content"))
+                .and_then(|content| content.as_str())
+                .or_else(|| value.get("response").and_then(|content| content.as_str()))
+                .ok_or_else(|| anyhow!("Structured output missing message content"))?;
+            parse_structured_output(raw, &schema)
+        }
+        ExtractionProviderRuntime::OpenAiCompatible { base_url, api_key } => {
+            let raw = run_openai_compatible_chat(
+                base_url,
+                api_key.as_deref(),
+                model,
+                vec![
+                    json!({ "role": "system", "content": system_prompt }),
+                    json!({ "role": "user", "content": user_prompt }),
+                ],
+                0.1,
+                Some(json!({
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "research_memory_extract",
+                        "schema": schema
+                    }
+                })),
+            )
+            .await?;
+            parse_structured_output(&raw, &schema)
+        }
     }
-    let value: serde_json::Value = res.json().await?;
-    let raw = value
-        .get("message")
-        .and_then(|message| message.get("content"))
-        .and_then(|content| content.as_str())
-        .or_else(|| value.get("response").and_then(|content| content.as_str()))
-        .ok_or_else(|| anyhow!("Structured output missing message content"))?;
-    Ok(serde_json::from_str(&strip_code_fences(raw))?)
 }
 
-async fn run_json_generate(model: &str, prompt: &str) -> Result<serde_json::Value> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(OLLAMA_REQUEST_TIMEOUT_SECS))
-        .build()?;
-    let res = client
-        .post("http://localhost:11434/api/generate")
-        .json(&json!({
-            "model": model,
-            "prompt": prompt,
-            "stream": false,
-            "format": "json",
-            "options": { "temperature": 0.0 }
-        }))
-        .send()
-        .await?;
-    if !res.status().is_success() {
-        return Err(anyhow!("Ollama generate failed: {}", res.status()));
+async fn run_json_generate(
+    provider: &ExtractionProviderRuntime,
+    model: &str,
+    prompt: &str,
+) -> Result<serde_json::Value> {
+    match provider {
+        ExtractionProviderRuntime::Ollama => {
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(OLLAMA_REQUEST_TIMEOUT_SECS))
+                .build()?;
+            let res = client
+                .post("http://localhost:11434/api/generate")
+                .json(&json!({
+                    "model": model,
+                    "prompt": prompt,
+                    "stream": false,
+                    "format": "json",
+                    "options": { "temperature": 0.0 }
+                }))
+                .send()
+                .await?;
+            if !res.status().is_success() {
+                return Err(anyhow!("Ollama generate failed: {}", res.status()));
+            }
+            let value: serde_json::Value = res.json().await?;
+            let raw = value
+                .get("response")
+                .and_then(|content| content.as_str())
+                .ok_or_else(|| anyhow!("Generate output missing response"))?;
+            parse_json_like_output(raw)
+        }
+        ExtractionProviderRuntime::OpenAiCompatible { base_url, api_key } => {
+            let raw = run_openai_compatible_chat(
+                base_url,
+                api_key.as_deref(),
+                model,
+                vec![json!({ "role": "user", "content": prompt })],
+                0.0,
+                Some(json!({ "type": "json_object" })),
+            )
+            .await?;
+            parse_json_like_output(&raw)
+        }
     }
-    let value: serde_json::Value = res.json().await?;
-    let raw = value
-        .get("response")
-        .and_then(|content| content.as_str())
-        .ok_or_else(|| anyhow!("Generate output missing response"))?;
-    Ok(serde_json::from_str(&strip_code_fences(raw))?)
+}
+
+async fn run_structured_json_with_fallback(
+    provider: &ExtractionProviderRuntime,
+    model: &str,
+    system_prompt: &str,
+    user_prompt: &str,
+    schema: serde_json::Value,
+) -> Result<serde_json::Value> {
+    match run_structured_json(provider, model, system_prompt, user_prompt, schema.clone()).await {
+        Ok(value) => Ok(value),
+        Err(primary_error) => {
+            let fallback_prompt = format!(
+                "{system_prompt}\n\n严格要求：只输出一个 JSON 对象，不要输出解释、前言、Markdown 或代码块。\n\n{user_prompt}"
+            );
+            match run_json_generate(provider, model, &fallback_prompt).await {
+                Ok(value) => normalize_extraction_value(value, schema)
+                    .map_err(|normalize_error| anyhow!("Structured fallback normalize failed after chat error ({primary_error}): {normalize_error}")),
+                Err(fallback_error) => Err(anyhow!(
+                    "Structured chat failed: {primary_error}; generate fallback failed: {fallback_error}"
+                )),
+            }
+        }
+    }
+}
+
+fn parse_structured_output(raw: &str, schema: &serde_json::Value) -> Result<serde_json::Value> {
+    let value = parse_json_like_output(raw)?;
+    normalize_extraction_value(value, schema.clone())
+}
+
+fn parse_json_like_output(raw: &str) -> Result<serde_json::Value> {
+    let cleaned = strip_code_fences(raw);
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&cleaned) {
+        return Ok(value);
+    }
+    if let Some(snippet) = extract_json_object_like(&cleaned) {
+        return Ok(serde_json::from_str::<serde_json::Value>(&snippet)?);
+    }
+    Err(anyhow!("Failed to parse JSON-like output"))
+}
+
+fn extract_json_object_like(raw: &str) -> Option<String> {
+    let mut start = None;
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (index, ch) in raw.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '{' => {
+                if start.is_none() {
+                    start = Some(index);
+                }
+                depth += 1;
+            }
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    if let Some(start_index) = start {
+                        return Some(raw[start_index..=index].to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn normalize_extraction_value(
@@ -3157,25 +5478,206 @@ fn normalize_extraction_value(
     Ok(value)
 }
 
-async fn run_ollama_chat(model: &str, messages: Vec<serde_json::Value>) -> Result<String> {
-    let client = reqwest::Client::new();
-    let res = client
-        .post("http://localhost:11434/api/chat")
-        .json(&json!({ "model": model, "stream": false, "messages": messages }))
-        .send()
-        .await?;
+#[derive(Clone, Debug)]
+enum ExtractionProviderRuntime {
+    Ollama,
+    OpenAiCompatible {
+        base_url: String,
+        api_key: Option<String>,
+    },
+}
+
+fn merge_extraction_provider_settings(
+    base: &ExtractionProviderSettings,
+    override_settings: Option<&ExtractionProviderSettings>,
+) -> ExtractionProviderSettings {
+    let Some(override_settings) = override_settings else {
+        return base.clone();
+    };
+    ExtractionProviderSettings {
+        provider: override_settings.provider.clone(),
+        base_url: override_settings
+            .base_url
+            .clone()
+            .or_else(|| base.base_url.clone()),
+        api_key: override_settings
+            .api_key
+            .clone()
+            .or_else(|| base.api_key.clone()),
+        extract_fast_model: override_settings
+            .extract_fast_model
+            .clone()
+            .or_else(|| base.extract_fast_model.clone()),
+        extract_fallback_model: override_settings
+            .extract_fallback_model
+            .clone()
+            .or_else(|| base.extract_fallback_model.clone()),
+        extract_pipeline_summary_model: override_settings
+            .extract_pipeline_summary_model
+            .clone()
+            .or_else(|| base.extract_pipeline_summary_model.clone()),
+        extract_pipeline_name_model: override_settings
+            .extract_pipeline_name_model
+            .clone()
+            .or_else(|| base.extract_pipeline_name_model.clone()),
+        extract_edge_model: override_settings
+            .extract_edge_model
+            .clone()
+            .or_else(|| base.extract_edge_model.clone()),
+        extract_edge_validate_model: override_settings
+            .extract_edge_validate_model
+            .clone()
+            .or_else(|| base.extract_edge_validate_model.clone()),
+    }
+}
+
+fn resolve_extraction_provider_runtime(
+    settings: &ExtractionProviderSettings,
+) -> Result<ExtractionProviderRuntime> {
+    match settings.provider {
+        ExtractionProviderKind::Ollama => Ok(ExtractionProviderRuntime::Ollama),
+        ExtractionProviderKind::OpenAiCompatible => {
+            let base_url = settings
+                .base_url
+                .clone()
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            if base_url.is_empty() {
+                return Err(anyhow!(
+                    "OpenAI-compatible extraction provider requires a baseUrl"
+                ));
+            }
+            Ok(ExtractionProviderRuntime::OpenAiCompatible {
+                base_url,
+                api_key: settings.api_key.clone().filter(|value| !value.trim().is_empty()),
+            })
+        }
+    }
+}
+
+fn resolve_extraction_model(
+    direct: Option<String>,
+    legacy: Option<String>,
+    provider_default: Option<String>,
+    fallback: impl FnOnce() -> String,
+) -> String {
+    direct
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| legacy.filter(|value| !value.trim().is_empty()))
+        .or_else(|| provider_default.filter(|value| !value.trim().is_empty()))
+        .unwrap_or_else(fallback)
+}
+
+fn openai_chat_completions_url(base_url: &str) -> String {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    if trimmed.ends_with("/chat/completions") {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}/chat/completions")
+    }
+}
+
+async fn run_openai_compatible_chat(
+    base_url: &str,
+    api_key: Option<&str>,
+    model: &str,
+    messages: Vec<serde_json::Value>,
+    temperature: f32,
+    response_format: Option<serde_json::Value>,
+) -> Result<String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(OLLAMA_REQUEST_TIMEOUT_SECS))
+        .build()?;
+    let mut payload = json!({
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+    });
+    if let Some(response_format) = response_format {
+        payload["response_format"] = response_format;
+    }
+    let mut request = client
+        .post(openai_chat_completions_url(base_url))
+        .header("Content-Type", "application/json");
+    if let Some(api_key) = api_key {
+        request = request.bearer_auth(api_key);
+    }
+    let res = request.json(&payload).send().await?;
     if !res.status().is_success() {
-        return Err(anyhow!("Ollama chat failed: {}", res.status()));
+        return Err(anyhow!(
+            "OpenAI-compatible chat failed: {}",
+            res.status()
+        ));
     }
     let value: serde_json::Value = res.json().await?;
-    Ok(value
-        .get("message")
-        .and_then(|message| message.get("content"))
-        .and_then(|content| content.as_str())
-        .or_else(|| value.get("response").and_then(|content| content.as_str()))
-        .unwrap_or_default()
-        .trim()
-        .to_string())
+    let message = value
+        .get("choices")
+        .and_then(|choices| choices.as_array())
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+        .ok_or_else(|| anyhow!("OpenAI-compatible response missing choice message"))?;
+    if let Some(content) = message.get("content").and_then(|content| content.as_str()) {
+        return Ok(content.trim().to_string());
+    }
+    if let Some(parts) = message.get("content").and_then(|content| content.as_array()) {
+        let text = parts
+            .iter()
+            .filter_map(|part| {
+                part.get("text")
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.trim())
+            })
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Ok(text);
+    }
+    Err(anyhow!("OpenAI-compatible response missing text content"))
+}
+
+async fn run_chat_text(
+    provider: &ExtractionProviderRuntime,
+    model: &str,
+    messages: Vec<serde_json::Value>,
+) -> Result<String> {
+    match provider {
+        ExtractionProviderRuntime::Ollama => {
+            let client = reqwest::Client::new();
+            let res = client
+                .post("http://localhost:11434/api/chat")
+                .json(&json!({ "model": model, "stream": false, "messages": messages }))
+                .send()
+                .await?;
+            if !res.status().is_success() {
+                return Err(anyhow!("Ollama chat failed: {}", res.status()));
+            }
+            let value: serde_json::Value = res.json().await?;
+            Ok(value
+                .get("message")
+                .and_then(|message| message.get("content"))
+                .and_then(|content| content.as_str())
+                .or_else(|| value.get("response").and_then(|content| content.as_str()))
+                .unwrap_or_default()
+                .trim()
+                .to_string())
+        }
+        ExtractionProviderRuntime::OpenAiCompatible { base_url, api_key } => {
+            run_openai_compatible_chat(
+                base_url,
+                api_key.as_deref(),
+                model,
+                messages,
+                0.1,
+                None,
+            )
+            .await
+        }
+    }
+}
+
+async fn run_ollama_chat(model: &str, messages: Vec<serde_json::Value>) -> Result<String> {
+    run_chat_text(&ExtractionProviderRuntime::Ollama, model, messages).await
 }
 
 async fn resolve_embedding_model(preferred: Option<&str>) -> Result<String> {
@@ -3903,34 +6405,51 @@ async fn collect_documents(path: &str) -> Result<Vec<FileDocument>> {
             if !file_path.is_file() {
                 continue;
             }
-            let Some(ext) = file_path.extension().map(|value| value.to_string_lossy().to_lowercase()) else {
-                continue;
-            };
-            let pages = match ext.as_str() {
-                "pdf" => read_pdf_pages(file_path),
-                "md" | "txt" => Ok(vec![PageRecord {
-                    page_number: 1,
-                    content: read_text_file_auto(file_path)?,
-                }]),
-                _ => continue,
-            }?;
-            let full_text = pages.iter().map(|page| page.content.clone()).collect::<Vec<_>>().join("\n\n");
-            if full_text.trim().is_empty() {
-                continue;
+            if let Ok(document) = load_document_from_path(file_path) {
+                documents.push(document);
             }
-            let path_string = file_path.to_string_lossy().to_string();
-            documents.push(FileDocument {
-                paper_id: stable_id("paper", format!("{}:{}", path_string, full_text.len())),
-                path: path_string,
-                title: file_path.file_stem().and_then(|value| value.to_str()).unwrap_or("untitled").to_string(),
-                pages,
-                content_hash: stable_id("hash", &full_text),
-                full_text,
-            });
         }
         Ok::<_, anyhow::Error>(documents)
     })
     .await?
+}
+
+fn load_document_from_path(file_path: &Path) -> Result<FileDocument> {
+    let Some(ext) = file_path
+        .extension()
+        .map(|value| value.to_string_lossy().to_lowercase())
+    else {
+        return Err(anyhow!("Unsupported file without extension"));
+    };
+    let pages = match ext.as_str() {
+        "pdf" => read_pdf_pages(file_path),
+        "md" | "txt" => Ok(vec![PageRecord {
+            page_number: 1,
+            content: read_text_file_auto(file_path)?,
+        }]),
+        _ => Err(anyhow!("Unsupported file extension: {ext}")),
+    }?;
+    let full_text = pages
+        .iter()
+        .map(|page| page.content.clone())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if full_text.trim().is_empty() {
+        return Err(anyhow!("Document has no extracted text"));
+    }
+    let path_string = file_path.to_string_lossy().to_string();
+    Ok(FileDocument {
+        paper_id: stable_id("paper", format!("{}:{}", path_string, full_text.len())),
+        path: path_string,
+        title: file_path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("untitled")
+            .to_string(),
+        pages,
+        content_hash: stable_id("hash", &full_text),
+        full_text,
+    })
 }
 
 fn read_pdf_pages(path: &Path) -> Result<Vec<PageRecord>> {
@@ -4001,16 +6520,38 @@ fn build_map_units(document: &FileDocument, sections: &[SectionRecord]) -> Vec<M
     if !sections.is_empty() {
         let mut units = Vec::new();
         for section in sections {
-            let splitter = TextSplitter::new(MAP_UNIT_CHAR_LIMIT);
-            for (index, chunk) in splitter.chunks(&section.content).enumerate() {
+            let relation_focused = is_relation_focused_section_heading(&section.heading);
+            let char_limit = if relation_focused {
+                RELATION_MAP_UNIT_CHAR_LIMIT
+            } else {
+                MAP_UNIT_CHAR_LIMIT
+            };
+            let overlap = if relation_focused {
+                RELATION_MAP_UNIT_OVERLAP
+            } else {
+                MAP_UNIT_OVERLAP
+            };
+            let chunks = if relation_focused {
+                hard_split_with_overlap(&section.content, char_limit, overlap)
+            } else {
+                TextSplitter::new(char_limit)
+                    .chunks(&section.content)
+                    .map(|chunk| chunk.to_string())
+                    .collect::<Vec<_>>()
+            };
+            for (index, chunk) in chunks.into_iter().enumerate() {
                 units.push(MapUnit {
                     unit_id: format!("{}-{}", section.section_id, index),
                     section_id: Some(section.section_id.clone()),
-                    unit_kind: "section".to_string(),
+                    unit_kind: if relation_focused {
+                        "section_relation".to_string()
+                    } else {
+                        "section".to_string()
+                    },
                     heading: section.heading.clone(),
                     page_start: section.start_page,
                     page_end: section.end_page,
-                    content: chunk.to_string(),
+                    content: chunk,
                 });
             }
         }
@@ -4020,20 +6561,44 @@ fn build_map_units(document: &FileDocument, sections: &[SectionRecord]) -> Vec<M
     }
 
     let mut units = Vec::new();
+    let no_sections = sections.is_empty();
     let mut index = 0usize;
     while index < document.pages.len() {
         let page = &document.pages[index];
         let mut content = page.content.clone();
         let mut end_page = page.page_number;
         let mut consumed_pages = 1usize;
-        if content.chars().count() < MAP_UNIT_CHAR_LIMIT / 2 {
+
+        if no_sections && index == 0 {
+            if let Some(next_page) = document.pages.get(index + 1) {
+                content = format!("{}\n\n{}", content, next_page.content);
+                end_page = next_page.page_number;
+                consumed_pages = 2;
+            }
+            if content.chars().count() < RELATION_FOCUSED_PAGE_WINDOW_CHAR_LIMIT
+                && consumed_pages == 2
+            {
+                if let Some(third_page) = document.pages.get(index + 2) {
+                    let candidate = format!("{}\n\n{}", content, third_page.content);
+                    if candidate.chars().count() <= RELATION_FOCUSED_PAGE_WINDOW_CHAR_LIMIT {
+                        content = candidate;
+                        end_page = third_page.page_number;
+                        consumed_pages = 3;
+                    }
+                }
+            }
+        } else if content.chars().count() < RELATION_FOCUSED_PAGE_WINDOW_CHAR_LIMIT / 2 {
             if let Some(next_page) = document.pages.get(index + 1) {
                 content = format!("{}\n\n{}", content, next_page.content);
                 end_page = next_page.page_number;
                 consumed_pages = 2;
             }
         }
-        for (chunk_index, chunk) in hard_split_with_overlap(&content, MAP_UNIT_CHAR_LIMIT, MAP_UNIT_OVERLAP)
+        for (chunk_index, chunk) in hard_split_with_overlap(
+            &content,
+            RELATION_FOCUSED_PAGE_WINDOW_CHAR_LIMIT,
+            RELATION_FOCUSED_PAGE_WINDOW_OVERLAP,
+        )
             .into_iter()
             .enumerate()
         {
@@ -4052,8 +6617,26 @@ fn build_map_units(document: &FileDocument, sections: &[SectionRecord]) -> Vec<M
     units
 }
 
-fn build_seed_map_units(_document: &FileDocument, sections: &[SectionRecord]) -> Vec<MapUnit> {
-    sections
+fn is_relation_focused_section_heading(heading: &str) -> bool {
+    let normalized = heading.trim().to_lowercase();
+    [
+        "abstract",
+        "introduction",
+        "method",
+        "methodology",
+        "approach",
+        "framework",
+        "overview",
+        "architecture",
+        "model",
+        "proposed method",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+}
+
+fn build_seed_map_units(document: &FileDocument, sections: &[SectionRecord]) -> Vec<MapUnit> {
+    let seeded = sections
         .iter()
         .filter(|section| is_seed_section_heading(&section.heading))
         .map(|section| MapUnit {
@@ -4061,6 +6644,52 @@ fn build_seed_map_units(_document: &FileDocument, sections: &[SectionRecord]) ->
             section_id: Some(section.section_id.clone()),
             unit_kind: "section_seed".to_string(),
             heading: format!("{} [seed]", section.heading),
+            page_start: section.start_page,
+            page_end: section.end_page,
+            content: section.content.clone(),
+        })
+        .collect::<Vec<_>>();
+    if !seeded.is_empty() {
+        return seeded;
+    }
+
+    if sections.is_empty() {
+        let fallback_content = document
+            .pages
+            .iter()
+            .take(2)
+            .map(|page| page.content.clone())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if !fallback_content.trim().is_empty() {
+            let end_page = document
+                .pages
+                .iter()
+                .take(2)
+                .last()
+                .map(|page| page.page_number)
+                .unwrap_or(1);
+            return vec![MapUnit {
+                unit_id: "seed-fallback-pages-1-2".to_string(),
+                section_id: None,
+                unit_kind: "page_seed_fallback".to_string(),
+                heading: "Front Matter [seed-fallback]".to_string(),
+                page_start: 1,
+                page_end: end_page,
+                content: fallback_content,
+            }];
+        }
+        return Vec::new();
+    }
+
+    sections
+        .iter()
+        .take(2)
+        .map(|section| MapUnit {
+            unit_id: format!("seed-fallback-{}", section.section_id),
+            section_id: Some(section.section_id.clone()),
+            unit_kind: "section_seed_fallback".to_string(),
+            heading: format!("{} [seed-fallback]", section.heading),
             page_start: section.start_page,
             page_end: section.end_page,
             content: section.content.clone(),
@@ -4115,6 +6744,7 @@ fn clear_research_memory(conn: &SqliteConnection) -> Result<()> {
         "evidence_refs",
         "graph_edges",
         "graph_nodes",
+        "extraction_unit_results",
         "review_queue",
         "extraction_candidates",
         "chunk_fts",
@@ -4126,6 +6756,43 @@ fn clear_research_memory(conn: &SqliteConnection) -> Result<()> {
         conn.execute(&format!("DELETE FROM {}", table), []).ok();
     }
     Ok(())
+}
+
+fn has_resumable_work(conn: &SqliteConnection, path: &str) -> Result<bool> {
+    let target = Path::new(path);
+    let is_dir = target.is_dir();
+    let sql = if is_dir {
+        "SELECT EXISTS(
+            SELECT 1
+            FROM papers
+            WHERE (path = ?1 OR path LIKE ?2)
+              AND (index_status = ?3 OR extraction_status = ?4)
+        )"
+    } else {
+        "SELECT EXISTS(
+            SELECT 1
+            FROM papers
+            WHERE path = ?1
+              AND (index_status = ?2 OR extraction_status = ?3)
+        )"
+    };
+    let exists = if is_dir {
+        conn.query_row(
+            sql,
+            params![
+                path,
+                format!("{}%", ensure_trailing_separator(path)),
+                PENDING_STATUS,
+                PENDING_STATUS
+            ],
+            |row| row.get::<_, i64>(0),
+        )?
+    } else {
+        conn.query_row(sql, params![path, PENDING_STATUS, PENDING_STATUS], |row| {
+            row.get::<_, i64>(0)
+        })?
+    };
+    Ok(exists != 0)
 }
 
 fn render_markdown_list(values: &[String]) -> String {
@@ -4197,9 +6864,12 @@ fn try_build_evidence_snippet(content: &str, query: &str) -> Option<String> {
     let lower = content.to_lowercase();
     let needle = query.to_lowercase();
     if let Some(position) = lower.find(&needle) {
-        let start = position.saturating_sub(80);
-        let end = (position + query.len() + 80).min(content.len());
-        return Some(content[start..end].replace('\n', " "));
+        let start = clamp_to_char_boundary_left(content, position.saturating_sub(80));
+        let end = clamp_to_char_boundary_right(
+            content,
+            (position + needle.len() + 80).min(content.len()),
+        );
+        return content.get(start..end).map(|snippet| snippet.replace('\n', " "));
     }
     None
 }
@@ -4209,21 +6879,114 @@ fn build_evidence_snippet(content: &str, query: &str) -> String {
 }
 
 fn detect_heading_candidate(page_text: &str) -> Option<String> {
-    let keywords = ["abstract", "introduction", "related work", "method", "methods", "methodology", "experiments", "results", "discussion", "conclusion", "references"];
-    for line in page_text.lines().take(8) {
+    let keywords = [
+        "abstract",
+        "introduction",
+        "related work",
+        "background",
+        "method",
+        "methods",
+        "methodology",
+        "approach",
+        "framework",
+        "experiments",
+        "results",
+        "discussion",
+        "conclusion",
+        "references",
+    ];
+    for line in page_text.lines().take(20) {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.len() > 90 {
             continue;
         }
+        if is_noise_heading_line(trimmed) {
+            continue;
+        }
         let normalized = trimmed.to_lowercase();
-        if keywords.iter().any(|keyword| normalized == *keyword || normalized.starts_with(&format!("{} ", keyword))) {
+        if keywords.iter().any(|keyword| {
+            normalized == *keyword
+                || normalized.starts_with(&format!("{} ", keyword))
+                || normalized.starts_with(&format!("{}.", keyword))
+                || normalized.starts_with(&format!("{}:", keyword))
+                || normalized.contains(&format!(" {}", keyword))
+        }) {
             return Some(trimmed.to_string());
         }
-        if trimmed.chars().next().map(|ch| ch.is_ascii_digit()).unwrap_or(false) && trimmed.split_whitespace().count() <= 12 {
+        if looks_like_structured_heading(trimmed) {
             return Some(trimmed.to_string());
         }
     }
     None
+}
+
+fn is_noise_heading_line(line: &str) -> bool {
+    let normalized = line.trim().to_lowercase();
+    if normalized.is_empty() {
+        return true;
+    }
+    if normalized.chars().all(|ch| ch.is_ascii_digit()) {
+        return true;
+    }
+    if normalized.starts_with("http://")
+        || normalized.starts_with("https://")
+        || normalized.contains("doi.org/")
+        || normalized.contains("nature genetics")
+        || normalized.contains("volume ")
+    {
+        return true;
+    }
+    false
+}
+
+fn looks_like_structured_heading(line: &str) -> bool {
+    let trimmed = line.trim();
+    let mut parts = trimmed.split_whitespace();
+    let Some(first) = parts.next() else {
+        return false;
+    };
+    if !first
+        .chars()
+        .all(|ch| ch.is_ascii_digit() || ch == '.' || ch == ')')
+    {
+        return false;
+    }
+    let rest = parts.collect::<Vec<_>>().join(" ");
+    if rest.len() < 3 || rest.len() > 72 {
+        return false;
+    }
+    let rest_word_count = rest.split_whitespace().count();
+    if rest_word_count == 0 || rest_word_count > 8 {
+        return false;
+    }
+    let rest_lower = rest.to_lowercase();
+    if rest_lower.contains(". ")
+        || rest_lower.contains(", ")
+        || rest_lower.contains("; ")
+        || rest_lower.contains(": ")
+    {
+        return false;
+    }
+    let alphabetic_count = rest.chars().filter(|ch| ch.is_ascii_alphabetic()).count();
+    if alphabetic_count < 3 {
+        return false;
+    }
+    let uppercase_initials = rest
+        .split_whitespace()
+        .filter(|token| {
+            token.chars()
+                .next()
+                .map(|ch| ch.is_ascii_uppercase())
+                .unwrap_or(false)
+        })
+        .count();
+    if uppercase_initials == 0 && !rest_lower.starts_with("abstract") && !rest_lower.starts_with("introduction") {
+        return false;
+    }
+    !is_noise_heading_line(&rest_lower)
+        && rest_lower
+            .chars()
+            .any(|ch| ch.is_ascii_alphabetic())
 }
 
 fn should_extract_map_unit(unit: &MapUnit) -> bool {
@@ -4312,8 +7075,9 @@ fn is_overly_generic_label(kind: &str, label: &str) -> bool {
             "general insight",
             "interventional trajectory generation potential",
         ],
-        "task" => &["analysis", "prediction task", "modeling", "inference"],
-        "module" => &["framework", "model", "algorithm", "pipeline", "module"],
+        "task" => &["task", "tasks", "analysis", "prediction task", "modeling", "inference"],
+        "module" => &["module", "modules", "framework", "model", "algorithm", "pipeline"],
+        "pipeline" => &["pipeline", "pipelines", "framework", "model", "algorithm", "method"],
         _ => &[],
     };
     if generic_by_kind.iter().any(|item| normalized == *item) {
@@ -4324,6 +7088,61 @@ fn is_overly_generic_label(kind: &str, label: &str) -> bool {
         return matches!(kind, "challenge" | "insight" | "task" | "module");
     }
     matches!(kind, "challenge" | "insight") && word_count <= 2
+}
+
+fn is_background_candidate_label(kind: &str, label: &str) -> bool {
+    let normalized = normalize_label(label);
+    if normalized.is_empty() {
+        return true;
+    }
+    let word_count = normalized.split_whitespace().count();
+    match kind {
+        "task" => {
+            let low_signal_prefixes = [
+                "understand ",
+                "understanding ",
+                "reveal ",
+                "revealing ",
+                "identify ",
+                "identifying ",
+                "aiding ",
+                "aid ",
+                "enable ",
+                "allow ",
+                "provide ",
+                "improve ",
+                "advance ",
+                "develop ",
+                "development ",
+                "support ",
+            ];
+            low_signal_prefixes
+                .iter()
+                .any(|prefix| normalized.starts_with(prefix))
+                && word_count >= 4
+                || normalized.contains("therapy development")
+                || normalized.contains("targeted therapies")
+                || normalized.contains("associated challenges")
+                || normalized.contains("challenge overview")
+                || normalized.contains("application of causal machine learning")
+                || normalized.contains("dimensionality reduction")
+                || normalized.contains("data integration")
+                || normalized.contains("trajectory inference")
+                || normalized.contains("transfer of model predictions across modalities")
+                || normalized.contains("construct cell atlases")
+                || normalized.contains("infer cell fate")
+                || normalized.contains("visualization purposes")
+        }
+        "module" => {
+            normalized.ends_with(" technologies")
+                || normalized.contains(" profiling technologies")
+                || normalized == "cell atlases"
+                || normalized == "causal machine learning"
+                || normalized == "noncausal statistical learning"
+                || normalized == "single cell omics profiling"
+        }
+        _ => false,
+    }
 }
 
 fn is_overlong_problem_label(kind: &str, label: &str) -> bool {
@@ -4378,6 +7197,70 @@ fn is_generic_background_evidence(snippet: &str) -> bool {
     .any(|marker| normalized.contains(marker))
 }
 
+fn split_evidence_segments(content: &str) -> Vec<String> {
+    content
+        .replace('\n', " ")
+        .split(['.', ';', '!', '?'])
+        .map(|segment| segment.split_whitespace().collect::<Vec<_>>().join(" "))
+        .map(|segment| segment.trim().to_string())
+        .filter(|segment| segment.len() >= 24)
+        .take(18)
+        .collect()
+}
+
+fn label_keywords(label: &str) -> Vec<String> {
+    normalize_label(label)
+        .split_whitespace()
+        .filter(|token| token.len() >= 4)
+        .filter(|token| {
+            !matches!(
+                *token,
+                "with"
+                    | "from"
+                    | "that"
+                    | "this"
+                    | "these"
+                    | "those"
+                    | "their"
+                    | "there"
+                    | "under"
+                    | "using"
+                    | "across"
+                    | "novel"
+                    | "model"
+                    | "models"
+                    | "single"
+                    | "cell"
+                    | "cells"
+                    | "data"
+                    | "learning"
+            )
+        })
+        .map(|token| token.to_string())
+        .collect()
+}
+
+fn lexical_overlap_score(left: &str, right: &str) -> usize {
+    let right_tokens = label_keywords(right).into_iter().collect::<HashSet<_>>();
+    label_keywords(left)
+        .into_iter()
+        .filter(|token| right_tokens.contains(token))
+        .count()
+}
+
+fn segment_mentions_label(segment: &str, label: &str) -> bool {
+    let normalized_segment = normalize_label(segment);
+    let keywords = label_keywords(label);
+    if keywords.is_empty() {
+        return false;
+    }
+    keywords
+        .iter()
+        .filter(|token| normalized_segment.contains(token.as_str()))
+        .count()
+        >= keywords.len().min(2)
+}
+
 fn normalize_label(value: &str) -> String {
     value
         .trim()
@@ -4420,6 +7303,22 @@ fn truncate_chars(text: &str, limit: usize) -> String {
     }
 }
 
+fn clamp_to_char_boundary_left(text: &str, mut index: usize) -> usize {
+    index = index.min(text.len());
+    while index > 0 && !text.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
+
+fn clamp_to_char_boundary_right(text: &str, mut index: usize) -> usize {
+    index = index.min(text.len());
+    while index < text.len() && !text.is_char_boundary(index) {
+        index += 1;
+    }
+    index.min(text.len())
+}
+
 fn sanitize_fts_query(query: &str) -> String {
     query
         .split_whitespace()
@@ -4437,6 +7336,7 @@ fn is_allowed_edge(edge_type: &str, from_kind: &str, to_kind: &str) -> bool {
     matches!(
         (edge_type, from_kind, to_kind),
         ("task_pipeline", "task", "pipeline")
+            | ("task_module", "task", "module")
             | ("pipeline_module", "pipeline", "module")
             | ("challenge_insight", "challenge", "insight")
     )
@@ -4449,6 +7349,81 @@ fn research_root(app: &AppHandle) -> Result<PathBuf> {
         fs::create_dir_all(&root)?;
     }
     Ok(root)
+}
+
+fn extraction_provider_settings_path(app: &AppHandle) -> Result<PathBuf> {
+    let app_data_dir = app.path().app_data_dir().map_err(|error| anyhow!(error.to_string()))?;
+    if !app_data_dir.exists() {
+        fs::create_dir_all(&app_data_dir)?;
+    }
+    Ok(app_data_dir.join(EXTRACTION_PROVIDER_SETTINGS_FILE))
+}
+
+fn default_cli_app_data_dir() -> Result<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        let appdata = std::env::var("APPDATA")
+            .map_err(|_| anyhow!("APPDATA is not set; cannot locate extraction provider settings"))?;
+        return Ok(PathBuf::from(appdata).join("com.xingyve.researchassistant"));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME")
+            .map_err(|_| anyhow!("HOME is not set; cannot locate extraction provider settings"))?;
+        return Ok(
+            PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join("com.xingyve.researchassistant"),
+        );
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let home = std::env::var("HOME")
+            .map_err(|_| anyhow!("HOME is not set; cannot locate extraction provider settings"))?;
+        return Ok(
+            PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join("com.xingyve.researchassistant"),
+        );
+    }
+}
+
+fn default_extraction_provider_settings_path() -> Result<PathBuf> {
+    let dir = default_cli_app_data_dir()?;
+    if !dir.exists() {
+        fs::create_dir_all(&dir)?;
+    }
+    Ok(dir.join(EXTRACTION_PROVIDER_SETTINGS_FILE))
+}
+
+pub fn load_default_extraction_provider_settings() -> Result<ExtractionProviderSettings> {
+    let path = default_extraction_provider_settings_path()?;
+    if !path.exists() {
+        return Ok(ExtractionProviderSettings::default());
+    }
+    let content = fs::read_to_string(path)?;
+    Ok(serde_json::from_str(&content)?)
+}
+
+pub fn load_extraction_provider_settings(app: &AppHandle) -> Result<ExtractionProviderSettings> {
+    let path = extraction_provider_settings_path(app)?;
+    if !path.exists() {
+        return Ok(ExtractionProviderSettings::default());
+    }
+    let content = fs::read_to_string(path)?;
+    Ok(serde_json::from_str(&content)?)
+}
+
+pub fn save_extraction_provider_settings(
+    app: &AppHandle,
+    settings: &ExtractionProviderSettings,
+) -> Result<()> {
+    let path = extraction_provider_settings_path(app)?;
+    let payload = serde_json::to_string_pretty(settings)?;
+    fs::write(path, payload)?;
+    Ok(())
 }
 
 fn sqlite_path(app: &AppHandle) -> Result<PathBuf> {
