@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+﻿import { invoke } from "@tauri-apps/api/core";
 import cytoscape, {
   type Core as CytoscapeCore,
   type ElementDefinition,
@@ -637,19 +637,26 @@ export function ResearchMemoryPanel({
             label: "data(label)",
             "text-wrap": "wrap",
             "text-max-width": 176,
-            color: "#f8fbff",
+            color: "#f7fbff",
             "font-size": 16,
             "font-weight": 800,
             "text-valign": "center",
             "text-halign": "center",
             "background-color": "data(color)",
-            "border-width": 2,
-            "border-color": "#dbe9ff",
+            "border-width": 2.4,
+            "border-color": "#f1f7ff",
+            "background-blacken": -0.12,
             "overlay-opacity": 0,
-            "underlay-opacity": 0.16,
-            "underlay-padding": 8,
+            "underlay-opacity": 0.2,
+            "underlay-padding": 10,
             "underlay-color": "data(color)",
-            "text-outline-width": 0,
+            "text-outline-width": 1.2,
+            "text-outline-color": "rgba(7, 16, 34, 0.78)",
+            "shadow-blur": 18,
+            "shadow-color": "rgba(4, 12, 24, 0.62)",
+            "shadow-opacity": 0.4,
+            "shadow-offset-x": 0,
+            "shadow-offset-y": 10,
           },
         },
         {
@@ -657,69 +664,88 @@ export function ResearchMemoryPanel({
           style: {
             "border-style": "dashed",
             "border-color": "#ffe1bf",
+            "border-width": 2.2,
           },
         },
         {
           selector: "edge.graph-edge",
           style: {
-            width: 3,
+            width: 3.4,
             "curve-style": "bezier",
-            "line-color": "#47b3ff",
-            "target-arrow-color": "#ffb048",
+            "line-color": "#69c9ff",
+            "target-arrow-color": "#ffc166",
             "target-arrow-shape": "triangle-backcurve",
-            "arrow-scale": 1.35,
-            opacity: 0.85,
+            "arrow-scale": 1.42,
+            opacity: 0.9,
+            "line-style": "solid",
+            "shadow-blur": 10,
+            "shadow-color": "rgba(54, 176, 255, 0.4)",
+            "shadow-opacity": 0.24,
+            "shadow-offset-x": 0,
+            "shadow-offset-y": 0,
           },
         },
         {
           selector: ".graph-dimmed",
           style: {
-            opacity: 0.12,
+            opacity: 0.1,
           },
         },
         {
           selector: "node.graph-selected",
           style: {
-            "border-width": 3,
+            "border-width": 3.2,
             "border-color": "#ffffff",
-            "underlay-opacity": 0.34,
-            "underlay-padding": 18,
+            "underlay-opacity": 0.4,
+            "underlay-padding": 22,
+            "shadow-blur": 24,
+            "shadow-color": "rgba(111, 212, 255, 0.45)",
+            "shadow-opacity": 0.38,
           },
         },
         {
           selector: "edge.graph-selected",
           style: {
-            width: 5,
+            width: 5.4,
             opacity: 1,
-            "line-color": "#79d2ff",
-            "target-arrow-color": "#ffd071",
+            "line-color": "#9fe2ff",
+            "target-arrow-color": "#ffd98d",
+            "shadow-blur": 14,
+            "shadow-color": "rgba(128, 226, 255, 0.48)",
+            "shadow-opacity": 0.34,
           },
         },
         {
           selector: "node.graph-neighbor",
           style: {
             opacity: 1,
-            "underlay-opacity": 0.28,
-            "underlay-padding": 14,
+            "underlay-opacity": 0.3,
+            "underlay-padding": 16,
           },
         },
         {
           selector: "node.graph-hovered",
           style: {
-            "border-width": 3,
+            "border-width": 3.2,
             "border-color": "#ffffff",
-            "underlay-opacity": 0.44,
-            "underlay-padding": 20,
+            "underlay-opacity": 0.48,
+            "underlay-padding": 24,
+            "shadow-blur": 28,
+            "shadow-color": "rgba(133, 221, 255, 0.5)",
+            "shadow-opacity": 0.42,
           },
         },
         {
           selector: "edge.graph-hover-edge",
           style: {
-            width: 6,
+            width: 6.4,
             opacity: 1,
-            "line-color": "#7bd8ff",
-            "target-arrow-color": "#ffbf67",
+            "line-color": "#9be8ff",
+            "target-arrow-color": "#ffc97c",
             "line-style": "dashed",
+            "shadow-blur": 16,
+            "shadow-color": "rgba(137, 228, 255, 0.52)",
+            "shadow-opacity": 0.4,
           },
         },
       ] as any,
@@ -1671,19 +1697,22 @@ export function ResearchMemoryPanel({
               onClick={(event) => event.stopPropagation()}
             >
               <div className="research-graph-modal-header">
-                <div>
-                  <div className="research-section-title tight">
+                <div className="research-graph-header-copy">
+                  <div className="research-section-title tight research-graph-heading">
                     {graphView === "method"
                       ? "Method DAG Canvas"
                       : "Problem DAG Canvas"}
                   </div>
-                  <div className="research-meta-row">
-                    <span>{activeGraph?.nodes.length ?? 0} nodes</span>
-                    <span>{activeGraph?.edges.length ?? 0} edges</span>
+                  <div className="research-graph-summary-row">
+                    <span className="research-graph-summary-pill">
+                      {activeGraph?.nodes.length ?? 0} nodes
+                    </span>
+                    <span className="research-graph-summary-pill">
+                      {activeGraph?.edges.length ?? 0} edges
+                    </span>
                   </div>
-                  <div className="research-meta-row">
-                    <span>Dagre layout · dark graph canvas</span>
-                    <span>Pan and zoom enabled</span>
+                  <div className="research-graph-subtitle">
+                    Dagre layout · space canvas · pan and zoom enabled
                   </div>
                 </div>
                 <div className="support-item-actions research-graph-controls">

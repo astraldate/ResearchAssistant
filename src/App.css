@@ -142,6 +142,83 @@
   --settings-theme-option-shadow: 0 10px 22px rgba(5, 9, 18, 0.28);
 }
 
+:root[data-theme="tech"] {
+  color: #eef7ff;
+  background:
+    radial-gradient(
+      circle at top left,
+      rgba(47, 126, 255, 0.34),
+      transparent 24%
+    ),
+    radial-gradient(
+      circle at 78% 16%,
+      rgba(69, 211, 255, 0.18),
+      transparent 20%
+    ),
+    radial-gradient(
+      circle at right bottom,
+      rgba(57, 88, 255, 0.22),
+      transparent 28%
+    ),
+    linear-gradient(180deg, #04101f 0%, #061528 42%, #081a31 100%);
+  --app-background:
+    radial-gradient(
+      circle at top left,
+      rgba(47, 126, 255, 0.34),
+      transparent 24%
+    ),
+    radial-gradient(
+      circle at 78% 16%,
+      rgba(69, 211, 255, 0.18),
+      transparent 20%
+    ),
+    radial-gradient(
+      circle at right bottom,
+      rgba(57, 88, 255, 0.22),
+      transparent 28%
+    ),
+    linear-gradient(180deg, #04101f 0%, #061528 42%, #081a31 100%);
+  --bg-primary: rgba(8, 20, 40, 0.78);
+  --bg-secondary: rgba(10, 26, 50, 0.72);
+  --bg-tertiary: rgba(16, 38, 68, 0.8);
+  --bg-accent: #12325e;
+  --text-primary: #eef7ff;
+  --text-secondary: #9cb7df;
+  --text-accent: #7dd6ff;
+  --border-color: rgba(110, 171, 255, 0.2);
+  --border-strong: rgba(125, 214, 255, 0.42);
+  --danger: #ff7272;
+  --shadow-soft: 0 24px 56px rgba(1, 8, 24, 0.46);
+  --shadow-float: 0 18px 40px rgba(1, 8, 24, 0.5);
+  --input-surface: rgba(9, 22, 42, 0.76);
+  --focus-ring: rgba(125, 214, 255, 0.22);
+  --workspace-rail-bg: linear-gradient(
+    180deg,
+    rgba(7, 18, 36, 0.86),
+    rgba(5, 14, 31, 0.82)
+  );
+  --workspace-surface: linear-gradient(
+    180deg,
+    rgba(9, 22, 42, 0.82),
+    rgba(6, 16, 34, 0.8)
+  );
+  --workspace-rail-button-bg: rgba(125, 214, 255, 0.08);
+  --workspace-rail-button-hover-bg: rgba(125, 214, 255, 0.18);
+  --modal-surface: rgba(9, 22, 42, 0.82);
+  --settings-tab-bg: rgba(125, 214, 255, 0.08);
+  --settings-tab-active-bg: linear-gradient(135deg, #1a4f9f, #2f8ae2);
+  --settings-tab-active-shadow: 0 12px 26px rgba(11, 47, 102, 0.42);
+  --settings-runtime-bg: linear-gradient(
+    180deg,
+    rgba(14, 31, 58, 0.86),
+    rgba(9, 22, 42, 0.78)
+  );
+  --settings-theme-toggle-bg: rgba(125, 214, 255, 0.06);
+  --settings-theme-option-active-bg: linear-gradient(135deg, #1a4f9f, #2f8ae2);
+  --settings-theme-option-active-color: #f5fbff;
+  --settings-theme-option-shadow: 0 12px 26px rgba(11, 47, 102, 0.4);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -3474,13 +3551,16 @@ textarea:focus {
   );
 }
 
-.send-button.abort-action {
+.send-button.send-action.abort-action {
   color: #b42318;
-  background: rgba(180, 35, 24, 0.08);
+  background: rgba(180, 35, 24, 0.1);
+  box-shadow:
+    0 8px 16px rgba(180, 35, 24, 0.12),
+    0 0 16px rgba(180, 35, 24, 0.1);
 }
 
-.send-button.abort-action:hover {
-  background: rgba(180, 35, 24, 0.14);
+.send-button.send-action.abort-action:hover {
+  background: rgba(180, 35, 24, 0.16);
 }
 
 .send-button:disabled {
@@ -4278,6 +4358,232 @@ textarea:focus {
   background: rgba(18, 25, 35, 0.9);
 }
 
+:root[data-theme="tech"] .sidebar-rail {
+  background: linear-gradient(
+    180deg,
+    rgba(8, 24, 46, 0.76),
+    rgba(5, 17, 34, 0.74)
+  );
+  backdrop-filter: blur(22px) saturate(130%);
+}
+
+:root[data-theme="tech"] .rail-button,
+:root[data-theme="tech"] .workspace-rail-button {
+  color: var(--text-secondary);
+}
+
+:root[data-theme="tech"] .rail-button:hover,
+:root[data-theme="tech"] .workspace-rail-button:hover {
+  background: rgba(116, 196, 255, 0.12);
+  color: var(--text-accent);
+}
+
+:root[data-theme="tech"] .rail-button.active,
+:root[data-theme="tech"] .workspace-rail-button.active {
+  background: linear-gradient(
+    180deg,
+    rgba(20, 72, 144, 0.32),
+    rgba(32, 122, 205, 0.18)
+  );
+  border-color: rgba(116, 196, 255, 0.26);
+  color: #9bd9ff;
+  box-shadow: 0 10px 20px rgba(12, 42, 88, 0.24);
+}
+
+:root[data-theme="tech"] .pdf-reader-toolbar {
+  border-color: rgba(107, 153, 219, 0.18);
+  background: rgba(10, 27, 51, 0.58);
+  box-shadow:
+    0 14px 24px rgba(1, 7, 20, 0.24),
+    inset 0 1px 0 rgba(117, 183, 255, 0.08);
+  backdrop-filter: blur(24px) saturate(145%);
+}
+
+:root[data-theme="tech"]
+  .pdf-reader-toolbar-shell.auto-hidden
+  .pdf-reader-toolbar {
+  background: rgba(10, 27, 51, 0.46);
+}
+
+:root[data-theme="tech"] .pdf-toolbar-page-chip,
+:root[data-theme="tech"] .pdf-toolbar-pill,
+:root[data-theme="tech"] .pdf-lookup-control select {
+  border-color: rgba(107, 153, 219, 0.18);
+  background: rgba(116, 196, 255, 0.06);
+  color: var(--text-primary);
+}
+
+:root[data-theme="tech"] .pdf-lookup-control select:focus,
+:root[data-theme="tech"] .pdf-toolbar-page-chip:focus-within {
+  border-color: rgba(116, 196, 255, 0.32);
+  box-shadow: 0 0 0 3px rgba(116, 196, 255, 0.12);
+}
+
+:root[data-theme="tech"] .pdf-toolbar-icon-button,
+:root[data-theme="tech"] .pdf-dock-topbar-button,
+:root[data-theme="tech"] .ghost-icon-button.pdf-dock-topbar-button {
+  color: #90b4df;
+}
+
+:root[data-theme="tech"] .pdf-toolbar-icon-button:hover:not(:disabled),
+:root[data-theme="tech"] .pdf-dock-topbar-button:hover,
+:root[data-theme="tech"] .ghost-icon-button.pdf-dock-topbar-button:hover {
+  background: rgba(116, 196, 255, 0.1);
+  color: #8fd9ff;
+}
+
+:root[data-theme="tech"] .pdf-toolbar-icon-button.primary {
+  background: rgba(30, 115, 201, 0.18);
+  color: #8fd9ff;
+}
+
+:root[data-theme="tech"] .pdf-dock-panel,
+:root[data-theme="tech"] .pdf-dock-header,
+:root[data-theme="tech"] .pdf-dock-topbar,
+:root[data-theme="tech"] .ai-right-panel,
+:root[data-theme="tech"] .chat-tools-shell,
+:root[data-theme="tech"] .chat-pdf-shell,
+:root[data-theme="tech"] .pdf-workspace {
+  background: linear-gradient(
+    180deg,
+    rgba(10, 23, 45, 0.74),
+    rgba(6, 16, 33, 0.7)
+  );
+  backdrop-filter: blur(24px) saturate(135%);
+}
+
+:root[data-theme="tech"] .chat-header,
+:root[data-theme="tech"] .main-view-header,
+:root[data-theme="tech"] .input-area {
+  background: rgba(10, 23, 45, 0.62);
+  backdrop-filter: blur(22px) saturate(135%);
+}
+
+:root[data-theme="tech"] .messages-list {
+  background: linear-gradient(
+    180deg,
+    rgba(20, 48, 88, 0.18),
+    rgba(7, 17, 31, 0)
+  );
+}
+
+:root[data-theme="tech"] .message.user {
+  background: rgba(34, 100, 184, 0.18);
+}
+
+:root[data-theme="tech"] .chat-input-wrapper,
+:root[data-theme="tech"] .chat-paper-mention-list,
+:root[data-theme="tech"] .support-panel,
+:root[data-theme="tech"] .card-item,
+:root[data-theme="tech"] .reasoning-panel,
+:root[data-theme="tech"] .card-library-search-input,
+:root[data-theme="tech"] .knowledge-search-input,
+:root[data-theme="tech"] .selection-menu,
+:root[data-theme="tech"] .research-text-input {
+  border-color: rgba(107, 153, 219, 0.18);
+  background: rgba(10, 25, 48, 0.62);
+  backdrop-filter: blur(18px) saturate(135%);
+}
+
+:root[data-theme="tech"] .chat-input-wrapper:focus-within {
+  border-color: rgba(116, 196, 255, 0.32);
+  box-shadow:
+    0 0 0 1px rgba(116, 196, 255, 0.14),
+    0 0 0 4px rgba(116, 196, 255, 0.08),
+    0 0 20px rgba(41, 137, 255, 0.16);
+}
+
+:root[data-theme="tech"] .image-chip,
+:root[data-theme="tech"] .chat-scope-chip,
+:root[data-theme="tech"] .research-tag {
+  background: rgba(116, 196, 255, 0.1);
+  border-color: rgba(116, 196, 255, 0.16);
+  color: #8fd9ff;
+}
+
+:root[data-theme="tech"] .send-button:hover,
+:root[data-theme="tech"] .card-library-header-icon:hover {
+  background: rgba(116, 196, 255, 0.1);
+  color: #8fd9ff;
+}
+
+:root[data-theme="tech"] .card-library-header-icon,
+:root[data-theme="tech"] .chat-selection-trigger {
+  background: rgba(116, 196, 255, 0.06);
+  border-color: rgba(107, 153, 219, 0.18);
+  color: var(--text-secondary);
+}
+
+:root[data-theme="tech"] .research-panel-tab,
+:root[data-theme="tech"] .research-inline-tab,
+:root[data-theme="tech"] .settings-tab,
+:root[data-theme="tech"] .tab-button,
+:root[data-theme="tech"] .action-button,
+:root[data-theme="tech"] .research-toolbar .action-button,
+:root[data-theme="tech"] .research-graph-controls .action-button {
+  background: rgba(116, 196, 255, 0.06);
+  border-color: rgba(107, 153, 219, 0.18);
+  color: var(--text-primary);
+}
+
+:root[data-theme="tech"] .research-panel-tab.active,
+:root[data-theme="tech"] .research-inline-tab.active,
+:root[data-theme="tech"] .settings-tab.active,
+:root[data-theme="tech"] .tab-button.active,
+:root[data-theme="tech"] .action-button.primary {
+  background: linear-gradient(135deg, #17488c, #2587d4);
+  border-color: transparent;
+  color: #f4fbff;
+  box-shadow: 0 10px 20px rgba(14, 54, 110, 0.26);
+}
+
+:root[data-theme="tech"] .tab-button:hover,
+:root[data-theme="tech"] .action-button:hover,
+:root[data-theme="tech"] .research-toolbar .action-button:hover,
+:root[data-theme="tech"] .research-graph-controls .action-button:hover {
+  background: rgba(116, 196, 255, 0.12);
+  color: #8fd9ff;
+}
+
+:root[data-theme="tech"] .research-card,
+:root[data-theme="tech"] .research-node-card,
+:root[data-theme="tech"] .settings-model-card,
+:root[data-theme="tech"] .mobile-settings-panel {
+  border-color: rgba(107, 153, 219, 0.16);
+  background: linear-gradient(
+    180deg,
+    rgba(12, 28, 53, 0.68),
+    rgba(8, 20, 40, 0.62)
+  );
+  box-shadow: 0 12px 26px rgba(1, 7, 20, 0.22);
+  backdrop-filter: blur(20px) saturate(140%);
+}
+
+:root[data-theme="tech"] .settings-modal,
+:root[data-theme="tech"] .settings-modal-header,
+:root[data-theme="tech"] .settings-tabs {
+  background: var(--modal-surface);
+  backdrop-filter: blur(24px) saturate(140%);
+}
+
+:root[data-theme="tech"] .settings-path-box,
+:root[data-theme="tech"] .model-compact-row select {
+  background: rgba(9, 20, 38, 0.94);
+  border-color: rgba(107, 153, 219, 0.18);
+  color: var(--text-primary);
+}
+
+:root[data-theme="tech"] .mobile-settings-device-item,
+:root[data-theme="tech"] .model-compact-download {
+  background: rgba(116, 196, 255, 0.06);
+  border-color: rgba(107, 153, 219, 0.18);
+  color: var(--text-secondary);
+}
+
+:root[data-theme="tech"] .mobile-settings-code {
+  color: #8fd9ff;
+}
+
 .settings-model-grid {
   display: flex;
   flex-direction: column;
@@ -5005,9 +5311,157 @@ textarea:focus {
 .research-graph-canvas {
   width: 100%;
   overflow: hidden;
-  border: 1px solid rgba(78, 126, 201, 0.18);
-  border-radius: 24px;
+  border: 1px solid rgba(122, 168, 255, 0.16);
+  border-radius: 28px;
   background:
+    radial-gradient(
+      ellipse 12% 5% at 18% 78%,
+      rgba(255, 140, 182, 0.12) 0,
+      rgba(255, 140, 182, 0.04) 34%,
+      transparent 64%
+    ),
+    radial-gradient(
+      ellipse 15% 6% at 28% 68%,
+      rgba(205, 118, 255, 0.12) 0,
+      rgba(205, 118, 255, 0.045) 34%,
+      transparent 64%
+    ),
+    radial-gradient(
+      ellipse 12% 5% at 38% 58%,
+      rgba(255, 126, 182, 0.13) 0,
+      rgba(255, 126, 182, 0.045) 34%,
+      transparent 64%
+    ),
+    radial-gradient(
+      ellipse 14% 5% at 48% 48%,
+      rgba(155, 121, 255, 0.12) 0,
+      rgba(155, 121, 255, 0.04) 34%,
+      transparent 64%
+    ),
+    radial-gradient(
+      ellipse 12% 5% at 58% 40%,
+      rgba(255, 132, 172, 0.12) 0,
+      rgba(255, 132, 172, 0.04) 34%,
+      transparent 64%
+    ),
+    radial-gradient(
+      ellipse 15% 6% at 68% 31%,
+      rgba(194, 123, 255, 0.11) 0,
+      rgba(194, 123, 255, 0.038) 34%,
+      transparent 64%
+    ),
+    radial-gradient(
+      ellipse 12% 5% at 78% 23%,
+      rgba(255, 146, 192, 0.1) 0,
+      rgba(255, 146, 192, 0.034) 34%,
+      transparent 64%
+    ),
+    linear-gradient(
+      132deg,
+      rgba(106, 112, 255, 0.02) 0%,
+      rgba(106, 112, 255, 0.02) 18%,
+      rgba(170, 105, 255, 0.06) 28%,
+      rgba(232, 116, 188, 0.16) 38%,
+      rgba(255, 132, 176, 0.2) 44%,
+      rgba(209, 104, 214, 0.16) 51%,
+      rgba(120, 123, 255, 0.1) 60%,
+      rgba(94, 118, 214, 0.05) 72%,
+      transparent 86%
+    ),
+    radial-gradient(
+      ellipse 46% 20% at 24% 16%,
+      rgba(116, 112, 255, 0.1) 0,
+      rgba(116, 112, 255, 0.05) 24%,
+      rgba(231, 130, 188, 0.05) 46%,
+      transparent 68%
+    ),
+    radial-gradient(
+      ellipse 42% 16% at 54% 46%,
+      rgba(255, 123, 181, 0.12) 0,
+      rgba(255, 123, 181, 0.06) 24%,
+      rgba(145, 96, 255, 0.04) 44%,
+      transparent 66%
+    ),
+    radial-gradient(
+      ellipse 44% 18% at 82% 76%,
+      rgba(170, 104, 255, 0.09) 0,
+      rgba(170, 104, 255, 0.04) 22%,
+      rgba(255, 124, 170, 0.04) 42%,
+      transparent 66%
+    ),
+    radial-gradient(
+      ellipse 22% 14% at 22% 40%,
+      rgba(75, 121, 255, 0.07) 0,
+      rgba(75, 121, 255, 0.035) 24%,
+      transparent 56%
+    ),
+    radial-gradient(
+      ellipse 18% 12% at 78% 34%,
+      rgba(181, 95, 255, 0.06) 0,
+      rgba(181, 95, 255, 0.03) 22%,
+      transparent 54%
+    ),
+    radial-gradient(
+      circle at 32% 24%,
+      rgba(82, 159, 255, 0.12) 0,
+      rgba(82, 159, 255, 0.05) 12%,
+      transparent 28%
+    ),
+    radial-gradient(
+      circle at 68% 18%,
+      rgba(182, 117, 255, 0.1) 0,
+      rgba(182, 117, 255, 0.04) 11%,
+      transparent 24%
+    ),
+    radial-gradient(
+      circle at 60% 72%,
+      rgba(255, 126, 182, 0.08) 0,
+      rgba(255, 126, 182, 0.03) 10%,
+      transparent 22%
+    ),
+    radial-gradient(
+      circle at 18% 16%,
+      rgba(84, 192, 255, 0.22) 0,
+      rgba(84, 192, 255, 0.08) 16%,
+      transparent 34%
+    ),
+    radial-gradient(
+      circle at 72% 12%,
+      rgba(146, 104, 255, 0.22) 0,
+      rgba(146, 104, 255, 0.08) 16%,
+      transparent 30%
+    ),
+    radial-gradient(
+      circle at 84% 78%,
+      rgba(82, 255, 198, 0.18) 0,
+      rgba(82, 255, 198, 0.08) 14%,
+      transparent 28%
+    ),
+    radial-gradient(
+      circle at 22% 28%,
+      rgba(255, 255, 255, 0.5) 0 1px,
+      transparent 1.6px
+    ),
+    radial-gradient(
+      circle at 68% 24%,
+      rgba(255, 255, 255, 0.32) 0 1px,
+      transparent 1.8px
+    ),
+    radial-gradient(
+      circle at 82% 38%,
+      rgba(255, 255, 255, 0.4) 0 1px,
+      transparent 1.6px
+    ),
+    radial-gradient(
+      circle at 34% 76%,
+      rgba(255, 255, 255, 0.26) 0 1px,
+      transparent 1.8px
+    ),
+    radial-gradient(
+      circle at 58% 86%,
+      rgba(255, 255, 255, 0.22) 0 1px,
+      transparent 1.8px
+    ),
     radial-gradient(
       circle at top left,
       rgba(67, 162, 255, 0.18),
@@ -5018,12 +5472,334 @@ textarea:focus {
       rgba(65, 255, 176, 0.12),
       transparent 22%
     ),
-    linear-gradient(180deg, rgba(6, 16, 32, 0.98), rgba(8, 20, 38, 0.96));
+    linear-gradient(180deg, rgba(3, 10, 22, 0.98), rgba(6, 15, 30, 0.98));
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.05),
-    0 28px 80px rgba(2, 10, 22, 0.48);
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    inset 0 0 0 1px rgba(159, 202, 255, 0.05),
+    0 34px 96px rgba(1, 8, 24, 0.58);
   margin-bottom: 14px;
   position: relative;
+}
+
+.research-graph-canvas::before,
+.research-graph-canvas::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.research-graph-canvas::before {
+  background:
+    radial-gradient(
+      ellipse 10% 4% at 22% 73%,
+      rgba(255, 184, 218, 0.12) 0,
+      rgba(255, 184, 218, 0.03) 38%,
+      transparent 68%
+    ),
+    radial-gradient(
+      ellipse 9% 3.8% at 31% 64%,
+      rgba(222, 150, 255, 0.12) 0,
+      rgba(222, 150, 255, 0.03) 38%,
+      transparent 68%
+    ),
+    radial-gradient(
+      ellipse 10% 4% at 43% 53%,
+      rgba(255, 170, 212, 0.11) 0,
+      rgba(255, 170, 212, 0.03) 38%,
+      transparent 68%
+    ),
+    radial-gradient(
+      ellipse 10% 4% at 55% 44%,
+      rgba(175, 148, 255, 0.11) 0,
+      rgba(175, 148, 255, 0.028) 38%,
+      transparent 68%
+    ),
+    radial-gradient(
+      ellipse 10% 4% at 67% 36%,
+      rgba(255, 158, 203, 0.1) 0,
+      rgba(255, 158, 203, 0.028) 38%,
+      transparent 68%
+    ),
+    radial-gradient(
+      ellipse 26% 13% at 24% 70%,
+      rgba(228, 119, 176, 0.08) 0,
+      rgba(228, 119, 176, 0.03) 26%,
+      transparent 60%
+    ),
+    radial-gradient(
+      ellipse 24% 14% at 72% 48%,
+      rgba(190, 114, 255, 0.06) 0,
+      rgba(190, 114, 255, 0.026) 24%,
+      transparent 60%
+    ),
+    radial-gradient(
+      ellipse 30% 18% at 48% 22%,
+      rgba(115, 124, 255, 0.08) 0,
+      rgba(115, 124, 255, 0.05) 26%,
+      rgba(233, 117, 187, 0.024) 42%,
+      transparent 62%
+    ),
+    radial-gradient(
+      ellipse 26% 18% at 62% 56%,
+      rgba(224, 112, 174, 0.08) 0,
+      rgba(224, 112, 174, 0.04) 24%,
+      rgba(155, 90, 255, 0.018) 40%,
+      transparent 62%
+    ),
+    radial-gradient(
+      circle at 86% 18%,
+      rgba(255, 246, 208, 0.98) 0,
+      rgba(255, 219, 129, 0.68) 1.2%,
+      rgba(255, 214, 122, 0.2) 2.8%,
+      transparent 6.5%
+    ),
+    radial-gradient(
+      circle at 84% 19%,
+      rgba(255, 240, 197, 0.42) 0,
+      rgba(255, 222, 143, 0.12) 5%,
+      transparent 11%
+    ),
+    radial-gradient(
+      circle at 19% 73%,
+      rgba(232, 245, 255, 0.7) 0,
+      rgba(197, 225, 255, 0.26) 4.2%,
+      transparent 7%
+    ),
+    radial-gradient(
+      circle at 20% 76%,
+      rgba(173, 207, 233, 0.94) 0,
+      rgba(108, 141, 181, 0.95) 6%,
+      rgba(56, 83, 124, 0.96) 11.5%,
+      rgba(20, 37, 70, 0.94) 15.4%,
+      rgba(8, 18, 40, 0.5) 18.8%,
+      transparent 24%
+    ),
+    radial-gradient(
+      circle at 18.4% 78.4%,
+      rgba(9, 20, 43, 0.34) 0,
+      transparent 6.6%
+    ),
+    radial-gradient(
+      circle at 76% 66%,
+      rgba(255, 238, 233, 0.64) 0,
+      rgba(255, 212, 186, 0.22) 3.8%,
+      transparent 6.4%
+    ),
+    radial-gradient(
+      circle at 77% 69%,
+      rgba(230, 182, 144, 0.92) 0,
+      rgba(168, 114, 83, 0.95) 5.2%,
+      rgba(94, 61, 48, 0.94) 10.4%,
+      rgba(37, 23, 26, 0.82) 13.8%,
+      rgba(14, 11, 18, 0.44) 17%,
+      transparent 21.5%
+    ),
+    radial-gradient(
+      circle at 79.2% 71.8%,
+      rgba(28, 18, 20, 0.34) 0,
+      transparent 6.8%
+    ),
+    radial-gradient(
+      ellipse 14% 4.6% at 82% 30%,
+      rgba(255, 228, 240, 0.24) 0,
+      rgba(228, 208, 255, 0.18) 18%,
+      rgba(157, 161, 255, 0.08) 34%,
+      transparent 60%
+    ),
+    radial-gradient(
+      ellipse 8% 2.2% at 82% 30%,
+      rgba(255, 255, 255, 0.28) 0,
+      rgba(198, 223, 255, 0.16) 22%,
+      transparent 56%
+    );
+  opacity: 0.82;
+}
+
+.research-graph-canvas::after {
+  background:
+    radial-gradient(
+      circle at 9% 16%,
+      rgba(255, 255, 255, 0.9) 0 0.7px,
+      transparent 1.8px
+    ),
+    radial-gradient(
+      circle at 10% 44%,
+      rgba(255, 255, 255, 0.34) 0 0.6px,
+      transparent 1.7px
+    ),
+    radial-gradient(
+      circle at 11% 28%,
+      rgba(255, 255, 255, 0.5) 0 0.7px,
+      transparent 1.8px
+    ),
+    radial-gradient(
+      circle at 14% 52%,
+      rgba(255, 255, 255, 0.42) 0 0.8px,
+      transparent 2px
+    ),
+    radial-gradient(
+      circle at 17% 67%,
+      rgba(255, 255, 255, 0.72) 0 0.8px,
+      transparent 1.8px
+    ),
+    radial-gradient(
+      circle at 19% 84%,
+      rgba(255, 255, 255, 0.36) 0 0.7px,
+      transparent 1.8px
+    ),
+    radial-gradient(
+      circle at 21% 34%,
+      rgba(255, 255, 255, 0.62) 0 0.8px,
+      transparent 1.9px
+    ),
+    radial-gradient(
+      circle at 24% 18%,
+      rgba(255, 255, 255, 0.28) 0 0.6px,
+      transparent 1.6px
+    ),
+    radial-gradient(
+      circle at 27% 62%,
+      rgba(255, 255, 255, 0.38) 0 0.7px,
+      transparent 1.7px
+    ),
+    radial-gradient(
+      circle at 31% 12%,
+      rgba(255, 255, 255, 0.74) 0 0.8px,
+      transparent 1.9px
+    ),
+    radial-gradient(
+      circle at 35% 24%,
+      rgba(255, 255, 255, 0.42) 0 0.7px,
+      transparent 1.8px
+    ),
+    radial-gradient(
+      circle at 37% 72%,
+      rgba(255, 255, 255, 0.58) 0 0.8px,
+      transparent 1.9px
+    ),
+    radial-gradient(
+      circle at 39% 48%,
+      rgba(255, 255, 255, 0.54) 0 0.7px,
+      transparent 1.8px
+    ),
+    radial-gradient(
+      circle at 43% 58%,
+      rgba(255, 255, 255, 0.26) 0 0.6px,
+      transparent 1.6px
+    ),
+    radial-gradient(
+      circle at 46% 18%,
+      rgba(255, 255, 255, 0.82) 0 0.8px,
+      transparent 2px
+    ),
+    radial-gradient(
+      circle at 49% 36%,
+      rgba(255, 255, 255, 0.42) 0 0.7px,
+      transparent 1.8px
+    ),
+    radial-gradient(
+      circle at 53% 74%,
+      rgba(255, 255, 255, 0.32) 0 0.8px,
+      transparent 2px
+    ),
+    radial-gradient(
+      circle at 57% 62%,
+      rgba(255, 255, 255, 0.7) 0 0.8px,
+      transparent 1.8px
+    ),
+    radial-gradient(
+      circle at 61% 26%,
+      rgba(255, 255, 255, 0.6) 0 0.7px,
+      transparent 1.8px
+    ),
+    radial-gradient(
+      circle at 66% 52%,
+      rgba(255, 255, 255, 0.44) 0 0.8px,
+      transparent 1.9px
+    ),
+    radial-gradient(
+      circle at 69% 14%,
+      rgba(255, 255, 255, 0.48) 0 0.7px,
+      transparent 1.8px
+    ),
+    radial-gradient(
+      circle at 71% 28%,
+      rgba(255, 255, 255, 0.26) 0 0.6px,
+      transparent 1.6px
+    ),
+    radial-gradient(
+      circle at 74% 34%,
+      rgba(255, 255, 255, 0.92) 0 0.8px,
+      transparent 2px
+    ),
+    radial-gradient(
+      circle at 76% 56%,
+      rgba(255, 255, 255, 0.52) 0 0.7px,
+      transparent 1.8px
+    ),
+    radial-gradient(
+      circle at 79% 84%,
+      rgba(255, 255, 255, 0.34) 0 0.8px,
+      transparent 2px
+    ),
+    radial-gradient(
+      circle at 83% 74%,
+      rgba(255, 255, 255, 0.64) 0 0.8px,
+      transparent 1.8px
+    ),
+    radial-gradient(
+      circle at 88% 40%,
+      rgba(255, 255, 255, 0.72) 0 0.8px,
+      transparent 1.9px
+    ),
+    radial-gradient(
+      circle at 92% 62%,
+      rgba(255, 255, 255, 0.48) 0 0.8px,
+      transparent 2px
+    ),
+    radial-gradient(
+      circle at 94% 20%,
+      rgba(255, 255, 255, 0.72) 0 0.8px,
+      transparent 1.9px
+    ),
+    radial-gradient(
+      circle at 96% 78%,
+      rgba(255, 255, 255, 0.42) 0 0.7px,
+      transparent 1.8px
+    ),
+    radial-gradient(
+      circle at 86% 16%,
+      rgba(255, 255, 255, 0.94) 0 1px,
+      transparent 2.1px
+    ),
+    radial-gradient(
+      circle at 42% 8%,
+      rgba(255, 255, 255, 0.2) 0 0.6px,
+      transparent 1.6px
+    ),
+    radial-gradient(
+      circle at 52% 22%,
+      rgba(255, 255, 255, 0.22) 0 0.6px,
+      transparent 1.6px
+    ),
+    radial-gradient(
+      circle at 64% 8%,
+      rgba(255, 255, 255, 0.18) 0 0.6px,
+      transparent 1.6px
+    ),
+    radial-gradient(
+      circle at 72% 88%,
+      rgba(255, 255, 255, 0.16) 0 0.6px,
+      transparent 1.6px
+    ),
+    radial-gradient(
+      circle at 28% 88%,
+      rgba(255, 255, 255, 0.18) 0 0.6px,
+      transparent 1.6px
+    );
+  opacity: 0.88;
+  mix-blend-mode: screen;
 }
 
 .research-graph-canvas.fullscreen {
@@ -5047,8 +5823,24 @@ textarea:focus {
   position: fixed;
   inset: 0;
   z-index: 80;
-  background: rgba(4, 10, 18, 0.42);
-  backdrop-filter: blur(10px);
+  background:
+    radial-gradient(
+      circle at 20% 18%,
+      rgba(44, 116, 255, 0.18),
+      transparent 30%
+    ),
+    radial-gradient(
+      circle at 82% 14%,
+      rgba(131, 72, 255, 0.18),
+      transparent 26%
+    ),
+    radial-gradient(
+      circle at 70% 78%,
+      rgba(49, 213, 255, 0.12),
+      transparent 24%
+    ),
+    rgba(2, 7, 16, 0.72);
+  backdrop-filter: blur(16px) saturate(120%);
   display: flex;
   align-items: stretch;
   justify-content: center;
@@ -5058,14 +5850,14 @@ textarea:focus {
 .research-graph-modal {
   width: min(1460px, calc(100vw - 44px));
   height: min(900px, calc(100vh - 44px));
-  border-radius: 24px;
-  border: 1px solid rgba(84, 108, 144, 0.2);
-  background: linear-gradient(
-    180deg,
-    rgba(14, 20, 34, 0.98),
-    rgba(10, 16, 28, 0.98)
-  );
-  box-shadow: 0 34px 90px rgba(2, 8, 18, 0.52);
+  border-radius: 30px;
+  border: 1px solid rgba(134, 171, 255, 0.16);
+  background:
+    linear-gradient(180deg, rgba(17, 31, 60, 0.3), transparent 18%),
+    linear-gradient(180deg, rgba(6, 14, 27, 0.98), rgba(4, 10, 20, 0.98));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 36px 110px rgba(1, 6, 18, 0.72);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -5076,17 +5868,90 @@ textarea:focus {
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-  padding: 18px 20px 12px;
-  border-bottom: 1px solid rgba(84, 108, 144, 0.2);
+  padding: 20px 22px 14px;
+  border-bottom: 1px solid rgba(124, 168, 255, 0.12);
   color: #f5f8ff;
+  background:
+    linear-gradient(180deg, rgba(13, 23, 43, 0.96), rgba(9, 18, 34, 0.82)),
+    radial-gradient(
+      circle at top left,
+      rgba(65, 171, 255, 0.18),
+      transparent 34%
+    );
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.research-graph-header-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.research-graph-heading {
+  font-size: 1.08rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  color: #f4f8ff;
+}
+
+.research-graph-summary-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.research-graph-summary-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(161, 196, 255, 0.16);
+  background: rgba(104, 155, 255, 0.1);
+  color: #dbe8ff;
+  font-size: 0.77rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.research-graph-subtitle {
+  color: rgba(194, 213, 244, 0.82);
+  font-size: 0.82rem;
+  line-height: 1.5;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .research-graph-controls {
   flex-wrap: wrap;
+  gap: 8px;
 }
 
 .research-graph-controls .action-button {
   min-width: 44px;
+  border-color: rgba(137, 178, 255, 0.16);
+  background: linear-gradient(
+    180deg,
+    rgba(75, 112, 184, 0.22),
+    rgba(21, 36, 68, 0.86)
+  );
+  color: #edf4ff;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 12px 24px rgba(0, 0, 0, 0.18);
+}
+
+.research-graph-controls .action-button:hover:not(:disabled) {
+  border-color: rgba(140, 204, 255, 0.3);
+  background: linear-gradient(
+    180deg,
+    rgba(90, 141, 232, 0.34),
+    rgba(26, 44, 84, 0.9)
+  );
+  transform: translateY(-1px);
 }
 
 .research-graph-stage-panel,
@@ -5102,22 +5967,29 @@ textarea:focus {
   top: 0;
   max-height: 100%;
   overflow: auto;
-  padding: 10px;
-  border-radius: 22px;
-  border: 1px solid rgba(84, 108, 144, 0.16);
+  padding: 12px;
+  border-radius: 24px;
+  border: 1px solid rgba(126, 170, 255, 0.14);
   background: linear-gradient(
     180deg,
-    rgba(17, 24, 40, 0.86),
-    rgba(11, 18, 30, 0.9)
+    rgba(17, 28, 50, 0.88),
+    rgba(9, 16, 30, 0.92)
   );
-  backdrop-filter: blur(14px);
+  backdrop-filter: blur(18px) saturate(130%);
   color: #eef4ff;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 20px 48px rgba(1, 8, 20, 0.24);
 }
 
 .research-graph-detail-panel .research-card,
 .research-graph-detail-panel .research-evidence-item {
-  border-color: rgba(132, 154, 192, 0.14);
-  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(142, 173, 226, 0.14);
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.08),
+    rgba(255, 255, 255, 0.04)
+  );
   color: #eef4ff;
 }
 
@@ -5149,6 +6021,7 @@ textarea:focus {
   gap: 10px;
   z-index: 2;
   pointer-events: none;
+  flex-wrap: wrap;
 }
 
 .research-graph-lane-chip {
@@ -5158,14 +6031,16 @@ textarea:focus {
   min-width: 94px;
   padding: 8px 14px;
   border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(9, 18, 35, 0.54);
   color: #f7fbff;
   font-size: 0.76rem;
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.22);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 10px 26px rgba(0, 0, 0, 0.28);
 }
 
 .research-graph-lane-chip.task {
@@ -5198,16 +6073,20 @@ textarea:focus {
   width: 280px;
   z-index: 3;
   padding: 14px 16px;
-  border-radius: 18px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.16),
-    rgba(255, 255, 255, 0.08)
-  );
+  border-radius: 20px;
+  border: 1px solid rgba(160, 200, 255, 0.16);
+  background:
+    radial-gradient(
+      circle at top right,
+      rgba(84, 195, 255, 0.14),
+      transparent 34%
+    ),
+    linear-gradient(180deg, rgba(21, 33, 60, 0.9), rgba(10, 19, 37, 0.92));
   color: #f6f9ff;
-  backdrop-filter: blur(18px) saturate(150%);
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.34);
+  backdrop-filter: blur(18px) saturate(160%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 24px 56px rgba(0, 0, 0, 0.38);
   pointer-events: none;
 }
 
@@ -5818,4 +6697,275 @@ textarea:focus {
 :root[data-theme="dark"] .model-compact-download:hover:not(:disabled) {
   background: rgba(130, 182, 255, 0.1);
   color: var(--text-accent);
+}
+
+:root[data-theme="dark"] .pdf-dock-topbar-button,
+:root[data-theme="dark"] .ghost-icon-button.pdf-dock-topbar-button {
+  background: rgba(18, 25, 35, 0.92) !important;
+  border: 1px solid rgba(135, 158, 194, 0.16) !important;
+  color: var(--text-secondary) !important;
+}
+
+:root[data-theme="dark"] .pdf-lookup-control select {
+  background: rgba(22, 29, 39, 0.96) !important;
+  background-color: rgba(22, 29, 39, 0.96) !important;
+  border-color: rgba(135, 158, 194, 0.16) !important;
+  color: var(--text-primary) !important;
+}
+
+:root[data-theme="tech"] .pdf-dock-topbar-button,
+:root[data-theme="tech"] .ghost-icon-button.pdf-dock-topbar-button {
+  background: rgba(10, 25, 48, 0.72) !important;
+  border: 1px solid rgba(107, 153, 219, 0.2) !important;
+  color: #90b4df !important;
+  backdrop-filter: blur(18px) saturate(140%);
+}
+
+:root[data-theme="tech"] .pdf-lookup-control select {
+  background: rgba(10, 25, 48, 0.72) !important;
+  background-color: rgba(10, 25, 48, 0.72) !important;
+  border-color: rgba(107, 153, 219, 0.2) !important;
+  color: var(--text-primary) !important;
+}
+
+:root[data-theme="dark"] .pdf-selection-context-menu {
+  border-color: rgba(121, 145, 184, 0.22);
+  background: rgba(16, 22, 35, 0.94);
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.42);
+}
+
+:root[data-theme="dark"] .pdf-selection-context-menu button {
+  color: #edf3ff;
+}
+
+:root[data-theme="dark"] .pdf-selection-context-menu button:hover {
+  background: rgba(104, 145, 219, 0.16);
+}
+
+:root[data-theme="dark"] .pdf-selection-context-divider {
+  background: rgba(148, 166, 194, 0.16);
+}
+
+:root[data-theme="dark"] .pdf-selection-context-label {
+  color: rgba(214, 226, 244, 0.68);
+}
+
+:root[data-theme="dark"] .pdf-annotation-editor {
+  border-color: rgba(121, 145, 184, 0.22);
+  background: rgba(15, 22, 35, 0.94);
+  box-shadow: 0 22px 52px rgba(0, 0, 0, 0.42);
+}
+
+:root[data-theme="dark"] .pdf-annotation-editor-title {
+  color: #edf3ff;
+}
+
+:root[data-theme="dark"] .pdf-annotation-editor-input {
+  border-color: rgba(121, 145, 184, 0.18);
+  background: rgba(10, 15, 25, 0.94);
+  color: #edf3ff;
+}
+
+:root[data-theme="dark"] .pdf-annotation-editor-input:focus {
+  border-color: rgba(113, 168, 255, 0.34);
+  box-shadow: 0 0 0 3px rgba(113, 168, 255, 0.12);
+}
+
+:root[data-theme="dark"] .pdf-annotation-editor-actions button {
+  background: rgba(109, 139, 191, 0.12);
+  color: #edf3ff;
+}
+
+:root[data-theme="dark"] .pdf-annotation-editor-actions button.primary {
+  background: linear-gradient(
+    180deg,
+    rgba(111, 167, 255, 0.94),
+    rgba(63, 112, 221, 0.94)
+  );
+  color: #fff;
+}
+
+:root[data-theme="tech"] .pdf-selection-context-menu {
+  border-color: rgba(117, 181, 255, 0.22);
+  background:
+    linear-gradient(180deg, rgba(14, 28, 53, 0.94), rgba(7, 18, 35, 0.96)),
+    radial-gradient(
+      circle at top right,
+      rgba(76, 191, 255, 0.14),
+      transparent 34%
+    );
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 22px 54px rgba(1, 10, 28, 0.48);
+}
+
+:root[data-theme="tech"] .pdf-selection-context-menu button {
+  color: #edf6ff;
+}
+
+:root[data-theme="tech"] .pdf-selection-context-menu button:hover {
+  background: rgba(81, 169, 255, 0.16);
+}
+
+:root[data-theme="tech"] .pdf-selection-context-divider {
+  background: rgba(126, 183, 255, 0.16);
+}
+
+:root[data-theme="tech"] .pdf-selection-context-label {
+  color: rgba(202, 225, 255, 0.72);
+}
+
+:root[data-theme="tech"] .pdf-annotation-editor {
+  border-color: rgba(117, 181, 255, 0.22);
+  background:
+    linear-gradient(180deg, rgba(12, 26, 50, 0.94), rgba(8, 18, 34, 0.96)),
+    radial-gradient(
+      circle at top right,
+      rgba(74, 193, 255, 0.12),
+      transparent 34%
+    );
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 24px 56px rgba(1, 10, 28, 0.48);
+}
+
+:root[data-theme="tech"] .pdf-annotation-editor-title {
+  color: #f2f7ff;
+}
+
+:root[data-theme="tech"] .pdf-annotation-editor-input {
+  border-color: rgba(117, 181, 255, 0.18);
+  background: rgba(7, 15, 28, 0.94);
+  color: #edf6ff;
+}
+
+:root[data-theme="tech"] .pdf-annotation-editor-input:focus {
+  border-color: rgba(104, 198, 255, 0.34);
+  box-shadow: 0 0 0 3px rgba(76, 193, 255, 0.12);
+}
+
+:root[data-theme="tech"] .pdf-annotation-editor-actions button {
+  background: rgba(80, 165, 255, 0.12);
+  color: #edf6ff;
+}
+
+:root[data-theme="tech"] .pdf-annotation-editor-actions button.primary {
+  background: linear-gradient(
+    180deg,
+    rgba(95, 207, 255, 0.96),
+    rgba(58, 121, 255, 0.94)
+  );
+  color: #04101f;
+}
+
+:root[data-theme="dark"] .context-menu {
+  border-color: rgba(121, 145, 184, 0.22);
+  background: rgba(16, 22, 35, 0.96);
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.42);
+}
+
+:root[data-theme="dark"] .context-menu-item {
+  color: #edf3ff;
+}
+
+:root[data-theme="dark"] .context-menu-item:hover {
+  background: rgba(104, 145, 219, 0.16);
+}
+
+:root[data-theme="tech"] .context-menu {
+  border-color: rgba(117, 181, 255, 0.22);
+  background:
+    linear-gradient(180deg, rgba(14, 28, 53, 0.94), rgba(7, 18, 35, 0.96)),
+    radial-gradient(
+      circle at top right,
+      rgba(76, 191, 255, 0.14),
+      transparent 34%
+    );
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 22px 54px rgba(1, 10, 28, 0.48);
+}
+
+:root[data-theme="tech"] .context-menu-item {
+  color: #edf6ff;
+}
+
+:root[data-theme="tech"] .context-menu-item:hover {
+  background: rgba(81, 169, 255, 0.16);
+}
+
+:root[data-theme="dark"] .file-tree-dialog-backdrop {
+  background: rgba(4, 10, 18, 0.54);
+}
+
+:root[data-theme="dark"] .file-tree-dialog {
+  background: rgba(16, 22, 35, 0.96);
+  border-color: rgba(121, 145, 184, 0.22);
+  box-shadow: 0 24px 56px rgba(0, 0, 0, 0.46);
+}
+
+:root[data-theme="dark"] .file-tree-dialog-title {
+  color: #edf3ff;
+}
+
+:root[data-theme="dark"] .file-tree-dialog-copy {
+  color: rgba(214, 226, 244, 0.76);
+}
+
+:root[data-theme="dark"] .file-tree-dialog-input {
+  background: rgba(10, 15, 25, 0.94);
+  border-color: rgba(121, 145, 184, 0.18);
+  color: #edf3ff;
+}
+
+:root[data-theme="dark"] .ghost-button {
+  background: rgba(24, 31, 44, 0.96);
+  border-color: rgba(121, 145, 184, 0.18);
+  color: #edf3ff;
+}
+
+:root[data-theme="dark"] .ghost-button:hover {
+  background: rgba(104, 145, 219, 0.12);
+}
+
+:root[data-theme="tech"] .file-tree-dialog-backdrop {
+  background: rgba(3, 10, 22, 0.58);
+}
+
+:root[data-theme="tech"] .file-tree-dialog {
+  background:
+    linear-gradient(180deg, rgba(14, 28, 53, 0.94), rgba(7, 18, 35, 0.96)),
+    radial-gradient(
+      circle at top right,
+      rgba(76, 191, 255, 0.14),
+      transparent 34%
+    );
+  border-color: rgba(117, 181, 255, 0.22);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 24px 58px rgba(1, 10, 28, 0.48);
+}
+
+:root[data-theme="tech"] .file-tree-dialog-title {
+  color: #f2f7ff;
+}
+
+:root[data-theme="tech"] .file-tree-dialog-copy {
+  color: rgba(202, 225, 255, 0.76);
+}
+
+:root[data-theme="tech"] .file-tree-dialog-input {
+  background: rgba(7, 15, 28, 0.94);
+  border-color: rgba(117, 181, 255, 0.18);
+  color: #edf6ff;
+}
+
+:root[data-theme="tech"] .ghost-button {
+  background: rgba(10, 25, 48, 0.82);
+  border-color: rgba(117, 181, 255, 0.18);
+  color: #edf6ff;
+}
+
+:root[data-theme="tech"] .ghost-button:hover {
+  background: rgba(81, 169, 255, 0.12);
 }
