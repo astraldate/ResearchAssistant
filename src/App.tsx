@@ -60,7 +60,7 @@ type SidebarTool = "workspace" | "citations" | "notes" | "knowledge" | "cards";
 type StatusTone = "info" | "error";
 type AiRequirement = "chat" | "index" | "translate";
 type SettingsTab = "general" | "models" | "mobile";
-type AppTheme = "default" | "dark";
+type AppTheme = "default" | "dark" | "tech";
 
 type SelectedCardView = {
   id: string;
@@ -659,7 +659,7 @@ function App() {
   });
   const [appTheme, setAppTheme] = useState<AppTheme>(() => {
     const stored = localStorage.getItem(APP_THEME_KEY)?.trim();
-    return stored === "dark" ? "dark" : "default";
+    return stored === "dark" || stored === "tech" ? stored : "default";
   });
   const [activeSidebarTool, setActiveSidebarTool] =
     useState<SidebarTool>("workspace");
@@ -2855,9 +2855,17 @@ function App() {
           >
             深色配色
           </button>
+          <button
+            type="button"
+            className={`settings-theme-option ${appTheme === "tech" ? "active" : ""}`}
+            onClick={() => setAppTheme("tech")}
+            aria-pressed={appTheme === "tech"}
+          >
+            科技蓝
+          </button>
         </div>
         <p className="settings-help-text">
-          默认配色沿用当前界面的浅色工作台风格；深色配色更适合夜间阅读。
+          默认配色沿用当前界面的浅色工作台风格；深色配色适合夜间阅读；科技蓝会把界面切到更偏深蓝的科技风。
         </p>
       </div>
 

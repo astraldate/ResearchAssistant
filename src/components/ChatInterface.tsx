@@ -1738,16 +1738,6 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                   <ImagePlus size={18} />
                 </button>
 
-                {isLoading && (
-                  <button
-                    className="send-button abort-action"
-                    onClick={handleAbortCurrentConversation}
-                    title="中止当前对话"
-                  >
-                    <X size={18} />
-                  </button>
-                )}
-
                 <ModelSelector
                   currentModel={currentModel || ""}
                   onModelChange={(model) => onModelChange?.(model)}
@@ -1757,12 +1747,17 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 />
 
                 <button
-                  className="send-button send-action"
-                  onClick={() => void handleSendMessage()}
-                  disabled={!inputValue.trim() || isLoading}
-                  title="发送"
+                  className={`send-button send-action ${isLoading ? "abort-action" : ""}`}
+                  onClick={
+                    isLoading
+                      ? handleAbortCurrentConversation
+                      : () => void handleSendMessage()
+                  }
+                  disabled={!isLoading && !inputValue.trim()}
+                  title={isLoading ? "中止当前对话" : "发送"}
+                  aria-label={isLoading ? "中止当前对话" : "发送"}
                 >
-                  <Send size={18} />
+                  {isLoading ? <X size={18} /> : <Send size={18} />}
                 </button>
               </div>
 
