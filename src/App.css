@@ -5315,6 +5315,111 @@ textarea:focus {
   border-radius: 28px;
   background:
     radial-gradient(
+      ellipse 12% 5% at 18% 78%,
+      rgba(255, 140, 182, 0.12) 0,
+      rgba(255, 140, 182, 0.04) 34%,
+      transparent 64%
+    ),
+    radial-gradient(
+      ellipse 15% 6% at 28% 68%,
+      rgba(205, 118, 255, 0.12) 0,
+      rgba(205, 118, 255, 0.045) 34%,
+      transparent 64%
+    ),
+    radial-gradient(
+      ellipse 12% 5% at 38% 58%,
+      rgba(255, 126, 182, 0.13) 0,
+      rgba(255, 126, 182, 0.045) 34%,
+      transparent 64%
+    ),
+    radial-gradient(
+      ellipse 14% 5% at 48% 48%,
+      rgba(155, 121, 255, 0.12) 0,
+      rgba(155, 121, 255, 0.04) 34%,
+      transparent 64%
+    ),
+    radial-gradient(
+      ellipse 12% 5% at 58% 40%,
+      rgba(255, 132, 172, 0.12) 0,
+      rgba(255, 132, 172, 0.04) 34%,
+      transparent 64%
+    ),
+    radial-gradient(
+      ellipse 15% 6% at 68% 31%,
+      rgba(194, 123, 255, 0.11) 0,
+      rgba(194, 123, 255, 0.038) 34%,
+      transparent 64%
+    ),
+    radial-gradient(
+      ellipse 12% 5% at 78% 23%,
+      rgba(255, 146, 192, 0.1) 0,
+      rgba(255, 146, 192, 0.034) 34%,
+      transparent 64%
+    ),
+    linear-gradient(
+      132deg,
+      rgba(106, 112, 255, 0.02) 0%,
+      rgba(106, 112, 255, 0.02) 18%,
+      rgba(170, 105, 255, 0.06) 28%,
+      rgba(232, 116, 188, 0.16) 38%,
+      rgba(255, 132, 176, 0.2) 44%,
+      rgba(209, 104, 214, 0.16) 51%,
+      rgba(120, 123, 255, 0.1) 60%,
+      rgba(94, 118, 214, 0.05) 72%,
+      transparent 86%
+    ),
+    radial-gradient(
+      ellipse 46% 20% at 24% 16%,
+      rgba(116, 112, 255, 0.1) 0,
+      rgba(116, 112, 255, 0.05) 24%,
+      rgba(231, 130, 188, 0.05) 46%,
+      transparent 68%
+    ),
+    radial-gradient(
+      ellipse 42% 16% at 54% 46%,
+      rgba(255, 123, 181, 0.12) 0,
+      rgba(255, 123, 181, 0.06) 24%,
+      rgba(145, 96, 255, 0.04) 44%,
+      transparent 66%
+    ),
+    radial-gradient(
+      ellipse 44% 18% at 82% 76%,
+      rgba(170, 104, 255, 0.09) 0,
+      rgba(170, 104, 255, 0.04) 22%,
+      rgba(255, 124, 170, 0.04) 42%,
+      transparent 66%
+    ),
+    radial-gradient(
+      ellipse 22% 14% at 22% 40%,
+      rgba(75, 121, 255, 0.07) 0,
+      rgba(75, 121, 255, 0.035) 24%,
+      transparent 56%
+    ),
+    radial-gradient(
+      ellipse 18% 12% at 78% 34%,
+      rgba(181, 95, 255, 0.06) 0,
+      rgba(181, 95, 255, 0.03) 22%,
+      transparent 54%
+    ),
+    radial-gradient(
+      circle at 32% 24%,
+      rgba(82, 159, 255, 0.12) 0,
+      rgba(82, 159, 255, 0.05) 12%,
+      transparent 28%
+    ),
+    radial-gradient(
+      circle at 68% 18%,
+      rgba(182, 117, 255, 0.1) 0,
+      rgba(182, 117, 255, 0.04) 11%,
+      transparent 24%
+    ),
+    radial-gradient(
+      circle at 60% 72%,
+      rgba(255, 126, 182, 0.08) 0,
+      rgba(255, 126, 182, 0.03) 10%,
+      transparent 22%
+    ),
+    radial-gradient(
       circle at 18% 16%,
       rgba(84, 192, 255, 0.22) 0,
       rgba(84, 192, 255, 0.08) 16%,
@@ -5374,6 +5479,327 @@ textarea:focus {
     0 34px 96px rgba(1, 8, 24, 0.58);
   margin-bottom: 14px;
   position: relative;
+}
+
+.research-graph-canvas::before,
+.research-graph-canvas::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.research-graph-canvas::before {
+  background:
+    radial-gradient(
+      ellipse 10% 4% at 22% 73%,
+      rgba(255, 184, 218, 0.12) 0,
+      rgba(255, 184, 218, 0.03) 38%,
+      transparent 68%
+    ),
+    radial-gradient(
+      ellipse 9% 3.8% at 31% 64%,
+      rgba(222, 150, 255, 0.12) 0,
+      rgba(222, 150, 255, 0.03) 38%,
+      transparent 68%
+    ),
+    radial-gradient(
+      ellipse 10% 4% at 43% 53%,
+      rgba(255, 170, 212, 0.11) 0,
+      rgba(255, 170, 212, 0.03) 38%,
+      transparent 68%
+    ),
+    radial-gradient(
+      ellipse 10% 4% at 55% 44%,
+      rgba(175, 148, 255, 0.11) 0,
+      rgba(175, 148, 255, 0.028) 38%,
+      transparent 68%
+    ),
+    radial-gradient(
+      ellipse 10% 4% at 67% 36%,
+      rgba(255, 158, 203, 0.1) 0,
+      rgba(255, 158, 203, 0.028) 38%,
+      transparent 68%
+    ),
+    radial-gradient(
+      ellipse 26% 13% at 24% 70%,
+      rgba(228, 119, 176, 0.08) 0,
+      rgba(228, 119, 176, 0.03) 26%,
+      transparent 60%
+    ),
+    radial-gradient(
+      ellipse 24% 14% at 72% 48%,
+      rgba(190, 114, 255, 0.06) 0,
+      rgba(190, 114, 255, 0.026) 24%,
+      transparent 60%
+    ),
+    radial-gradient(
+      ellipse 30% 18% at 48% 22%,
+      rgba(115, 124, 255, 0.08) 0,
+      rgba(115, 124, 255, 0.05) 26%,
+      rgba(233, 117, 187, 0.024) 42%,
+      transparent 62%
+    ),
+    radial-gradient(
+      ellipse 26% 18% at 62% 56%,
+      rgba(224, 112, 174, 0.08) 0,
+      rgba(224, 112, 174, 0.04) 24%,
+      rgba(155, 90, 255, 0.018) 40%,
+      transparent 62%
+    ),
+    radial-gradient(
+      circle at 86% 18%,
+      rgba(255, 246, 208, 0.98) 0,
+      rgba(255, 219, 129, 0.68) 1.2%,
+      rgba(255, 214, 122, 0.2) 2.8%,
+      transparent 6.5%
+    ),
+    radial-gradient(
+      circle at 84% 19%,
+      rgba(255, 240, 197, 0.42) 0,
+      rgba(255, 222, 143, 0.12) 5%,
+      transparent 11%
+    ),
+    radial-gradient(
+      circle at 19% 73%,
+      rgba(232, 245, 255, 0.7) 0,
+      rgba(197, 225, 255, 0.26) 4.2%,
+      transparent 7%
+    ),
+    radial-gradient(
+      circle at 20% 76%,
+      rgba(173, 207, 233, 0.94) 0,
+      rgba(108, 141, 181, 0.95) 6%,
+      rgba(56, 83, 124, 0.96) 11.5%,
+      rgba(20, 37, 70, 0.94) 15.4%,
+      rgba(8, 18, 40, 0.5) 18.8%,
+      transparent 24%
+    ),
+    radial-gradient(
+      circle at 18.4% 78.4%,
+      rgba(9, 20, 43, 0.34) 0,
+      transparent 6.6%
+    ),
+    radial-gradient(
+      circle at 76% 66%,
+      rgba(255, 238, 233, 0.64) 0,
+      rgba(255, 212, 186, 0.22) 3.8%,
+      transparent 6.4%
+    ),
+    radial-gradient(
+      circle at 77% 69%,
+      rgba(230, 182, 144, 0.92) 0,
+      rgba(168, 114, 83, 0.95) 5.2%,
+      rgba(94, 61, 48, 0.94) 10.4%,
+      rgba(37, 23, 26, 0.82) 13.8%,
+      rgba(14, 11, 18, 0.44) 17%,
+      transparent 21.5%
+    ),
+    radial-gradient(
+      circle at 79.2% 71.8%,
+      rgba(28, 18, 20, 0.34) 0,
+      transparent 6.8%
+    ),
+    radial-gradient(
+      ellipse 14% 4.6% at 82% 30%,
+      rgba(255, 228, 240, 0.24) 0,
+      rgba(228, 208, 255, 0.18) 18%,
+      rgba(157, 161, 255, 0.08) 34%,
+      transparent 60%
+    ),
+    radial-gradient(
+      ellipse 8% 2.2% at 82% 30%,
+      rgba(255, 255, 255, 0.28) 0,
+      rgba(198, 223, 255, 0.16) 22%,
+      transparent 56%
+    );
+  opacity: 0.82;
+}
+
+.research-graph-canvas::after {
+  background:
+    radial-gradient(
+      circle at 9% 16%,
+      rgba(255, 255, 255, 0.9) 0 0.7px,
+      transparent 1.8px
+    ),
+    radial-gradient(
+      circle at 10% 44%,
+      rgba(255, 255, 255, 0.34) 0 0.6px,
+      transparent 1.7px
+    ),
+    radial-gradient(
+      circle at 11% 28%,
+      rgba(255, 255, 255, 0.5) 0 0.7px,
+      transparent 1.8px
+    ),
+    radial-gradient(
+      circle at 14% 52%,
+      rgba(255, 255, 255, 0.42) 0 0.8px,
+      transparent 2px
+    ),
+    radial-gradient(
+      circle at 17% 67%,
+      rgba(255, 255, 255, 0.72) 0 0.8px,
+      transparent 1.8px
+    ),
+    radial-gradient(
+      circle at 19% 84%,
+      rgba(255, 255, 255, 0.36) 0 0.7px,
+      transparent 1.8px
+    ),
+    radial-gradient(
+      circle at 21% 34%,
+      rgba(255, 255, 255, 0.62) 0 0.8px,
+      transparent 1.9px
+    ),
+    radial-gradient(
+      circle at 24% 18%,
+      rgba(255, 255, 255, 0.28) 0 0.6px,
+      transparent 1.6px
+    ),
+    radial-gradient(
+      circle at 27% 62%,
+      rgba(255, 255, 255, 0.38) 0 0.7px,
+      transparent 1.7px
+    ),
+    radial-gradient(
+      circle at 31% 12%,
+      rgba(255, 255, 255, 0.74) 0 0.8px,
+      transparent 1.9px
+    ),
+    radial-gradient(
+      circle at 35% 24%,
+      rgba(255, 255, 255, 0.42) 0 0.7px,
+      transparent 1.8px
+    ),
+    radial-gradient(
+      circle at 37% 72%,
+      rgba(255, 255, 255, 0.58) 0 0.8px,
+      transparent 1.9px
+    ),
+    radial-gradient(
+      circle at 39% 48%,
+      rgba(255, 255, 255, 0.54) 0 0.7px,
+      transparent 1.8px
+    ),
+    radial-gradient(
+      circle at 43% 58%,
+      rgba(255, 255, 255, 0.26) 0 0.6px,
+      transparent 1.6px
+    ),
+    radial-gradient(
+      circle at 46% 18%,
+      rgba(255, 255, 255, 0.82) 0 0.8px,
+      transparent 2px
+    ),
+    radial-gradient(
+      circle at 49% 36%,
+      rgba(255, 255, 255, 0.42) 0 0.7px,
+      transparent 1.8px
+    ),
+    radial-gradient(
+      circle at 53% 74%,
+      rgba(255, 255, 255, 0.32) 0 0.8px,
+      transparent 2px
+    ),
+    radial-gradient(
+      circle at 57% 62%,
+      rgba(255, 255, 255, 0.7) 0 0.8px,
+      transparent 1.8px
+    ),
+    radial-gradient(
+      circle at 61% 26%,
+      rgba(255, 255, 255, 0.6) 0 0.7px,
+      transparent 1.8px
+    ),
+    radial-gradient(
+      circle at 66% 52%,
+      rgba(255, 255, 255, 0.44) 0 0.8px,
+      transparent 1.9px
+    ),
+    radial-gradient(
+      circle at 69% 14%,
+      rgba(255, 255, 255, 0.48) 0 0.7px,
+      transparent 1.8px
+    ),
+    radial-gradient(
+      circle at 71% 28%,
+      rgba(255, 255, 255, 0.26) 0 0.6px,
+      transparent 1.6px
+    ),
+    radial-gradient(
+      circle at 74% 34%,
+      rgba(255, 255, 255, 0.92) 0 0.8px,
+      transparent 2px
+    ),
+    radial-gradient(
+      circle at 76% 56%,
+      rgba(255, 255, 255, 0.52) 0 0.7px,
+      transparent 1.8px
+    ),
+    radial-gradient(
+      circle at 79% 84%,
+      rgba(255, 255, 255, 0.34) 0 0.8px,
+      transparent 2px
+    ),
+    radial-gradient(
+      circle at 83% 74%,
+      rgba(255, 255, 255, 0.64) 0 0.8px,
+      transparent 1.8px
+    ),
+    radial-gradient(
+      circle at 88% 40%,
+      rgba(255, 255, 255, 0.72) 0 0.8px,
+      transparent 1.9px
+    ),
+    radial-gradient(
+      circle at 92% 62%,
+      rgba(255, 255, 255, 0.48) 0 0.8px,
+      transparent 2px
+    ),
+    radial-gradient(
+      circle at 94% 20%,
+      rgba(255, 255, 255, 0.72) 0 0.8px,
+      transparent 1.9px
+    ),
+    radial-gradient(
+      circle at 96% 78%,
+      rgba(255, 255, 255, 0.42) 0 0.7px,
+      transparent 1.8px
+    ),
+    radial-gradient(
+      circle at 86% 16%,
+      rgba(255, 255, 255, 0.94) 0 1px,
+      transparent 2.1px
+    ),
+    radial-gradient(
+      circle at 42% 8%,
+      rgba(255, 255, 255, 0.2) 0 0.6px,
+      transparent 1.6px
+    ),
+    radial-gradient(
+      circle at 52% 22%,
+      rgba(255, 255, 255, 0.22) 0 0.6px,
+      transparent 1.6px
+    ),
+    radial-gradient(
+      circle at 64% 8%,
+      rgba(255, 255, 255, 0.18) 0 0.6px,
+      transparent 1.6px
+    ),
+    radial-gradient(
+      circle at 72% 88%,
+      rgba(255, 255, 255, 0.16) 0 0.6px,
+      transparent 1.6px
+    ),
+    radial-gradient(
+      circle at 28% 88%,
+      rgba(255, 255, 255, 0.18) 0 0.6px,
+      transparent 1.6px
+    );
+  opacity: 0.88;
+  mix-blend-mode: screen;
 }
 
 .research-graph-canvas.fullscreen {
