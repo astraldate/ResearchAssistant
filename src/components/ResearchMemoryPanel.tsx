@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+﻿import { invoke } from "@tauri-apps/api/core";
 import cytoscape, {
   type Core as CytoscapeCore,
   type ElementDefinition,
@@ -1671,19 +1671,22 @@ export function ResearchMemoryPanel({
               onClick={(event) => event.stopPropagation()}
             >
               <div className="research-graph-modal-header">
-                <div>
-                  <div className="research-section-title tight">
+                <div className="research-graph-header-copy">
+                  <div className="research-section-title tight research-graph-heading">
                     {graphView === "method"
                       ? "Method DAG Canvas"
                       : "Problem DAG Canvas"}
                   </div>
-                  <div className="research-meta-row">
-                    <span>{activeGraph?.nodes.length ?? 0} nodes</span>
-                    <span>{activeGraph?.edges.length ?? 0} edges</span>
+                  <div className="research-graph-summary-row">
+                    <span className="research-graph-summary-pill">
+                      {activeGraph?.nodes.length ?? 0} nodes
+                    </span>
+                    <span className="research-graph-summary-pill">
+                      {activeGraph?.edges.length ?? 0} edges
+                    </span>
                   </div>
-                  <div className="research-meta-row">
-                    <span>Dagre layout · dark graph canvas</span>
-                    <span>Pan and zoom enabled</span>
+                  <div className="research-graph-subtitle">
+                    Dagre layout · space canvas · pan and zoom enabled
                   </div>
                 </div>
                 <div className="support-item-actions research-graph-controls">
