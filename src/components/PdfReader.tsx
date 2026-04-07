@@ -3178,12 +3178,6 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
     openAnnotationEditorFromSelection();
   };
 
-  const handleOpenExplainPopover = () => {
-    setSelection((previous) =>
-      previous ? { ...previous, overlay: "explain" } : previous,
-    );
-  };
-
   const handleClosePopover = () => {
     selectionRangeRef.current = [];
     setSelection(null);
@@ -3582,15 +3576,6 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
     }
   };
 
-  const selectionStyle = useMemo<React.CSSProperties | undefined>(() => {
-    if (!selection) return undefined;
-    return {
-      position: "fixed",
-      left: `${selection.targetLeft}px`,
-      top: `${selection.targetTop}px`,
-    };
-  }, [selection]);
-
   const popoverStyle = useMemo<React.CSSProperties | undefined>(() => {
     if (!selection) return undefined;
     return {
@@ -3644,20 +3629,6 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
                 />
               )),
             )}
-
-            {selection &&
-              selection.overlay === "button" &&
-              !contextMenu &&
-              !annotationEditor && (
-                <button
-                  className="pdf-selection-target"
-                  style={selectionStyle}
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={handleOpenExplainPopover}
-                >
-                  解释
-                </button>
-              )}
 
             {contextMenu?.mode === "selection" && selection && (
               <div

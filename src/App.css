@@ -594,7 +594,7 @@ textarea:focus {
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: var(--workspace-surface);
+  background: var(--bg-primary);
   border-right: 1px solid var(--border-color);
   backdrop-filter: blur(16px);
   transition:
@@ -1262,7 +1262,7 @@ textarea:focus {
   border: 1px solid var(--border-color);
   border-radius: 12px;
   box-shadow: var(--shadow-float);
-  z-index: 12000;
+  z-index: 26000;
 }
 
 .context-menu-item {
@@ -1363,7 +1363,7 @@ textarea:focus {
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: var(--bg-primary);
+  background: var(--workspace-surface);
   backdrop-filter: blur(16px);
 }
 
@@ -1445,6 +1445,19 @@ textarea:focus {
   width: 100%;
   height: 100%;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-main-pane {
+  flex: 1;
+  min-height: 0;
+}
+
+.chat-input-pane {
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 55%;
 }
 
 .pdf-dock-panel {
@@ -3194,14 +3207,14 @@ textarea:focus {
 }
 
 .input-area {
-  height: 100%;
-  min-height: 0;
+  height: auto;
+  min-height: fit-content;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  border-top: 1px solid var(--border-color);
-  padding: 10px 14px 12px;
-  background: rgba(252, 250, 246, 0.9);
+  border-top: none;
+  padding: 5px 14px 12px;
+  background: var(--bg-primary);
   overflow: auto;
 }
 
@@ -3406,7 +3419,7 @@ textarea:focus {
   gap: 8px;
   flex-wrap: wrap;
   width: min(92%, 520px);
-  margin: 8px auto 0;
+  margin: 4px auto 0;
 }
 
 .chat-scope-chip {
@@ -3491,7 +3504,7 @@ textarea:focus {
 .chat-input {
   flex: 1;
   min-height: 24px;
-  max-height: 160px;
+  max-height: 220px;
   resize: none;
   border: none;
   background: transparent;
@@ -3510,9 +3523,9 @@ textarea:focus {
   display: grid;
   grid-template-columns: 36px minmax(0, 1fr) 36px;
   align-items: center;
-  gap: 20px;
+  gap: 10px;
   width: min(92%, 520px);
-  margin: 6px auto 0;
+  margin: 2px auto 0;
 }
 
 .send-button {
@@ -4098,7 +4111,7 @@ textarea:focus {
 }
 
 :root[data-theme="dark"] .sidebar-rail {
-  background: rgba(14, 20, 29, 0.9);
+  background: var(--bg-primary);
 }
 
 :root[data-theme="dark"] .rail-button {
@@ -4359,11 +4372,7 @@ textarea:focus {
 }
 
 :root[data-theme="tech"] .sidebar-rail {
-  background: linear-gradient(
-    180deg,
-    rgba(8, 24, 46, 0.76),
-    rgba(5, 17, 34, 0.74)
-  );
+  background: var(--bg-primary);
   backdrop-filter: blur(22px) saturate(130%);
 }
 
@@ -5073,7 +5082,7 @@ textarea:focus {
   align-items: center;
   gap: 8px;
   padding: 10px 8px;
-  background: rgba(245, 242, 234, 0.85);
+  background: var(--bg-primary);
 }
 
 .sidebar-rail-spacer {

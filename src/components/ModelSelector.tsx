@@ -478,9 +478,12 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
     const isSelectedInstalled = compactValue
       ? isInstalled(compactValue, models)
       : false;
+    const compactLabel = label.trim();
     return (
       <div className="model-selector-compact">
-        <div className="model-compact-label">{label}</div>
+        {compactLabel && (
+          <div className="model-compact-label">{compactLabel}</div>
+        )}
         <div className="model-compact-row">
           <select
             value={compactValue}

@@ -11,7 +11,6 @@ import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { ImagePlus, Send, X } from "lucide-react";
 import { ModelSelector } from "./ModelSelector";
-import { Group, Panel, Separator } from "react-resizable-panels";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 
 type StatusTone = "info" | "error";
@@ -390,6 +389,16 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const selectionMenuRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const adjustInputHeight = useCallback(() => {
+    const textarea = inputRef.current;
+    if (!textarea) return;
+    const maxHeight = 220;
+    textarea.style.height = "auto";
+    const nextHeight = Math.min(textarea.scrollHeight, maxHeight);
+    textarea.style.height = `${Math.max(24, nextHeight)}px`;
+    textarea.style.overflowY =
+      textarea.scrollHeight > maxHeight ? "auto" : "hidden";
+  }, []);
   const activeStreamRef = useRef<{
     requestId: string;
     messageId: string;
@@ -494,6 +503,10 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       block: "end",
     });
   }, [messages, isLoading]);
+
+  useEffect(() => {
+    adjustInputHeight();
+  }, [adjustInputHeight, inputValue]);
 
   const handleMessagesScroll = () => {
     const element = messagesListRef.current;
@@ -1559,8 +1572,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       </div>
 
       <div className="chat-body" onContextMenu={handleChatContextMenu}>
-        <Group orientation="vertical" className="chat-content-panels">
-          <Panel defaultSize="70%" minSize="30%">
+        <div className="chat-content-panels">
+          <div className="chat-main-pane">
             <div
               ref={messagesListRef}
               className="messages-list"
@@ -1637,11 +1650,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 </div>
               )}
             </div>
-          </Panel>
+          </div>
 
-          <Separator className="PanelResizeHandle PanelResizeHandle--row" />
-
-          <Panel defaultSize="30%" minSize="14%">
+          <div className="chat-input-pane">
             <div className="input-area">
               {imagePath && (
                 <div className="image-chip">
@@ -1714,7 +1725,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 <button
                   className={`chat-thinking-switch ${thinkingEnabled ? "enabled" : ""}`}
                   onClick={() => void handleToggleThinking()}
-                  disabled={isThinkingToggleLoading || isLoading}
+                  disabled={isThinkingToggleLoading}
                   title={
                     thinkingEnabled
                       ? "关闭思考模式，减少推理等待时间"
@@ -1732,7 +1743,6 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 <button
                   className="send-button"
                   onClick={() => void handlePickImage()}
-                  disabled={isLoading}
                   title="添加图片"
                 >
                   <ImagePlus size={18} />
@@ -1743,7 +1753,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                   onModelChange={(model) => onModelChange?.(model)}
                   onStatus={onStatus}
                   variant="compact"
-                  label="当前聊天模型"
+                  label=""
                 />
 
                 <button
@@ -1903,8 +1913,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 </div>
               )}
             </div>
-          </Panel>
-        </Group>
+          </div>
+        </div>
       </div>
 
       {selectionMenu && (
