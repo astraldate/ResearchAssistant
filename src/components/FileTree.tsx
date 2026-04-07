@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, File, Folder } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import { createPortal } from "react-dom";
 
 export interface FileNode {
   id: string;
@@ -651,24 +652,28 @@ export const FileTree: React.FC<FileTreeProps> = ({
         />
       ))}
 
-      {contextMenu && menuActions.length > 0 && (
-        <div
-          ref={menuRef}
-          className="context-menu"
-          style={{ top: contextMenu.y, left: contextMenu.x }}
-        >
-          {menuActions.map((action) => (
-            <button
-              key={action.key}
-              className="context-menu-item"
-              disabled={action.disabled}
-              onClick={() => void action.onClick()}
-            >
-              {action.label}
-            </button>
-          ))}
-        </div>
-      )}
+      {contextMenu &&
+        menuActions.length > 0 &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <div
+            ref={menuRef}
+            className="context-menu"
+            style={{ top: contextMenu.y, left: contextMenu.x }}
+          >
+            {menuActions.map((action) => (
+              <button
+                key={action.key}
+                className="context-menu-item"
+                disabled={action.disabled}
+                onClick={() => void action.onClick()}
+              >
+                {action.label}
+              </button>
+            ))}
+          </div>,
+          document.body,
+        )}
 
       {editDialog && (
         <div

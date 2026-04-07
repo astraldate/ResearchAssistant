@@ -1262,7 +1262,7 @@ textarea:focus {
   border: 1px solid var(--border-color);
   border-radius: 12px;
   box-shadow: var(--shadow-float);
-  z-index: 12000;
+  z-index: 26000;
 }
 
 .context-menu-item {
