@@ -10,7 +10,6 @@ import {
   FilePlus,
   FolderOpen,
   LayoutGrid,
-  MessageSquareText,
   Search,
   Settings,
   StickyNote,
@@ -56,7 +55,7 @@ const ResearchMemoryPanel = lazy(() =>
 type InferenceMode = "single_mm" | "dual_pipeline";
 type IngestMode = "overwrite" | "incremental";
 type ExtractionRunMode = "fast" | "balanced";
-type SidebarTool = "workspace" | "citations" | "notes" | "knowledge" | "cards";
+type SidebarTool = "workspace" | "notes" | "knowledge" | "cards";
 type StatusTone = "info" | "error";
 type AiRequirement = "chat" | "index" | "translate";
 type SettingsTab = "general" | "models" | "mobile";
@@ -359,14 +358,6 @@ interface PullProgress {
   completed?: number;
 }
 
-interface CitationItem {
-  id: string;
-  path: string;
-  page: number;
-  snippet: string;
-  createdAt: number;
-}
-
 interface NoteItem {
   id: string;
   text: string;
@@ -374,7 +365,6 @@ interface NoteItem {
 }
 
 interface ChatSessionSnapshot {
-  citations?: CitationItem[];
   notes?: NoteItem[];
 }
 
@@ -758,7 +748,6 @@ function App() {
   const [isRefreshingMobilePairCode, setIsRefreshingMobilePairCode] =
     useState(false);
   const [isStatusBannerExpanded, setIsStatusBannerExpanded] = useState(false);
-  const [sidebarCitations, setSidebarCitations] = useState<CitationItem[]>([]);
   const [sidebarNotes, setSidebarNotes] = useState<NoteItem[]>([]);
 
   const statusTimerRef = useRef<number | null>(null);
@@ -2334,17 +2323,12 @@ function App() {
       try {
         const raw = localStorage.getItem(CHAT_SESSION_KEY);
         if (!raw) {
-          setSidebarCitations([]);
           setSidebarNotes([]);
           return;
         }
         const parsed = JSON.parse(raw) as ChatSessionSnapshot;
-        setSidebarCitations(
-          Array.isArray(parsed.citations) ? parsed.citations : [],
-        );
         setSidebarNotes(Array.isArray(parsed.notes) ? parsed.notes : []);
       } catch {
-        setSidebarCitations([]);
         setSidebarNotes([]);
       }
     };
@@ -2662,23 +2646,6 @@ function App() {
             onEditCard={(card) => beginEditCard(card)}
           />
         </Suspense>
-      </div>
-    ) : activeSidebarTool === "citations" ? (
-      <div className="sidebar-tool-scroll">
-        <div className="sidebar-tool-title">Citations</div>
-        <div className="support-panel-body">
-          {sidebarCitations.length === 0 && (
-            <div className="support-empty">No citations yet.</div>
-          )}
-          {sidebarCitations.slice(0, 24).map((citation) => (
-            <div key={citation.id} className="support-item">
-              <div className="support-item-title">
-                {citation.path.split(/[\/\\]/).pop()} p.{citation.page}
-              </div>
-              <div className="support-item-text">{citation.snippet}</div>
-            </div>
-          ))}
-        </div>
       </div>
     ) : activeSidebarTool === "notes" ? (
       <div className="sidebar-tool-scroll">
@@ -3373,13 +3340,6 @@ function App() {
                   <FolderOpen size={18} />
                 </button>
                 <button
-                  className={`rail-button ${activeSidebarTool === "citations" && !isSidebarCollapsed ? "active" : ""}`}
-                  onClick={() => handleSidebarToolToggle("citations")}
-                  title="Citations"
-                >
-                  <MessageSquareText size={18} />
-                </button>
-                <button
                   className={`rail-button ${activeSidebarTool === "notes" && !isSidebarCollapsed ? "active" : ""}`}
                   onClick={() => handleSidebarToolToggle("notes")}
                   title="Notes"
@@ -3417,13 +3377,11 @@ function App() {
                   <span>
                     {activeSidebarTool === "workspace"
                       ? "Workspace"
-                      : activeSidebarTool === "citations"
-                        ? "Citations"
-                        : activeSidebarTool === "notes"
-                          ? "Notes"
-                          : activeSidebarTool === "knowledge"
-                            ? "Knowledge"
-                            : "Knowledge Cards"}
+                      : activeSidebarTool === "notes"
+                        ? "Notes"
+                        : activeSidebarTool === "knowledge"
+                          ? "Knowledge"
+                          : "Knowledge Cards"}
                   </span>
                   {activeSidebarTool === "workspace" ? (
                     <div className="sidebar-actions">
