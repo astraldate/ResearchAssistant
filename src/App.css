@@ -594,7 +594,7 @@ textarea:focus {
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: var(--workspace-surface);
+  background: var(--bg-primary);
   border-right: 1px solid var(--border-color);
   backdrop-filter: blur(16px);
   transition:
@@ -1363,7 +1363,7 @@ textarea:focus {
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: var(--bg-primary);
+  background: var(--workspace-surface);
   backdrop-filter: blur(16px);
 }
 
@@ -4111,7 +4111,7 @@ textarea:focus {
 }
 
 :root[data-theme="dark"] .sidebar-rail {
-  background: rgba(14, 20, 29, 0.9);
+  background: var(--bg-primary);
 }
 
 :root[data-theme="dark"] .rail-button {
@@ -4372,11 +4372,7 @@ textarea:focus {
 }
 
 :root[data-theme="tech"] .sidebar-rail {
-  background: linear-gradient(
-    180deg,
-    rgba(8, 24, 46, 0.76),
-    rgba(5, 17, 34, 0.74)
-  );
+  background: var(--bg-primary);
   backdrop-filter: blur(22px) saturate(130%);
 }
 
@@ -5086,7 +5082,7 @@ textarea:focus {
   align-items: center;
   gap: 8px;
   padding: 10px 8px;
-  background: rgba(245, 242, 234, 0.85);
+  background: var(--bg-primary);
 }
 
 .sidebar-rail-spacer {
