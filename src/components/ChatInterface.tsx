@@ -11,7 +11,6 @@ import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { ImagePlus, Send, X } from "lucide-react";
 import { ModelSelector } from "./ModelSelector";
-import { Group, Panel, Separator } from "react-resizable-panels";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 
 type StatusTone = "info" | "error";
@@ -1573,8 +1572,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       </div>
 
       <div className="chat-body" onContextMenu={handleChatContextMenu}>
-        <Group orientation="vertical" className="chat-content-panels">
-          <Panel defaultSize="70%" minSize="30%">
+        <div className="chat-content-panels">
+          <div className="chat-main-pane">
             <div
               ref={messagesListRef}
               className="messages-list"
@@ -1651,11 +1650,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 </div>
               )}
             </div>
-          </Panel>
+          </div>
 
-          <Separator className="PanelResizeHandle PanelResizeHandle--row" />
-
-          <Panel defaultSize="30%" minSize="14%">
+          <div className="chat-input-pane">
             <div className="input-area">
               {imagePath && (
                 <div className="image-chip">
@@ -1916,8 +1913,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 </div>
               )}
             </div>
-          </Panel>
-        </Group>
+          </div>
+        </div>
       </div>
 
       {selectionMenu && (

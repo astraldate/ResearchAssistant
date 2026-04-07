@@ -1445,6 +1445,19 @@ textarea:focus {
   width: 100%;
   height: 100%;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-main-pane {
+  flex: 1;
+  min-height: 0;
+}
+
+.chat-input-pane {
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 55%;
 }
 
 .pdf-dock-panel {
@@ -3194,8 +3207,8 @@ textarea:focus {
 }
 
 .input-area {
-  height: 100%;
-  min-height: 0;
+  height: auto;
+  min-height: fit-content;
   display: flex;
   flex-direction: column;
   gap: 8px;
