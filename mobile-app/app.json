@@ -10,13 +10,9 @@
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#f4efe5"
+      "backgroundColor": "#0a2c55"
     },
-    "plugins": [
-      "expo-router",
-      "expo-secure-store",
-      "expo-sqlite"
-    ],
+    "plugins": ["expo-router", "expo-secure-store", "expo-sqlite"],
     "experiments": {
       "typedRoutes": true
     },
@@ -24,12 +20,10 @@
       "package": "com.researchassistant.mobile",
       "versionCode": 5,
       "usesCleartextTraffic": true,
-      "permissions": [
-        "CAMERA"
-      ],
+      "permissions": ["CAMERA"],
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#f4efe5"
+        "backgroundColor": "#0a2c55"
       }
     },
     "ios": {
