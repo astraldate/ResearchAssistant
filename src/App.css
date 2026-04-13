@@ -4982,69 +4982,126 @@ textarea:focus {
 
 @keyframes research-graph-canvas-glow {
   0% {
-    filter: saturate(1) brightness(0.98);
+    filter: saturate(1.02) brightness(0.96) contrast(1);
   }
   50% {
-    filter: saturate(1.12) brightness(1.04);
+    filter: saturate(1.3) brightness(1.08) contrast(1.05);
   }
   100% {
-    filter: saturate(1.04) brightness(1);
+    filter: saturate(1.14) brightness(1.01) contrast(1.02);
   }
 }
 
 @keyframes research-graph-nebula-drift {
   0% {
-    transform: translate3d(-1.2%, 1%, 0) scale(1.02) rotate(-0.8deg);
-    opacity: 0.74;
+    transform: translate3d(-2.2%, 1.8%, 0) scale(1.03) rotate(-1.6deg);
+    opacity: 0.72;
   }
   50% {
-    transform: translate3d(1.2%, -1.4%, 0) scale(1.06) rotate(0.9deg);
-    opacity: 0.92;
+    transform: translate3d(2.6%, -2%, 0) scale(1.09) rotate(1.8deg);
+    opacity: 0.98;
   }
   100% {
-    transform: translate3d(-0.4%, 0.6%, 0) scale(1.03) rotate(-0.35deg);
-    opacity: 0.82;
+    transform: translate3d(-1.1%, 1.3%, 0) scale(1.05) rotate(-0.7deg);
+    opacity: 0.84;
   }
 }
 
 @keyframes research-graph-nebula-prism {
   0% {
-    filter: hue-rotate(0deg) saturate(1.02) brightness(0.98);
+    filter: hue-rotate(0deg) saturate(1.08) brightness(0.96);
   }
   25% {
-    filter: hue-rotate(10deg) saturate(1.16) brightness(1.02);
+    filter: hue-rotate(18deg) saturate(1.3) brightness(1.02);
   }
   50% {
-    filter: hue-rotate(22deg) saturate(1.28) brightness(1.08);
+    filter: hue-rotate(38deg) saturate(1.46) brightness(1.12);
   }
   75% {
-    filter: hue-rotate(8deg) saturate(1.2) brightness(1.03);
+    filter: hue-rotate(16deg) saturate(1.34) brightness(1.05);
   }
   100% {
-    filter: hue-rotate(-8deg) saturate(1.08) brightness(1);
+    filter: hue-rotate(-14deg) saturate(1.14) brightness(1);
   }
 }
 
 @keyframes research-graph-stars-twinkle {
   0% {
     transform: translate3d(0, 0, 0) scale(1);
-    opacity: 0.74;
-    filter: brightness(0.98);
+    opacity: 0.7;
+    filter: brightness(0.95);
   }
   35% {
-    transform: translate3d(0.25%, -0.2%, 0) scale(1.01);
-    opacity: 0.94;
-    filter: brightness(1.08);
+    transform: translate3d(0.55%, -0.35%, 0) scale(1.03);
+    opacity: 1;
+    filter: brightness(1.2);
   }
   70% {
-    transform: translate3d(-0.2%, 0.18%, 0) scale(1.015);
-    opacity: 0.86;
-    filter: brightness(1.14);
+    transform: translate3d(-0.45%, 0.28%, 0) scale(1.04);
+    opacity: 0.84;
+    filter: brightness(1.32);
   }
   100% {
-    transform: translate3d(0.15%, -0.12%, 0) scale(1.008);
-    opacity: 0.8;
-    filter: brightness(1.02);
+    transform: translate3d(0.32%, -0.22%, 0) scale(1.02);
+    opacity: 0.78;
+    filter: brightness(1.06);
+  }
+}
+
+@keyframes research-graph-planet-roll {
+  0% {
+    background-position:
+      0% 0%,
+      0% 0%,
+      0% 0%,
+      0% 0%,
+      0% 0%,
+      0% 0%,
+      0% 0%,
+      0% 0%,
+      0% 0%,
+      0% 0%,
+      0% 0%,
+      0% 0%,
+      0% 0%,
+      0% 0%,
+      0% 0%;
+  }
+  50% {
+    background-position:
+      2% -2%,
+      -1.5% 1.2%,
+      1.8% -1.2%,
+      -1% 1.4%,
+      1.6% -0.8%,
+      -1.4% 1.8%,
+      1.1% -1.1%,
+      0.8% -0.6%,
+      -0.8% 0.8%,
+      1.3% -1.3%,
+      -1.8% 1.6%,
+      2.4% -1.5%,
+      -1.2% 1.2%,
+      1.6% -1.4%,
+      -1% 1%;
+  }
+  100% {
+    background-position:
+      -1.2% 1.4%,
+      1.4% -1.2%,
+      -1.6% 1%,
+      1.1% -1.6%,
+      -1.2% 1.4%,
+      1.5% -1%,
+      -1% 1.1%,
+      -0.6% 0.5%,
+      0.8% -0.8%,
+      -1.2% 1.2%,
+      1.9% -1.8%,
+      -2.2% 1.4%,
+      1.1% -1.1%,
+      -1.4% 1.2%,
+      0.8% -0.8%;
   }
 }
 
@@ -5393,6 +5450,90 @@ textarea:focus {
   isolation: isolate;
   background:
     radial-gradient(
+      circle at 6% 8%,
+      rgba(149, 214, 255, 0.28) 0,
+      rgba(149, 214, 255, 0.12) 10%,
+      transparent 24%
+    ),
+    radial-gradient(
+      ellipse 26% 16% at 8% 12%,
+      rgba(114, 140, 255, 0.18) 0,
+      rgba(114, 140, 255, 0.07) 26%,
+      transparent 58%
+    ),
+    radial-gradient(
+      ellipse 24% 14% at 12% 18%,
+      rgba(255, 116, 196, 0.18) 0,
+      rgba(255, 116, 196, 0.07) 26%,
+      transparent 56%
+    ),
+    radial-gradient(
+      circle at 14% 14%,
+      rgba(109, 180, 255, 0.24) 0,
+      rgba(109, 180, 255, 0.08) 12%,
+      transparent 28%
+    ),
+    radial-gradient(
+      circle at 87% 15%,
+      rgba(255, 203, 96, 0.24) 0,
+      rgba(255, 203, 96, 0.08) 10%,
+      transparent 24%
+    ),
+    radial-gradient(
+      ellipse 18% 7% at 10% 86%,
+      rgba(255, 120, 172, 0.16) 0,
+      rgba(255, 120, 172, 0.06) 36%,
+      transparent 68%
+    ),
+    radial-gradient(
+      ellipse 16% 8% at 24% 72%,
+      rgba(192, 109, 255, 0.18) 0,
+      rgba(192, 109, 255, 0.07) 36%,
+      transparent 68%
+    ),
+    radial-gradient(
+      ellipse 15% 8% at 36% 59%,
+      rgba(255, 117, 208, 0.18) 0,
+      rgba(255, 117, 208, 0.07) 36%,
+      transparent 68%
+    ),
+    radial-gradient(
+      ellipse 15% 8% at 49% 48%,
+      rgba(117, 156, 255, 0.18) 0,
+      rgba(117, 156, 255, 0.07) 36%,
+      transparent 68%
+    ),
+    radial-gradient(
+      ellipse 15% 8% at 61% 38%,
+      rgba(106, 242, 222, 0.18) 0,
+      rgba(106, 242, 222, 0.06) 36%,
+      transparent 68%
+    ),
+    radial-gradient(
+      ellipse 15% 8% at 74% 28%,
+      rgba(255, 160, 103, 0.16) 0,
+      rgba(255, 160, 103, 0.06) 36%,
+      transparent 68%
+    ),
+    radial-gradient(
+      ellipse 22% 12% at 88% 84%,
+      rgba(98, 255, 214, 0.16) 0,
+      rgba(98, 255, 214, 0.06) 34%,
+      transparent 68%
+    ),
+    radial-gradient(
+      ellipse 20% 11% at 82% 78%,
+      rgba(255, 134, 184, 0.18) 0,
+      rgba(255, 134, 184, 0.07) 34%,
+      transparent 68%
+    ),
+    radial-gradient(
+      ellipse 18% 10% at 92% 88%,
+      rgba(255, 182, 90, 0.14) 0,
+      rgba(255, 182, 90, 0.05) 32%,
+      transparent 66%
+    ),
+    radial-gradient(
       ellipse 12% 5% at 18% 78%,
       rgba(255, 140, 182, 0.12) 0,
       rgba(255, 140, 182, 0.04) 34%,
@@ -5447,15 +5588,15 @@ textarea:focus {
       transparent 64%
     ),
     linear-gradient(
-      132deg,
-      rgba(106, 112, 255, 0.02) 0%,
-      rgba(106, 112, 255, 0.02) 18%,
-      rgba(170, 105, 255, 0.06) 28%,
-      rgba(232, 116, 188, 0.16) 38%,
-      rgba(255, 132, 176, 0.2) 44%,
-      rgba(209, 104, 214, 0.16) 51%,
-      rgba(120, 123, 255, 0.1) 60%,
-      rgba(94, 118, 214, 0.05) 72%,
+      136deg,
+      rgba(74, 108, 255, 0.02) 0%,
+      rgba(126, 98, 255, 0.05) 18%,
+      rgba(221, 95, 255, 0.09) 28%,
+      rgba(255, 111, 194, 0.22) 38%,
+      rgba(255, 137, 120, 0.18) 46%,
+      rgba(103, 244, 210, 0.16) 58%,
+      rgba(115, 171, 255, 0.14) 72%,
+      rgba(77, 109, 210, 0.05) 82%,
       transparent 86%
     ),
     radial-gradient(
@@ -5540,6 +5681,16 @@ textarea:focus {
       transparent 28%
     ),
     radial-gradient(
+      circle at 10% 10%,
+      rgba(255, 255, 255, 0.18) 0 1px,
+      transparent 1.7px
+    ),
+    radial-gradient(
+      circle at 92% 86%,
+      rgba(255, 255, 255, 0.2) 0 1px,
+      transparent 1.8px
+    ),
+    radial-gradient(
       circle at 22% 28%,
       rgba(255, 255, 255, 0.5) 0 1px,
       transparent 1.6px
@@ -5578,7 +5729,8 @@ textarea:focus {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.06),
     inset 0 0 0 1px rgba(159, 202, 255, 0.05),
-    0 34px 96px rgba(1, 8, 24, 0.58);
+    0 34px 96px rgba(1, 8, 24, 0.58),
+    0 0 90px rgba(138, 100, 255, 0.08);
   margin-bottom: 14px;
   position: relative;
   animation: research-graph-canvas-glow 18s ease-in-out infinite;
@@ -5594,6 +5746,18 @@ textarea:focus {
 
 .research-graph-canvas::before {
   background:
+    radial-gradient(
+      ellipse 24% 12% at 8% 10%,
+      rgba(118, 160, 255, 0.14) 0,
+      rgba(118, 160, 255, 0.04) 30%,
+      transparent 62%
+    ),
+    radial-gradient(
+      ellipse 22% 12% at 10% 16%,
+      rgba(255, 122, 205, 0.14) 0,
+      rgba(255, 122, 205, 0.04) 30%,
+      transparent 60%
+    ),
     radial-gradient(
       ellipse 10% 4% at 22% 73%,
       rgba(255, 184, 218, 0.12) 0,
@@ -5723,16 +5887,30 @@ textarea:focus {
       transparent 60%
     ),
     radial-gradient(
+      ellipse 22% 12% at 90% 84%,
+      rgba(111, 255, 214, 0.12) 0,
+      rgba(111, 255, 214, 0.035) 30%,
+      transparent 62%
+    ),
+    radial-gradient(
+      ellipse 20% 10% at 84% 78%,
+      rgba(255, 138, 188, 0.12) 0,
+      rgba(255, 138, 188, 0.035) 30%,
+      transparent 60%
+    ),
+    radial-gradient(
       ellipse 8% 2.2% at 82% 30%,
       rgba(255, 255, 255, 0.28) 0,
       rgba(198, 223, 255, 0.16) 22%,
       transparent 56%
     );
-  opacity: 0.82;
+  opacity: 0.94;
   transform-origin: 50% 50%;
+  mix-blend-mode: screen;
   animation:
-    research-graph-nebula-drift 28s ease-in-out infinite alternate,
-    research-graph-nebula-prism 22s ease-in-out infinite;
+    research-graph-nebula-drift 24s ease-in-out infinite alternate,
+    research-graph-nebula-prism 18s ease-in-out infinite,
+    research-graph-planet-roll 34s ease-in-out infinite;
 }
 
 .research-graph-canvas::after {
@@ -5916,11 +6094,36 @@ textarea:focus {
       circle at 28% 88%,
       rgba(255, 255, 255, 0.18) 0 0.6px,
       transparent 1.6px
+    ),
+    radial-gradient(
+      circle at 16% 22%,
+      rgba(135, 228, 255, 0.95) 0 1.2px,
+      transparent 2.5px
+    ),
+    radial-gradient(
+      circle at 38% 68%,
+      rgba(255, 175, 214, 0.88) 0 1.1px,
+      transparent 2.3px
+    ),
+    radial-gradient(
+      circle at 57% 27%,
+      rgba(255, 211, 120, 0.9) 0 1.2px,
+      transparent 2.4px
+    ),
+    radial-gradient(
+      circle at 74% 58%,
+      rgba(163, 153, 255, 0.92) 0 1.1px,
+      transparent 2.4px
+    ),
+    radial-gradient(
+      circle at 88% 33%,
+      rgba(102, 255, 221, 0.92) 0 1.1px,
+      transparent 2.3px
     );
-  opacity: 0.88;
+  opacity: 0.94;
   mix-blend-mode: screen;
   transform-origin: 50% 50%;
-  animation: research-graph-stars-twinkle 11s ease-in-out infinite alternate;
+  animation: research-graph-stars-twinkle 7.5s ease-in-out infinite alternate;
 }
 
 .research-graph-canvas.fullscreen {
@@ -5982,6 +6185,9 @@ textarea:focus {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  font-family:
+    "Aptos", "Segoe UI Variable Text", "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", sans-serif;
 }
 
 .research-graph-modal-header {
@@ -6010,9 +6216,12 @@ textarea:focus {
 }
 
 .research-graph-heading {
+  font-family:
+    "Segoe UI Variable Display", "Aptos Display", "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", sans-serif;
   font-size: 1.08rem;
-  font-weight: 800;
-  letter-spacing: 0.03em;
+  font-weight: 780;
+  letter-spacing: 0.05em;
   color: #f4f8ff;
 }
 
@@ -6031,18 +6240,18 @@ textarea:focus {
   border: 1px solid rgba(161, 196, 255, 0.16);
   background: rgba(104, 155, 255, 0.1);
   color: #dbe8ff;
-  font-size: 0.77rem;
-  font-weight: 800;
-  letter-spacing: 0.08em;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
 .research-graph-subtitle {
   color: rgba(194, 213, 244, 0.82);
-  font-size: 0.82rem;
+  font-size: 0.8rem;
   line-height: 1.5;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
@@ -6089,18 +6298,18 @@ textarea:focus {
   max-height: 100%;
   overflow: auto;
   padding: 12px;
-  border-radius: 24px;
+  border-radius: 22px;
   border: 1px solid rgba(126, 170, 255, 0.14);
   background: linear-gradient(
     180deg,
-    rgba(17, 28, 50, 0.88),
-    rgba(9, 16, 30, 0.92)
+    rgba(17, 28, 50, 0.8),
+    rgba(9, 16, 30, 0.86)
   );
   backdrop-filter: blur(18px) saturate(130%);
   color: #eef4ff;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.05),
-    0 20px 48px rgba(1, 8, 20, 0.24);
+    0 18px 42px rgba(1, 8, 20, 0.2);
 }
 
 .research-graph-detail-panel .research-card,
@@ -6108,8 +6317,8 @@ textarea:focus {
   border-color: rgba(142, 173, 226, 0.14);
   background: linear-gradient(
     180deg,
-    rgba(255, 255, 255, 0.08),
-    rgba(255, 255, 255, 0.04)
+    rgba(255, 255, 255, 0.065),
+    rgba(255, 255, 255, 0.03)
   );
   color: #eef4ff;
 }
@@ -6150,14 +6359,17 @@ textarea:focus {
   align-items: center;
   justify-content: center;
   min-width: 94px;
-  padding: 8px 14px;
+  padding: 7px 13px;
   border-radius: 999px;
   border: 1px solid rgba(255, 255, 255, 0.14);
   background: rgba(9, 18, 35, 0.54);
   color: #f7fbff;
-  font-size: 0.76rem;
-  font-weight: 800;
-  letter-spacing: 0.08em;
+  font-family:
+    "Aptos Display", "Segoe UI Variable Display", "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", sans-serif;
+  font-size: 0.72rem;
+  font-weight: 720;
+  letter-spacing: 0.11em;
   text-transform: uppercase;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.05),
@@ -6193,8 +6405,8 @@ textarea:focus {
   position: absolute;
   width: 280px;
   z-index: 3;
-  padding: 14px 16px;
-  border-radius: 20px;
+  padding: 13px 15px;
+  border-radius: 18px;
   border: 1px solid rgba(160, 200, 255, 0.16);
   background:
     radial-gradient(
@@ -6212,18 +6424,24 @@ textarea:focus {
 }
 
 .research-graph-tooltip-kind {
-  font-size: 0.7rem;
-  font-weight: 800;
-  letter-spacing: 0.12em;
+  font-family:
+    "Aptos Display", "Segoe UI Variable Display", "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", sans-serif;
+  font-size: 0.66rem;
+  font-weight: 720;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
   color: #8ff2ba;
 }
 
 .research-graph-tooltip-title {
   margin-top: 4px;
+  font-family:
+    "Segoe UI Variable Display", "Aptos Display", "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", sans-serif;
   font-size: 1rem;
   line-height: 1.3;
-  font-weight: 800;
+  font-weight: 760;
 }
 
 .research-graph-tooltip-text,
