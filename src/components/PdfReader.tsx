@@ -642,6 +642,19 @@ const resolveOutlinePageNumber = async (
   return null;
 };
 
+const SUSPICIOUS_MOJIBAKE_PATTERN = /[�]|(?:绔|璺|缂|鍒|脳|鈥|锟)/;
+
+const normalizeOutlineTitle = (
+  rawTitle: string | undefined,
+  index: number,
+): string => {
+  const title = rawTitle?.replace(/\s+/g, " ").trim() ?? "";
+  if (!title || SUSPICIOUS_MOJIBAKE_PATTERN.test(title)) {
+    return `章节 ${index + 1}`;
+  }
+  return title;
+};
+
 const flattenOutlineEntries = async (
   pdfDocument: PDFDocumentProxy,
   items: PdfOutlineItem[],
@@ -659,7 +672,7 @@ const flattenOutlineEntries = async (
       return [
         {
           id,
-          title: item.title?.trim() || `绔犺妭 ${index + 1}`,
+          title: normalizeOutlineTitle(item.title, index),
           pageNumber,
           depth,
           hasChildren: children.length > 0,
@@ -3914,8 +3927,8 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
                     className="action-button pdf-toolbar-icon-button"
                     onClick={zoomOut}
                     disabled={viewerMode !== "pdfjs" || zoomPercent <= MIN_ZOOM}
-                    aria-label="缂╁皬 PDF"
-                    title="缂╁皬"
+                    aria-label="缩小 PDF"
+                    title="缩小"
                   >
                     <ZoomOut size={14} />
                   </button>
@@ -4016,14 +4029,14 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
           <div className="pdf-outline-header">
             <div>
               <div className="pdf-outline-title">目录</div>
-              <div className="pdf-outline-subtitle">璺宠浆鍒板搴旈〉</div>
+              <div className="pdf-outline-subtitle">跳转到对应页</div>
             </div>
             <button
               className="ghost-icon-button"
               onClick={() => setIsOutlineOpen(false)}
               aria-label="关闭目录"
             >
-              脳
+              ×
             </button>
           </div>
 
