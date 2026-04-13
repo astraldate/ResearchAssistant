@@ -4980,6 +4980,74 @@ textarea:focus {
   }
 }
 
+@keyframes research-graph-canvas-glow {
+  0% {
+    filter: saturate(1) brightness(0.98);
+  }
+  50% {
+    filter: saturate(1.12) brightness(1.04);
+  }
+  100% {
+    filter: saturate(1.04) brightness(1);
+  }
+}
+
+@keyframes research-graph-nebula-drift {
+  0% {
+    transform: translate3d(-1.2%, 1%, 0) scale(1.02) rotate(-0.8deg);
+    opacity: 0.74;
+  }
+  50% {
+    transform: translate3d(1.2%, -1.4%, 0) scale(1.06) rotate(0.9deg);
+    opacity: 0.92;
+  }
+  100% {
+    transform: translate3d(-0.4%, 0.6%, 0) scale(1.03) rotate(-0.35deg);
+    opacity: 0.82;
+  }
+}
+
+@keyframes research-graph-nebula-prism {
+  0% {
+    filter: hue-rotate(0deg) saturate(1.02) brightness(0.98);
+  }
+  25% {
+    filter: hue-rotate(10deg) saturate(1.16) brightness(1.02);
+  }
+  50% {
+    filter: hue-rotate(22deg) saturate(1.28) brightness(1.08);
+  }
+  75% {
+    filter: hue-rotate(8deg) saturate(1.2) brightness(1.03);
+  }
+  100% {
+    filter: hue-rotate(-8deg) saturate(1.08) brightness(1);
+  }
+}
+
+@keyframes research-graph-stars-twinkle {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+    opacity: 0.74;
+    filter: brightness(0.98);
+  }
+  35% {
+    transform: translate3d(0.25%, -0.2%, 0) scale(1.01);
+    opacity: 0.94;
+    filter: brightness(1.08);
+  }
+  70% {
+    transform: translate3d(-0.2%, 0.18%, 0) scale(1.015);
+    opacity: 0.86;
+    filter: brightness(1.14);
+  }
+  100% {
+    transform: translate3d(0.15%, -0.12%, 0) scale(1.008);
+    opacity: 0.8;
+    filter: brightness(1.02);
+  }
+}
+
 @media (max-width: 960px) {
   .citation-bar,
   .chat-header,
@@ -5322,6 +5390,7 @@ textarea:focus {
   overflow: hidden;
   border: 1px solid rgba(122, 168, 255, 0.16);
   border-radius: 28px;
+  isolation: isolate;
   background:
     radial-gradient(
       ellipse 12% 5% at 18% 78%,
@@ -5357,6 +5426,18 @@ textarea:focus {
       ellipse 15% 6% at 68% 31%,
       rgba(194, 123, 255, 0.11) 0,
       rgba(194, 123, 255, 0.038) 34%,
+      transparent 64%
+    ),
+    radial-gradient(
+      ellipse 14% 5% at 34% 34%,
+      rgba(255, 177, 104, 0.11) 0,
+      rgba(255, 177, 104, 0.04) 34%,
+      transparent 64%
+    ),
+    radial-gradient(
+      ellipse 13% 5% at 63% 58%,
+      rgba(101, 255, 212, 0.1) 0,
+      rgba(101, 255, 212, 0.035) 34%,
       transparent 64%
     ),
     radial-gradient(
@@ -5429,6 +5510,18 @@ textarea:focus {
       transparent 22%
     ),
     radial-gradient(
+      circle at 28% 62%,
+      rgba(255, 183, 94, 0.08) 0,
+      rgba(255, 183, 94, 0.03) 10%,
+      transparent 22%
+    ),
+    radial-gradient(
+      circle at 72% 54%,
+      rgba(106, 245, 220, 0.08) 0,
+      rgba(106, 245, 220, 0.03) 10%,
+      transparent 22%
+    ),
+    radial-gradient(
       circle at 18% 16%,
       rgba(84, 192, 255, 0.22) 0,
       rgba(84, 192, 255, 0.08) 16%,
@@ -5488,6 +5581,7 @@ textarea:focus {
     0 34px 96px rgba(1, 8, 24, 0.58);
   margin-bottom: 14px;
   position: relative;
+  animation: research-graph-canvas-glow 18s ease-in-out infinite;
 }
 
 .research-graph-canvas::before,
@@ -5528,6 +5622,18 @@ textarea:focus {
       ellipse 10% 4% at 67% 36%,
       rgba(255, 158, 203, 0.1) 0,
       rgba(255, 158, 203, 0.028) 38%,
+      transparent 68%
+    ),
+    radial-gradient(
+      ellipse 10% 4% at 52% 34%,
+      rgba(255, 190, 124, 0.11) 0,
+      rgba(255, 190, 124, 0.03) 38%,
+      transparent 68%
+    ),
+    radial-gradient(
+      ellipse 10% 4% at 63% 61%,
+      rgba(121, 255, 224, 0.09) 0,
+      rgba(121, 255, 224, 0.026) 38%,
       transparent 68%
     ),
     radial-gradient(
@@ -5623,6 +5729,10 @@ textarea:focus {
       transparent 56%
     );
   opacity: 0.82;
+  transform-origin: 50% 50%;
+  animation:
+    research-graph-nebula-drift 28s ease-in-out infinite alternate,
+    research-graph-nebula-prism 22s ease-in-out infinite;
 }
 
 .research-graph-canvas::after {
@@ -5809,6 +5919,8 @@ textarea:focus {
     );
   opacity: 0.88;
   mix-blend-mode: screen;
+  transform-origin: 50% 50%;
+  animation: research-graph-stars-twinkle 11s ease-in-out infinite alternate;
 }
 
 .research-graph-canvas.fullscreen {
