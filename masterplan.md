@@ -1,6 +1,6 @@
 # ResearchAssistant Master Plan
 
-更新日期：2026-03-26
+更新日期：2026-04-14
 
 ## 1. 总目标
 
@@ -24,9 +24,9 @@
 
 - 资料导入与知识库检索
 - Research Memory：论文索引、图谱、审核和 Idea 推荐
-- Chat：`@paper` 论文 scope 与 `/brief` 核心简报指令
+- Chat：`@paper` 论文 scope 与 `/brief`、`/ask`、`/method`、`/exp`、`/claim`、`/note`、`/review` 第一批科研命令
 - PDF 阅读、术语解释、知识卡片
-- 待处理收件箱
+- 左侧 rail `Inbox` 待处理收件箱
 - 移动 companion service
 
 ### 3.2 移动端
@@ -49,16 +49,16 @@
 - 完成 Android release 正式签名
 - 补齐桌面端 / 移动端联调验收清单
 - 继续完善待处理收件箱的后续处理动作
-- 稳定 `Research Memory` 的审核流和图谱可视化，补齐论文比较前端入口
-- 打磨 `/brief` 的单论文简报质量与命令交互，再决定是否扩到 `/diff`
+- 稳定 `Research Memory` 的审核流、断点续建图和图谱可视化，补齐论文比较前端入口
+- 打磨 `/brief` 与第一批单论文命令的证据排序、输出后处理和失败反馈，再决定是否扩到 `/diff`
 
 ### P1
 
 - 把 APK 产物导出和校验收成稳定脚本
-- 为 Android release 增加自动化校验
+- 为 Android release 增加更完整的自动化校验
 - 继续削减 Windows 下原生构建路径 warning
-- 给 `Research Memory` 增加更显式的模型设置与索引策略设置页
-- 把 `Graph` 从 lane 视图升级到真正的 DAG 交互视图
+- 给 `Research Memory` 增加更显式的模型设置、实验 provider、索引策略和样本集管理页
+- 继续优化 Graph Canvas 的拖动流畅度、边命中区、星图入场动画和大图性能
 
 ### P2
 
@@ -73,6 +73,7 @@
   - 聊天默认 `qwen3.5:9b`
   - 候选节点抽取 `qwen3:8b`
   - Pipeline Summary / Pipeline 命名 / Edge 抽取 / Edge 校验 默认 `qwen3.5:9b`
+- 测试期支持 Research Memory 抽取链切换到 OpenAI-compatible / DeepSeek provider，用于判断问题来自模型能力还是 DAG / prompt /过滤规则。
 - 存储层保持：
   - `SQLite` 作为主库
   - `LanceDB` 作为派生向量索引
@@ -85,6 +86,7 @@
   - `Pipeline` 改成 `pipeline_summarize -> pipeline_name_extract`
   - `Edge` 改成 `edge_extract -> edge_validate`
   - `Paper Status` 直接展示每篇论文的抽取诊断，便于做最小回归比较
+  - `Perspective / Review / Survey` 论文不强制抽 Pipeline 主干；Pipeline 为空时仍保留 `challenge -> insight`、`task -> module` 等关系抽取路径
 - 工作区内的文件或文件夹可以直接右键：
   - `建立索引`
   - `解除索引`
@@ -93,9 +95,12 @@
   - `Graph`
   - `Review`
   - `Ideas`
+  - `Inbox`
 - Chat 快捷入口先保持极简：
   - `@paper`
   - `/brief`
+  - `/ask`、`/method`、`/exp`、`/claim`
+  - `/note`、`/review`
 
 ## 6. 工程规则
 
