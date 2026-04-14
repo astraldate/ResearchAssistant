@@ -6,7 +6,7 @@ ResearchAssistant 是一个本地优先的科研助理工作台，当前同时�
 - 移动端：Expo Router + React Native
 - 共享协议：`packages/contracts`
 
-当前主线已经覆盖资料导入、知识库检索、PDF 阅读与术语卡片、Research Memory 论文图谱、移动端收件箱、局域网配对、复习事件同步、桌面端打包，以及 Android release APK 构建。
+当前主线已经覆盖资料导入、知识库检索、PDF 阅读与术语卡片、移动端收件箱、局域网配对、复习事件同步，以及 Android release APK 构建。
 
 ## 仓库结构
 
@@ -45,7 +45,7 @@ pnpm run tauri dev
 - 已配对设备
 - `mobile_inbox` 和 `review_state` 数据目录
 
-桌面端主界面左侧 rail 包含 `Inbox` 入口，用来处理手机端投递的笔记、链接和图片。收件箱支持刷新、查看待处理/全部、打开附件、复制链接、显示记录、标记已处理和恢复待处理。
+桌面端主界面包含“待处理收件箱”视图，用来处理手机端投递的笔记、链接和图片。
 
 ## 移动端开发与真机测试
 
@@ -80,40 +80,14 @@ Gradle 原始产物路径：
 
 - `mobile-app/android/app/build/outputs/apk/release/app-release.apk`
 
+当前本机还会额外保留一份稳定命名副本：
+
+- `mobile-app/dist/android/researchassistant-mobile-release.apk`
+
 注意：
 
 - `mobile-app/dist/` 被 `.gitignore` 忽略，APK 只作为本机构建产物保存，不提交入库。
 - 如果没有 `mobile-app/android/keystore.properties`，release 会回退使用 debug keystore，仅适合本地安装测试。
-- Android 已 prebuild 的原生 launcher 图标位于 `mobile-app/android/app/src/main/res/mipmap-*`，只改 `mobile-app/assets/*.png` 不会影响已存在的原生安装包。
-
-## 桌面端打包
-
-桌面端正式安装包：
-
-```bash
-pnpm tauri build --bundles nsis --ci
-```
-
-产物路径：
-
-- `src-tauri/target/release/researchassistant.exe`
-- `src-tauri/target/release/bundle/nsis/researchassistant_0.1.0_x64-setup.exe`
-
-注意：
-
-- `pnpm run tauri dev` 启动的是 `src-tauri/target/debug/researchassistant.exe`，不是 release 安装包。
-- 如果只更新图标后 dev 窗口仍显示旧图标，先关闭 dev app，再清理 debug 构建缓存：`cargo clean --manifest-path src-tauri/Cargo.toml`。
-- Windows 任务栏和开始菜单会缓存图标；安装包图标已更新但系统仍显示旧图标时，通常需要卸载旧版、重新安装，或重启 Explorer / 系统。
-
-## 图标更新
-
-当前桌面端和移动端图标统一以 `dist/icon.svg` 为源图，再派生到各平台需要的格式：
-
-- 桌面端 Tauri：`src-tauri/icons/32x32.png`、`128x128.png`、`128x128@2x.png`、`icon.ico`、`icon.icns`、`StoreLogo.png`
-- 移动端 Expo 入口资产：`mobile-app/assets/icon.png`、`adaptive-icon.png`、`splash-icon.png`
-- 移动端 Android 原生资源：`mobile-app/android/app/src/main/res/mipmap-*` 和 splash logo
-
-更新图标后需要重新打包对应平台；已安装应用不会自动刷新图标缓存。
 
 ## Windows 下 Android 构建约束
 
@@ -137,18 +111,16 @@ pnpm tauri build --bundles nsis --ci
 仓库当前包含两条 GitHub Actions 流水线：
 
 - `CI`：在推送到 `main` / `master` 和发起 PR 时运行，负责 Web、Mobile、Rust/Tauri 的常规检查。
-- `Release Desktop`：只在推送 `v*` tag 时运行，负责构建 Windows 桌面版，并把 Android release APK 上传到同一个 GitHub draft release。
+- `Release Desktop`：只在推送 `v*` tag 时运行，负责构建 Windows 桌面版并把产物上传到 GitHub Release。
 
-`Release Desktop` 不重复跑常规检查，它只保留发布必需步骤：
+`Release Desktop` 不重复跑常规检查，它只保留 Windows 发布必需步骤：
 
 - 安装 Node.js、pnpm、Rust
 - 恢复 pnpm 与 Rust 缓存
 - 安装依赖
 - 调用 Tauri Action 构建并发布 Windows 安装包
-- 调用 Gradle `assembleRelease --no-daemon` 构建 Android APK
-- 将 APK 附加到同一个 draft release
 
-### 发布桌面版与移动端 APK
+### 发布桌面版
 
 推荐流程：
 
@@ -166,7 +138,7 @@ git push origin v0.1.1
 ```
 
 5. GitHub 会自动触发 `Release Desktop`，生成一个 draft release。
-6. 在 GitHub Releases 页面检查 Windows 安装包、Android APK、版本号和发布说明，确认后再手动发布 draft。
+6. 在 GitHub Releases 页面检查安装包、版本号和发布说明，确认后再手动发布 draft。
 
 ### 回滚或重发
 
@@ -176,20 +148,7 @@ git push origin v0.1.1
 
 ## 相关文档
 
-- [Design Specification](./Design%20Specification.md)
+- [Design Specification](./DesignSpecification.md)
 - [coding_plan.md](./coding_plan.md)
 - [masterplan.md](./masterplan.md)
 - [COPYRIGHT_NOTICE.md](./COPYRIGHT_NOTICE.md)
-
-`Research Memory` 的实现说明、运维约定和限制已经并入 `Design Specification.md`，不再单独维护 `RESEARCH_MEMORY_MANUAL.md`。
-
-## Research Memory 回归
-
-- 生成小样本标注骨架：`pnpm research-eval:scaffold`
-- 运行回归并输出报告：`pnpm research-eval:run`
-- 快速预览单篇论文抽取：`pnpm research-eval:preview -- --paper <pdf-path> --limit 1 --stage full --mode balanced --show-content`
-- 默认会读取当前桌面端 app data 下的 `research_memory.sqlite3`
-- 若库里已经有 `approved` 候选，会直接用它们生成第一批 gold
-- 若当前只有 `paper` 记录、没有候选或诊断，样本会被标记为 `needs_reingest_and_annotation`
-
-测试期可在 Research Memory 抽取链使用实验 provider 做 A/B 对比。默认仍是本地 Ollama；OpenAI-compatible / DeepSeek 只影响 Research Memory 抽取与评测链，不影响普通聊天、翻译和 `/brief`。

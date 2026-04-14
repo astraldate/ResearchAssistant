@@ -118,6 +118,15 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Generate Android autolink snapshot
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          pnpm --dir mobile-app exec expo-modules-autolinking react-native-config --json --platform android --project-root "." "node_modules" | Set-Content -Encoding utf8 "mobile-app/android/autolink-node-modules.json"
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
       - name: Build Android release APK
         working-directory: mobile-app/android
         run: .\gradlew.bat assembleRelease --console=plain --no-daemon
