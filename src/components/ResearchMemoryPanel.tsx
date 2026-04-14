@@ -11,8 +11,14 @@ cytoscape.use(cytoscapeDagre);
 
 type StatusTone = "info" | "error";
 type ResearchTab = "papers" | "search" | "graph" | "review" | "ideas";
-type GraphView = "method" | "problem";
-type GraphNodeKind = "task" | "pipeline" | "module" | "challenge" | "insight";
+type GraphView = "method" | "problem" | "idea";
+type GraphNodeKind =
+  | "task"
+  | "pipeline"
+  | "module"
+  | "challenge"
+  | "insight"
+  | "idea";
 type ReviewFilter =
   | "all"
   | "task"
@@ -24,6 +30,7 @@ type ReviewFilter =
 
 interface ResearchMemoryPanelProps {
   chatModel: string;
+  extractProviderLabel?: string;
   extractFastModel: string;
   extractFallbackModel: string;
   pipelineSummaryModel: string;
@@ -42,6 +49,36 @@ interface ResearchMemoryPanelProps {
     doubleFailureCount?: number;
   } | null;
   onStatus?: (message: string, tone?: StatusTone) => void;
+}
+
+interface StarGraphGlyph {
+  id: string;
+  label: string;
+  kind: GraphNodeKind;
+  kindLabel: string;
+  x: number;
+  y: number;
+}
+
+interface StarGraphEdgeFlow {
+  id: string;
+  d: string;
+  edgeType: string;
+  label?: string;
+  isIdea?: boolean;
+  from?: string;
+  to?: string;
+}
+
+interface StarDustParticle {
+  x: number;
+  y: number;
+  homeX: number;
+  homeY: number;
+  vx: number;
+  vy: number;
+  radius: number;
+  alpha: number;
 }
 
 interface EvidenceRef {
@@ -206,6 +243,14 @@ const graphLaneDefinitions: Record<
     { kind: "challenge", label: "Challenge" },
     { kind: "insight", label: "Insight" },
   ],
+  idea: [
+    { kind: "challenge", label: "Challenge" },
+    { kind: "insight", label: "Insight" },
+    { kind: "task", label: "Task" },
+    { kind: "pipeline", label: "Pipeline" },
+    { kind: "module", label: "Module" },
+    { kind: "idea", label: "Idea" },
+  ],
 };
 
 const graphKindLabels: Record<GraphNodeKind, string> = {
@@ -214,6 +259,7 @@ const graphKindLabels: Record<GraphNodeKind, string> = {
   module: "Module",
   challenge: "Challenge",
   insight: "Insight",
+  idea: "Idea",
 };
 
 const pageLabel = (pageStart: number, pageEnd: number) =>
@@ -253,6 +299,7 @@ const graphKindColors: Record<GraphNodeKind, string> = {
   module: "#22c67f",
   challenge: "#ff5f9f",
   insight: "#8a7bff",
+  idea: "#fbbf24",
 };
 
 const graphKindCodes: Record<GraphNodeKind, string> = {
@@ -261,6 +308,7 @@ const graphKindCodes: Record<GraphNodeKind, string> = {
   module: "MOD",
   challenge: "CHAL",
   insight: "INS",
+  idea: "IDEA",
 };
 
 const trimText = (value: string, limit: number) => {
@@ -271,6 +319,19 @@ const trimText = (value: string, limit: number) => {
 
 const formatGraphNodeLabel = (node: ResearchGraphNode) =>
   `${graphKindCodes[node.kind]}\n${node.label}`;
+
+const ideaNodeId = (ideaId: string) => `idea:${ideaId}`;
+
+const resolveIdeaSourceKind = (idea: IdeaCandidate, sourceId: string) => {
+  if (idea.challengeNodeId === sourceId) return "challenge";
+  if (idea.moduleNodeId === sourceId) return "module";
+  if (idea.taskNodeId === sourceId) return "task";
+  if (idea.pipelineNodeId === sourceId) return "pipeline";
+  return "insight";
+};
+
+const ideaEdgeTypeForKind = (kind: GraphNodeKind) =>
+  kind === "challenge" ? "resolves" : "inspired_by";
 
 const buildGraphElements = (
   graph: ResearchGraph,
@@ -331,8 +392,8 @@ const buildGraphElements = (
       },
       classes: `graph-node graph-node-${node.kind}${node.isOrphan ? " graph-node-orphan" : ""}`,
       selectable: true,
-      grabbable: false,
-      locked: true,
+      grabbable: true,
+      locked: false,
       position: fallbackPositions.get(node.id),
     });
 
@@ -436,6 +497,7 @@ const shouldFallbackToPresetLayout = (cy: CytoscapeCore) => {
 
 export function ResearchMemoryPanel({
   chatModel,
+  extractProviderLabel = "Ollama",
   extractFastModel,
   extractFallbackModel,
   pipelineSummaryModel,
@@ -487,6 +549,17 @@ export function ResearchMemoryPanel({
 
   const [ideas, setIdeas] = useState<IdeaCandidate[]>([]);
   const [isIdeasLoading, setIsIdeasLoading] = useState(false);
+  const [ideaNodeIndex, setIdeaNodeIndex] = useState<
+    Record<string, IdeaCandidate>
+  >({});
+  const [ideaSourceIndex, setIdeaSourceIndex] = useState<
+    Record<string, ResearchGraphNodeDetail>
+  >({});
+  const [selectedIdea, setSelectedIdea] = useState<IdeaCandidate | null>(null);
+  const [ideaDraft, setIdeaDraft] = useState({ title: "", summary: "" });
+  const [isIdeaEditing, setIsIdeaEditing] = useState(false);
+  const [isIdeaSaving, setIsIdeaSaving] = useState(false);
+  const [ideaSaveError, setIdeaSaveError] = useState<string | null>(null);
   const [isGraphCanvasOpen, setIsGraphCanvasOpen] = useState(false);
   const [moduleTooltip, setModuleTooltip] = useState<{
     nodeId: string;
@@ -500,14 +573,524 @@ export function ResearchMemoryPanel({
     null,
   );
   const [graphPulseTick, setGraphPulseTick] = useState(0);
+  const [starGlyphs, setStarGlyphs] = useState<StarGraphGlyph[]>([]);
+  const [starEdgeFlows, setStarEdgeFlows] = useState<StarGraphEdgeFlow[]>([]);
+  const [enteredStarIds, setEnteredStarIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [spinningStarIds, setSpinningStarIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [neighborStarIds, setNeighborStarIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [dimmedStarIds, setDimmedStarIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [isStarScrollOpen, setIsStarScrollOpen] = useState(false);
   const graphCanvasRef = useRef<HTMLDivElement | null>(null);
+  const starDustCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const cyRef = useRef<CytoscapeCore | null>(null);
+  const selectedGraphNodeIdRef = useRef<string | null>(null);
+  const starSyncFrameRef = useRef<number | null>(null);
+  const starEntranceFrameRef = useRef<number | null>(null);
+  const isStarDraggingRef = useRef(false);
+  const starEntranceTimersRef = useRef<number[]>([]);
+  const starSpinTimersRef = useRef<number[]>([]);
 
   const activeGraph = graphCache[graphView] ?? null;
   const orphanNodes = useMemo(
     () => (activeGraph?.nodes ?? []).filter((node) => node.isOrphan),
     [activeGraph],
   );
+  const selectedIdeaLinkedNodes = useMemo(() => {
+    if (!selectedIdea) return [];
+    const links: Array<{ id: string; label: string; kind: GraphNodeKind }> = [];
+    const pushLink = (id?: string | null) => {
+      if (!id) return;
+      const detail = ideaSourceIndex[id];
+      const fallbackKind = resolveIdeaSourceKind(
+        selectedIdea,
+        id,
+      ) as GraphNodeKind;
+      const kind = (detail?.kind as GraphNodeKind | undefined) ?? fallbackKind;
+      const label =
+        detail?.label ??
+        `${graphKindLabels[kind] ?? "Source"} ${id.slice(0, 6)}`;
+      links.push({ id, label, kind });
+    };
+    pushLink(selectedIdea.challengeNodeId);
+    pushLink(selectedIdea.taskNodeId);
+    pushLink(selectedIdea.pipelineNodeId);
+    pushLink(selectedIdea.moduleNodeId);
+    return links;
+  }, [ideaSourceIndex, selectedIdea]);
+
+  function clearStarAnimationTimers() {
+    starEntranceTimersRef.current.forEach((timer) =>
+      window.clearTimeout(timer),
+    );
+    starEntranceTimersRef.current = [];
+    starSpinTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+    starSpinTimersRef.current = [];
+    if (starEntranceFrameRef.current != null) {
+      window.cancelAnimationFrame(starEntranceFrameRef.current);
+      starEntranceFrameRef.current = null;
+    }
+    if (starSyncFrameRef.current != null) {
+      window.cancelAnimationFrame(starSyncFrameRef.current);
+      starSyncFrameRef.current = null;
+    }
+  }
+
+  useEffect(() => {
+    if (!isGraphCanvasOpen) return;
+    let frameId = 0;
+    let setupFrameId = 0;
+    let disposed = false;
+    const pointer = { x: -9999, y: -9999 };
+    let particles: StarDustParticle[] = [];
+    let lastFrameAt = 0;
+    let host: HTMLElement | null = null;
+    let canvas: HTMLCanvasElement | null = null;
+    let context: CanvasRenderingContext2D | null = null;
+
+    const resize = () => {
+      if (!host || !canvas || !context) return;
+      const rect = host.getBoundingClientRect();
+      const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+      canvas.width = Math.max(1, Math.floor(rect.width * dpr));
+      canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+      canvas.style.width = `${rect.width}px`;
+      canvas.style.height = `${rect.height}px`;
+      context.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const count = Math.max(
+        140,
+        Math.min(280, Math.round((rect.width * rect.height) / 7600)),
+      );
+      particles = Array.from({ length: count }, () => {
+        const x = Math.random() * rect.width;
+        const y = Math.random() * rect.height;
+        return {
+          x,
+          y,
+          homeX: x,
+          homeY: y,
+          vx: (Math.random() - 0.5) * 0.08,
+          vy: (Math.random() - 0.5) * 0.08,
+          radius: 0.75 + Math.random() * 1.25,
+          alpha: 0.3 + Math.random() * 0.62,
+        };
+      });
+    };
+
+    const handlePointerMove = (event: PointerEvent) => {
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      pointer.x = event.clientX - rect.left;
+      pointer.y = event.clientY - rect.top;
+    };
+    const handlePointerLeave = () => {
+      pointer.x = -9999;
+      pointer.y = -9999;
+    };
+
+    const tick = () => {
+      if (disposed || !canvas || !context) return;
+      const now = performance.now();
+      if (now - lastFrameAt < 32) {
+        frameId = window.requestAnimationFrame(tick);
+        return;
+      }
+      lastFrameAt = now;
+      const rect = canvas.getBoundingClientRect();
+      context.clearRect(0, 0, rect.width, rect.height);
+      context.globalCompositeOperation = "lighter";
+      for (const particle of particles) {
+        const dx = particle.x - pointer.x;
+        const dy = particle.y - pointer.y;
+        const distSq = dx * dx + dy * dy;
+        const radius = 110;
+        if (distSq > 0.001 && distSq < radius * radius) {
+          const dist = Math.sqrt(distSq);
+          const force = ((radius - dist) / radius) * 0.42;
+          particle.vx += (dx / dist) * force;
+          particle.vy += (dy / dist) * force;
+        }
+        particle.vx += (particle.homeX - particle.x) * 0.0022;
+        particle.vy += (particle.homeY - particle.y) * 0.0022;
+        particle.vx *= 0.92;
+        particle.vy *= 0.92;
+        particle.x += particle.vx;
+        particle.y += particle.vy;
+
+        const twinkle = 0.72 + Math.sin(now * 0.0015 + particle.homeX) * 0.28;
+        context.beginPath();
+        context.fillStyle = `rgba(224, 250, 255, ${particle.alpha * twinkle})`;
+        context.arc(particle.x, particle.y, particle.radius, 0, Math.PI * 2);
+        context.fill();
+        if (particle.radius > 1.25) {
+          context.beginPath();
+          context.fillStyle = `rgba(112, 224, 255, ${particle.alpha * 0.18 * twinkle})`;
+          context.arc(
+            particle.x,
+            particle.y,
+            particle.radius * 3.2,
+            0,
+            Math.PI * 2,
+          );
+          context.fill();
+        }
+      }
+      context.globalCompositeOperation = "source-over";
+      frameId = window.requestAnimationFrame(tick);
+    };
+
+    const setup = () => {
+      canvas = starDustCanvasRef.current;
+      host = canvas?.parentElement ?? graphCanvasRef.current;
+      context = canvas?.getContext("2d") ?? null;
+      if (!canvas || !host || !context) {
+        setupFrameId = window.requestAnimationFrame(setup);
+        return;
+      }
+      resize();
+      host.addEventListener("pointermove", handlePointerMove);
+      host.addEventListener("pointerleave", handlePointerLeave);
+      window.addEventListener("resize", resize);
+      frameId = window.requestAnimationFrame(tick);
+    };
+    setupFrameId = window.requestAnimationFrame(setup);
+    return () => {
+      disposed = true;
+      window.cancelAnimationFrame(setupFrameId);
+      window.cancelAnimationFrame(frameId);
+      host?.removeEventListener("pointermove", handlePointerMove);
+      host?.removeEventListener("pointerleave", handlePointerLeave);
+      window.removeEventListener("resize", resize);
+    };
+  }, [isGraphCanvasOpen, activeGraph?.nodes.length, activeGraph?.edges.length]);
+
+  function syncStarOverlayPositions() {
+    const cy = cyRef.current;
+    if (!cy) return;
+    if (starSyncFrameRef.current != null) {
+      window.cancelAnimationFrame(starSyncFrameRef.current);
+    }
+    starSyncFrameRef.current = window.requestAnimationFrame(() => {
+      starSyncFrameRef.current = null;
+      const canvasRect = graphCanvasRef.current?.getBoundingClientRect();
+      const maxX = Math.max(126, (canvasRect?.width ?? 0) - 126);
+      const maxY = Math.max(54, (canvasRect?.height ?? 0) - 54);
+      const glyphs = cy
+        .nodes(".graph-node")
+        .map((node) => {
+          const rendered = node.renderedPosition();
+          return {
+            id: node.id(),
+            label: String(node.data("rawLabel") ?? node.data("label") ?? ""),
+            kind: String(node.data("kind")) as GraphNodeKind,
+            kindLabel: String(
+              node.data("kindLabel") ?? node.data("kind") ?? "",
+            ),
+            x: Math.max(126, Math.min(maxX, rendered.x)),
+            y: Math.max(54, Math.min(maxY, rendered.y)),
+          };
+        })
+        .sort((left, right) =>
+          left.x === right.x ? left.y - right.y : left.x - right.x,
+        );
+      setStarGlyphs(glyphs);
+      const flows = cy
+        .edges(".graph-edge")
+        .map((edge) => {
+          const from = edge.source().id();
+          const to = edge.target().id();
+          const source = edge.source().renderedPosition();
+          const target = edge.target().renderedPosition();
+          const deltaX = target.x - source.x;
+          const deltaY = target.y - source.y;
+          const curve = Math.max(60, Math.min(180, Math.abs(deltaX) * 0.36));
+          const lift = Math.max(-90, Math.min(90, deltaY * 0.16));
+          const c1x = source.x + curve;
+          const c1y = source.y - lift;
+          const c2x = target.x - curve;
+          const c2y = target.y + lift;
+          const edgeType = String(edge.data("edgeType") ?? "");
+          const isIdea = edgeType === "inspired_by" || edgeType === "resolves";
+          return {
+            id: edge.id(),
+            edgeType,
+            label: edgeType,
+            isIdea,
+            from,
+            to,
+            d: `M ${source.x.toFixed(1)} ${source.y.toFixed(1)} C ${c1x.toFixed(1)} ${c1y.toFixed(1)}, ${c2x.toFixed(1)} ${c2y.toFixed(1)}, ${target.x.toFixed(1)} ${target.y.toFixed(1)}`,
+          };
+        })
+        .sort((left, right) => left.id.localeCompare(right.id));
+      setStarEdgeFlows(flows);
+    });
+  }
+
+  function syncStarOverlayDomPositions() {
+    const cy = cyRef.current;
+    const canvas = graphCanvasRef.current;
+    if (!cy || !canvas) return;
+    const canvasRect = canvas.getBoundingClientRect();
+    const maxX = Math.max(126, canvasRect.width - 126);
+    const maxY = Math.max(54, canvasRect.height - 54);
+    for (const node of cy.nodes(".graph-node")) {
+      const rendered = node.renderedPosition();
+      const x = Math.max(126, Math.min(maxX, rendered.x));
+      const y = Math.max(54, Math.min(maxY, rendered.y));
+      const el = canvas.querySelector<HTMLElement>(
+        `.star-glyph[data-node-id="${CSS.escape(node.id())}"]`,
+      );
+      if (el) {
+        el.style.left = `${x}px`;
+        el.style.top = `${y}px`;
+      }
+    }
+    for (const edge of cy.edges(".graph-edge")) {
+      const source = edge.source().renderedPosition();
+      const target = edge.target().renderedPosition();
+      const deltaX = target.x - source.x;
+      const deltaY = target.y - source.y;
+      const curve = Math.max(60, Math.min(180, Math.abs(deltaX) * 0.36));
+      const lift = Math.max(-90, Math.min(90, deltaY * 0.16));
+      const d = `M ${source.x.toFixed(1)} ${source.y.toFixed(1)} C ${(source.x + curve).toFixed(1)} ${(source.y - lift).toFixed(1)}, ${(target.x - curve).toFixed(1)} ${(target.y + lift).toFixed(1)}, ${target.x.toFixed(1)} ${target.y.toFixed(1)}`;
+      canvas
+        .querySelectorAll<
+          SVGPathElement | SVGCircleElement
+        >(`[data-edge-id="${CSS.escape(edge.id())}"]`)
+        .forEach((el) => {
+          if (el instanceof SVGPathElement) {
+            el.setAttribute("d", d);
+            return;
+          }
+          const motion = el.querySelector("animateMotion");
+          motion?.setAttribute("path", d);
+        });
+    }
+  }
+
+  function runStarEntranceAnimation() {
+    const cy = cyRef.current;
+    if (!cy) return;
+    starEntranceTimersRef.current.forEach((timer) =>
+      window.clearTimeout(timer),
+    );
+    starEntranceTimersRef.current = [];
+    if (starEntranceFrameRef.current != null) {
+      window.cancelAnimationFrame(starEntranceFrameRef.current);
+      starEntranceFrameRef.current = null;
+    }
+    setEnteredStarIds(new Set());
+    syncStarOverlayPositions();
+    const orderedNodeIds = cy
+      .nodes(".graph-node")
+      .sort((left, right) => {
+        const leftPosition = left.position();
+        const rightPosition = right.position();
+        return leftPosition.x === rightPosition.x
+          ? leftPosition.y - rightPosition.y
+          : leftPosition.x - rightPosition.x;
+      })
+      .map((node) => node.id());
+    const startTimer = window.setTimeout(() => {
+      const width =
+        graphCanvasRef.current?.getBoundingClientRect().width ?? 1400;
+      const orderedNodes = cy
+        .nodes(".graph-node")
+        .map((node) => ({
+          id: node.id(),
+          x: Math.max(0, Math.min(width, node.renderedPosition().x)),
+        }))
+        .sort((left, right) => left.x - right.x);
+      if (orderedNodes.length === 0) return;
+      const durationMs = 2300;
+      const startAt = performance.now();
+      const animate = (now: number) => {
+        const progress = Math.min(1, (now - startAt) / durationMs);
+        const sweepX = Math.max(0, Math.min(width, progress * width));
+        const next = new Set(
+          orderedNodes
+            .filter((node) => node.x <= sweepX + 12)
+            .map((node) => node.id),
+        );
+        setEnteredStarIds(next);
+        if (progress < 1) {
+          starEntranceFrameRef.current = window.requestAnimationFrame(animate);
+        } else {
+          setEnteredStarIds(new Set(orderedNodeIds));
+          starEntranceFrameRef.current = null;
+        }
+      };
+      starEntranceFrameRef.current = window.requestAnimationFrame(animate);
+    }, 80);
+    starEntranceTimersRef.current.push(startTimer);
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        syncStarOverlayPositions();
+      });
+    });
+  }
+
+  function clearStarFocusState() {
+    setNeighborStarIds(new Set());
+    setDimmedStarIds(new Set());
+  }
+
+  function clearGraphCanvasSelection() {
+    setSelectedGraphNodeId(null);
+    setSelectedGraphEdgeId(null);
+    setSelectedGraphNodeDetail(null);
+    setSelectedGraphEdgeDetail(null);
+    setSelectedIdea(null);
+    setIsIdeaEditing(false);
+    setIdeaSaveError(null);
+    setHoveredGraphNodeId(null);
+    setModuleTooltip(null);
+    clearStarFocusState();
+    cyRef.current
+      ?.elements()
+      .removeClass(
+        "graph-selected graph-neighbor graph-dimmed graph-hovered graph-hover-edge",
+      );
+  }
+
+  function syncStarFocusFromNode(nodeId: string) {
+    const cy = cyRef.current;
+    if (!cy) return;
+    const node = cy.getElementById(nodeId);
+    if (node.empty()) return;
+    const neighborhood = node.closedNeighborhood().nodes(".graph-node");
+    const neighborIds = new Set(neighborhood.map((item) => item.id()));
+    const dimmedIds = new Set(
+      cy
+        .nodes(".graph-node")
+        .filter((item) => !neighborIds.has(item.id()))
+        .map((item) => item.id()),
+    );
+    setNeighborStarIds(neighborIds);
+    setDimmedStarIds(dimmedIds);
+  }
+
+  function triggerStarTapAnimation(nodeId: string) {
+    setSpinningStarIds((current) => {
+      const next = new Set(current);
+      next.delete(nodeId);
+      return next;
+    });
+    window.requestAnimationFrame(() => {
+      setSpinningStarIds((current) => {
+        const next = new Set(current);
+        next.add(nodeId);
+        return next;
+      });
+      const timer = window.setTimeout(() => {
+        setSpinningStarIds((current) => {
+          const next = new Set(current);
+          next.delete(nodeId);
+          return next;
+        });
+      }, 920);
+      starSpinTimersRef.current.push(timer);
+    });
+
+    const node = cyRef.current?.getElementById(nodeId);
+    if (node?.nonempty()) {
+      const baseWidth = Number(node.style("width")) || 220;
+      const baseHeight = Number(node.style("height")) || 84;
+      node
+        .animate(
+          {
+            style: {
+              width: baseWidth + 24,
+              height: baseHeight + 14,
+              "underlay-opacity": 0,
+              "underlay-padding": 0,
+            },
+          },
+          { duration: 150, easing: "ease-out-cubic" },
+        )
+        .animate(
+          {
+            style: {
+              width: baseWidth,
+              height: baseHeight,
+              "underlay-opacity": 0,
+              "underlay-padding": 0,
+            },
+          },
+          { duration: 360, easing: "ease-out-cubic" },
+        );
+    }
+  }
+
+  function beginStarGlyphDrag(
+    event: React.PointerEvent<HTMLDivElement>,
+    nodeId: string,
+  ) {
+    const cy = cyRef.current;
+    const node = cy?.getElementById(nodeId);
+    if (!cy || !node || node.empty()) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const target = event.currentTarget;
+    target.setPointerCapture(event.pointerId);
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const startPosition = node.renderedPosition();
+    const canvasRect = graphCanvasRef.current?.getBoundingClientRect();
+    const maxX = Math.max(126, (canvasRect?.width ?? 0) - 126);
+    const maxY = Math.max(54, (canvasRect?.height ?? 0) - 54);
+    const wasUserPanningEnabled = cy.userPanningEnabled();
+    cy.userPanningEnabled(false);
+    syncStarFocusFromNode(nodeId);
+    isStarDraggingRef.current = true;
+    target.classList.add("is-dragging");
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      moveEvent.preventDefault();
+      const nextX = Math.max(
+        126,
+        Math.min(maxX, startPosition.x + moveEvent.clientX - startX),
+      );
+      const nextY = Math.max(
+        54,
+        Math.min(maxY, startPosition.y + moveEvent.clientY - startY),
+      );
+      target.style.left = `${nextX}px`;
+      target.style.top = `${nextY}px`;
+      node.renderedPosition({ x: nextX, y: nextY });
+      syncStarOverlayDomPositions();
+      syncModuleTooltipPosition();
+    };
+
+    const finishDrag = () => {
+      document.removeEventListener("pointermove", handlePointerMove, true);
+      document.removeEventListener("pointerup", finishDrag, true);
+      document.removeEventListener("pointercancel", finishDrag, true);
+      target.classList.remove("is-dragging");
+      cy.userPanningEnabled(wasUserPanningEnabled);
+      isStarDraggingRef.current = false;
+      syncStarOverlayPositions();
+      syncModuleTooltipPosition();
+    };
+
+    document.addEventListener("pointermove", handlePointerMove, true);
+    document.addEventListener("pointerup", finishDrag, {
+      once: true,
+      capture: true,
+    });
+    document.addEventListener("pointercancel", finishDrag, {
+      once: true,
+      capture: true,
+    });
+  }
+
   const reviewCounts = useMemo(() => {
     const counts: Record<ReviewFilter, number> = {
       all: reviews.length,
@@ -587,14 +1170,28 @@ export function ResearchMemoryPanel({
   ]);
 
   useEffect(() => {
+    if (graphView === "idea") return;
+    setSelectedIdea(null);
+    setIsIdeaEditing(false);
+    setIdeaSaveError(null);
+  }, [graphView]);
+
+  useEffect(() => {
     if (!isGraphCanvasOpen || !graphCanvasRef.current || !activeGraph) return;
 
     const usePresetLayout = activeGraph.edges.length === 0;
+    clearStarAnimationTimers();
+    setIsStarScrollOpen(false);
+    setStarGlyphs([]);
+    setStarEdgeFlows([]);
+    setEnteredStarIds(new Set());
+    setSpinningStarIds(new Set());
+    clearStarFocusState();
 
     const cy = cytoscape({
       container: graphCanvasRef.current,
       elements: buildGraphElements(activeGraph, graphView),
-      autoungrabify: true,
+      autoungrabify: false,
       boxSelectionEnabled: false,
       maxZoom: 5.6,
       minZoom: 0.35,
@@ -632,111 +1229,106 @@ export function ResearchMemoryPanel({
           style: {
             shape: "round-rectangle",
             width: "220px",
-            height: "74px",
-            padding: "12px",
-            label: "data(label)",
-            "text-wrap": "wrap",
-            "text-max-width": 176,
-            color: "#f7fbff",
-            "font-size": 15,
-            "font-weight": 760,
-            "font-family":
-              '"Segoe UI Variable Display","Aptos Display","Segoe UI","PingFang SC","Microsoft YaHei",sans-serif',
+            height: "86px",
+            padding: "0px",
+            label: "",
+            "text-wrap": "none",
+            "text-max-width": 1,
+            color: "transparent",
+            "font-size": 1,
+            "font-weight": 400,
             "text-valign": "center",
             "text-halign": "center",
-            "background-color": "data(color)",
-            "border-width": 1.5,
-            "border-color": "rgba(246, 250, 255, 0.9)",
-            "background-blacken": -0.04,
+            "background-color": "rgba(12, 28, 54, 0.01)",
+            "border-width": 0,
+            "border-color": "transparent",
+            "background-opacity": 0.01,
             "overlay-opacity": 0,
-            "underlay-opacity": 0.1,
-            "underlay-padding": 6,
-            "underlay-color": "data(color)",
-            "text-outline-width": 1,
-            "text-outline-color": "rgba(7, 16, 34, 0.62)",
-            "shadow-blur": 10,
-            "shadow-color": "rgba(4, 12, 24, 0.34)",
-            "shadow-opacity": 0.22,
+            "underlay-opacity": 0,
+            "underlay-padding": 0,
+            "underlay-color": "rgba(102, 218, 255, 0.34)",
+            "text-outline-width": 0,
+            "shadow-blur": 0,
+            "shadow-color": "transparent",
+            "shadow-opacity": 0,
             "shadow-offset-x": 0,
-            "shadow-offset-y": 6,
+            "shadow-offset-y": 0,
           },
         },
         {
           selector: "node.graph-node-orphan",
           style: {
-            "border-style": "dashed",
-            "border-color": "#ffe1bf",
-            "border-width": 1.8,
+            "underlay-color": "rgba(255, 205, 139, 0.28)",
           },
         },
         {
           selector: "node.graph-node-task",
           style: {
-            "border-color": "rgba(255, 241, 228, 0.92)",
-            "background-blacken": -0.01,
-            "shadow-color": "rgba(255, 162, 94, 0.2)",
             "underlay-color": "rgba(255, 163, 91, 0.34)",
           },
         },
         {
           selector: "node.graph-node-pipeline",
           style: {
-            "border-color": "rgba(237, 248, 255, 0.94)",
-            "background-blacken": -0.02,
-            "shadow-color": "rgba(90, 194, 255, 0.18)",
             "underlay-color": "rgba(89, 193, 255, 0.3)",
           },
         },
         {
           selector: "node.graph-node-module",
           style: {
-            "border-color": "rgba(236, 255, 247, 0.92)",
-            "background-blacken": -0.01,
-            "shadow-color": "rgba(77, 224, 167, 0.18)",
             "underlay-color": "rgba(77, 224, 167, 0.3)",
+          },
+        },
+        {
+          selector: "node.graph-node-idea",
+          style: {
+            "underlay-color": "rgba(251, 191, 36, 0.32)",
           },
         },
         {
           selector:
             "node.graph-node-task.graph-selected, node.graph-node-task.graph-hovered",
           style: {
-            "border-color": "#fff4ea",
-            "shadow-color": "rgba(255, 182, 112, 0.28)",
-            "underlay-color": "rgba(255, 173, 104, 0.36)",
+            "underlay-color": "rgba(255, 173, 104, 0.42)",
           },
         },
         {
           selector:
             "node.graph-node-pipeline.graph-selected, node.graph-node-pipeline.graph-hovered",
           style: {
-            "border-color": "#eef9ff",
-            "shadow-color": "rgba(116, 219, 255, 0.28)",
-            "underlay-color": "rgba(116, 219, 255, 0.34)",
+            "underlay-color": "rgba(116, 219, 255, 0.42)",
           },
         },
         {
           selector:
             "node.graph-node-module.graph-selected, node.graph-node-module.graph-hovered",
           style: {
-            "border-color": "#ecfff7",
-            "shadow-color": "rgba(104, 235, 186, 0.26)",
-            "underlay-color": "rgba(104, 235, 186, 0.32)",
+            "underlay-color": "rgba(104, 235, 186, 0.4)",
+          },
+        },
+        {
+          selector:
+            "node.graph-node-idea.graph-selected, node.graph-node-idea.graph-hovered",
+          style: {
+            "underlay-color": "rgba(251, 191, 36, 0.44)",
           },
         },
         {
           selector: "edge.graph-edge",
           style: {
-            width: 3.4,
-            "curve-style": "bezier",
-            "line-color": "#69c9ff",
-            "target-arrow-color": "#ffc166",
-            "target-arrow-shape": "triangle-backcurve",
-            "arrow-scale": 1.42,
-            opacity: 0.9,
+            width: 0,
+            "curve-style": "unbundled-bezier",
+            "control-point-distances": 42,
+            "control-point-weights": 0.5,
+            "line-color": "transparent",
+            "target-arrow-color": "transparent",
+            "target-arrow-shape": "vee",
+            "arrow-scale": 0,
+            opacity: 0,
             "line-style": "solid",
-            "shadow-blur": 10,
-            "shadow-color": "rgba(54, 176, 255, 0.4)",
-            "shadow-opacity": 0.24,
+            "shadow-blur": 2,
+            "shadow-color": "rgba(94, 212, 255, 0.28)",
+            "shadow-opacity": 0,
             "shadow-offset-x": 0,
             "shadow-offset-y": 0,
           },
@@ -750,77 +1342,66 @@ export function ResearchMemoryPanel({
         {
           selector: "node.graph-selected",
           style: {
-            "border-width": 2.2,
-            "border-color": "#ffffff",
-            "underlay-opacity": 0.2,
-            "underlay-padding": 12,
-            "shadow-blur": 18,
-            "shadow-color": "rgba(111, 212, 255, 0.28)",
-            "shadow-opacity": 0.24,
-            "shadow-offset-y": 4,
+            "underlay-opacity": 0,
+            "underlay-padding": 0,
           },
         },
         {
           selector: "edge.graph-selected",
           style: {
-            width: 4.8,
-            opacity: 1,
-            "line-color": "#9fe2ff",
-            "target-arrow-color": "#ffd98d",
-            "shadow-blur": 10,
-            "shadow-color": "rgba(128, 226, 255, 0.34)",
-            "shadow-opacity": 0.22,
+            width: 0,
+            opacity: 0,
+            "line-color": "transparent",
+            "target-arrow-color": "transparent",
+            "arrow-scale": 0,
+            "shadow-blur": 7,
+            "shadow-color": "rgba(128, 226, 255, 0.46)",
+            "shadow-opacity": 0,
           },
         },
         {
           selector: "node.graph-neighbor",
           style: {
             opacity: 1,
-            "underlay-opacity": 0.16,
-            "underlay-padding": 8,
+            "underlay-opacity": 0,
+            "underlay-padding": 0,
           },
         },
         {
           selector: "node.graph-hovered",
           style: {
-            "border-width": 2.2,
-            "border-color": "#ffffff",
-            "underlay-opacity": 0.24,
-            "underlay-padding": 12,
-            "shadow-blur": 20,
-            "shadow-color": "rgba(133, 221, 255, 0.3)",
-            "shadow-opacity": 0.26,
-            "shadow-offset-y": 4,
+            "underlay-opacity": 0,
+            "underlay-padding": 0,
           },
         },
         {
           selector: "edge.graph-hover-edge",
           style: {
-            width: 5.2,
-            opacity: 1,
-            "line-color": "#9be8ff",
-            "target-arrow-color": "#ffc97c",
-            "line-style": "dashed",
-            "shadow-blur": 11,
-            "shadow-color": "rgba(137, 228, 255, 0.36)",
-            "shadow-opacity": 0.24,
+            width: 0,
+            opacity: 0,
+            "line-color": "transparent",
+            "target-arrow-color": "transparent",
+            "arrow-scale": 0,
+            "line-style": "solid",
+            "shadow-blur": 8,
+            "shadow-color": "rgba(137, 228, 255, 0.52)",
+            "shadow-opacity": 0,
           },
         },
       ] as any,
-      layout: {
-        name: usePresetLayout ? "preset" : "dagre",
-        rankDir: "LR",
-        nodeSep: 44,
-        edgeSep: 22,
-        rankSep: graphView === "method" ? 180 : 220,
-        animate: false,
-        fit: true,
-        padding: 60,
-        ranker: "tight-tree",
-      } as any,
     });
 
     cyRef.current = cy;
+    cy.nodes(".graph-anchor").ungrabify();
+    cy.nodes(".graph-node").grabify();
+    cy.edges(".graph-edge").style({
+      width: 0,
+      opacity: 0,
+      "line-color": "transparent",
+      "target-arrow-color": "transparent",
+      "arrow-scale": 0,
+      "shadow-opacity": 0,
+    });
 
     const clearHoverClasses = () => {
       cy.elements().removeClass(
@@ -830,28 +1411,34 @@ export function ResearchMemoryPanel({
 
     cy.on("tap", "node.graph-node", (event) => {
       const node = event.target;
+      triggerStarTapAnimation(node.id());
+      syncStarFocusFromNode(node.id());
       void handleSelectGraphNode(node.id());
     });
 
     cy.on("tap", "edge.graph-edge", (event) => {
+      if (graphView === "idea") return;
       const edge = event.target;
       void handleSelectGraphEdge(edge.id());
     });
 
+    cy.on("mouseover", "edge.graph-edge", () => {
+      cy.userPanningEnabled(false);
+    });
+
+    cy.on("mouseout", "edge.graph-edge", () => {
+      cy.userPanningEnabled(true);
+    });
+
     cy.on("tap", (event) => {
       if (event.target !== cy) return;
-      setSelectedGraphNodeId(null);
-      setSelectedGraphEdgeId(null);
-      setSelectedGraphNodeDetail(null);
-      setSelectedGraphEdgeDetail(null);
-      setModuleTooltip(null);
-      clearHoverClasses();
-      cy.elements().removeClass("graph-selected graph-neighbor graph-dimmed");
+      clearGraphCanvasSelection();
     });
 
     cy.on("mouseover", "node.graph-node", (event) => {
       const node = event.target;
       setHoveredGraphNodeId(node.id());
+      syncStarFocusFromNode(node.id());
       clearHoverClasses();
       const neighborhood = node.closedNeighborhood().union(node);
       cy.nodes(".graph-node")
@@ -867,35 +1454,106 @@ export function ResearchMemoryPanel({
 
     cy.on("mouseout", "node.graph-node", () => {
       setHoveredGraphNodeId(null);
+      if (selectedGraphNodeIdRef.current) {
+        syncStarFocusFromNode(selectedGraphNodeIdRef.current);
+      } else {
+        clearStarFocusState();
+      }
       clearHoverClasses();
       applyGraphSelectionState();
     });
 
-    cy.on("zoom pan render resize", syncModuleTooltipPosition);
-    cy.ready(() => {
+    cy.on("zoom pan render resize", () => {
+      if (isStarDraggingRef.current) {
+        syncStarOverlayDomPositions();
+        return;
+      }
+      syncStarOverlayPositions();
+      syncModuleTooltipPosition();
+    });
+
+    cy.on("grab drag free position", "node.graph-node", () => {
+      if (isStarDraggingRef.current) {
+        syncStarOverlayDomPositions();
+        return;
+      }
+      syncStarOverlayPositions();
+      syncModuleTooltipPosition();
+    });
+
+    const revealGraph = () => {
       window.requestAnimationFrame(() => {
-        if (!usePresetLayout && shouldFallbackToPresetLayout(cy)) {
-          cy.layout({
-            name: "preset",
-            fit: true,
-            padding: 80,
-            animate: false,
-          } as any).run();
-        }
         resetGraphView();
         applyGraphSelectionState();
         syncModuleTooltipPosition();
+        window.setTimeout(() => {
+          setIsStarScrollOpen(true);
+          runStarEntranceAnimation();
+        }, 120);
+        const edgeTimer = window.setTimeout(
+          () => {
+            cy.edges(".graph-edge").animate(
+              { style: { opacity: 0 } },
+              { duration: 460, easing: "ease-out-cubic" },
+            );
+          },
+          Math.min(2450, Math.max(820, activeGraph.nodes.length * 95)),
+        );
+        starEntranceTimersRef.current.push(edgeTimer);
       });
+    };
+
+    const runPresetFallback = () => {
+      cy.one("layoutstop", revealGraph);
+      cy.layout({
+        name: "preset",
+        fit: true,
+        padding: 80,
+        animate: false,
+      } as any).run();
+    };
+
+    cy.one("layoutstop", () => {
+      if (!usePresetLayout && shouldFallbackToPresetLayout(cy)) {
+        runPresetFallback();
+        return;
+      }
+      revealGraph();
     });
+    cy.layout({
+      name: usePresetLayout ? "preset" : "dagre",
+      rankDir: "LR",
+      nodeSep: graphView === "idea" ? 70 : 54,
+      edgeSep: 26,
+      rankSep:
+        graphView === "method" ? 210 : graphView === "problem" ? 240 : 260,
+      animate: false,
+      fit: true,
+      padding: 76,
+      ranker: "tight-tree",
+    } as any).run();
 
     return () => {
+      clearStarAnimationTimers();
+      setIsStarScrollOpen(false);
+      setStarGlyphs([]);
+      setStarEdgeFlows([]);
+      setEnteredStarIds(new Set());
+      setSpinningStarIds(new Set());
+      clearStarFocusState();
       cy.destroy();
       cyRef.current = null;
     };
   }, [activeGraph, graphView, isGraphCanvasOpen]);
 
   useEffect(() => {
+    selectedGraphNodeIdRef.current = selectedGraphNodeId;
     applyGraphSelectionState();
+    if (selectedGraphNodeId) {
+      syncStarFocusFromNode(selectedGraphNodeId);
+    } else if (!hoveredGraphNodeId) {
+      clearStarFocusState();
+    }
   }, [selectedGraphEdgeId, selectedGraphNodeId]);
 
   useEffect(() => {
@@ -950,6 +1608,10 @@ export function ResearchMemoryPanel({
   }
 
   async function loadGraph(view: GraphView, force = false) {
+    if (view === "idea") {
+      await loadIdeaGraph(force);
+      return;
+    }
     if (!force && graphCache[view]) return;
     setIsGraphLoading(true);
     if (force) {
@@ -970,8 +1632,154 @@ export function ResearchMemoryPanel({
     }
   }
 
+  async function loadIdeaGraph(force = false) {
+    if (!force && graphCache.idea) return;
+    setIsGraphLoading(true);
+    if (force) {
+      onStatus?.("正在刷新 Idea 图谱视图，不会重置审核结果。", "info");
+    }
+    try {
+      const records =
+        ideas.length > 0 && !force
+          ? ideas
+          : await invoke<IdeaCandidate[]>("list_idea_candidates");
+      if (ideas.length === 0 || force) {
+        setIdeas(records);
+      }
+
+      const sourceIds = new Set<string>();
+      records.forEach((idea) => {
+        if (idea.challengeNodeId) sourceIds.add(idea.challengeNodeId);
+        if (idea.moduleNodeId) sourceIds.add(idea.moduleNodeId);
+        if (idea.taskNodeId) sourceIds.add(idea.taskNodeId);
+        if (idea.pipelineNodeId) sourceIds.add(idea.pipelineNodeId);
+      });
+
+      const sourceEntries = await Promise.all(
+        Array.from(sourceIds).map(async (nodeId) => {
+          try {
+            const detail = await invoke<ResearchGraphNodeDetail>(
+              "get_research_graph_node_detail",
+              { nodeId },
+            );
+            return [nodeId, detail] as const;
+          } catch {
+            return null;
+          }
+        }),
+      );
+
+      const sourceIndex: Record<string, ResearchGraphNodeDetail> = {};
+      sourceEntries.forEach((entry) => {
+        if (!entry) return;
+        sourceIndex[entry[0]] = entry[1];
+      });
+      setIdeaSourceIndex(sourceIndex);
+
+      const ideaIndex: Record<string, IdeaCandidate> = {};
+      const nodesById = new Map<string, ResearchGraphNode>();
+      const edges: ResearchGraphEdge[] = [];
+
+      records.forEach((idea) => {
+        const nodeId = ideaNodeId(idea.id);
+        ideaIndex[nodeId] = idea;
+        const ideaNode: ResearchGraphNode = {
+          id: nodeId,
+          kind: "idea",
+          label: idea.title,
+          aliases: [],
+          paperCount: 0,
+          supportCount: Math.round(idea.confidence * 100),
+          inDegree: 0,
+          outDegree: 0,
+          isOrphan: true,
+        };
+        nodesById.set(nodeId, ideaNode);
+
+        const sourceLinks = [
+          idea.challengeNodeId,
+          idea.moduleNodeId,
+          idea.taskNodeId,
+          idea.pipelineNodeId,
+        ].filter(Boolean) as string[];
+
+        sourceLinks.forEach((sourceId) => {
+          const detail = sourceIndex[sourceId];
+          const fallbackKind = resolveIdeaSourceKind(
+            idea,
+            sourceId,
+          ) as GraphNodeKind;
+          const kind =
+            (detail?.kind as GraphNodeKind | undefined) ?? fallbackKind;
+          const label =
+            detail?.label ??
+            `${graphKindLabels[kind] ?? "Source"} ${sourceId.slice(0, 6)}`;
+          if (!nodesById.has(sourceId)) {
+            nodesById.set(sourceId, {
+              id: sourceId,
+              kind,
+              label,
+              aliases: detail?.aliases ?? [],
+              paperCount: detail?.relatedPapers?.length ?? 0,
+              supportCount: detail?.supportCount ?? 0,
+              inDegree: 0,
+              outDegree: 0,
+              isOrphan: false,
+            });
+          }
+          edges.push({
+            id: `idea_edge_${sourceId}_${idea.id}`,
+            edgeType: ideaEdgeTypeForKind(kind),
+            from: sourceId,
+            to: nodeId,
+            supportCount: detail?.supportCount ?? 0,
+          });
+          ideaNode.isOrphan = false;
+        });
+      });
+
+      const ideaGraph: ResearchGraph = {
+        view: "idea",
+        nodes: Array.from(nodesById.values()),
+        edges,
+      };
+
+      setIdeaNodeIndex(ideaIndex);
+      setGraphCache((current) => ({ ...current, idea: ideaGraph }));
+      setSelectedGraphNodeId(null);
+      setSelectedGraphEdgeId(null);
+      setSelectedGraphNodeDetail(null);
+      setSelectedGraphEdgeDetail(null);
+      setSelectedIdea(null);
+      setIsIdeaEditing(false);
+      setIdeaSaveError(null);
+      setModuleTooltip(null);
+    } catch (error) {
+      onStatus?.(`加载 Idea 图谱失败：${String(error)}`, "error");
+    } finally {
+      setIsGraphLoading(false);
+    }
+  }
+
   async function handleSelectGraphNode(nodeId: string) {
+    const idea = graphView === "idea" ? ideaNodeIndex[nodeId] : null;
+    if (idea) {
+      setSelectedIdea(idea);
+      setIdeaDraft({ title: idea.title, summary: idea.summary });
+      setIsIdeaEditing(false);
+      setIdeaSaveError(null);
+      setSelectedGraphNodeId(nodeId);
+      setSelectedGraphEdgeId(null);
+      setSelectedGraphNodeDetail(null);
+      setSelectedGraphEdgeDetail(null);
+      setModuleTooltip(null);
+      setIsGraphDetailLoading(false);
+      return;
+    }
     setSelectedGraphNodeId(nodeId);
+    setSelectedIdea(null);
+    setIsIdeaEditing(false);
+    setIdeaSaveError(null);
     setSelectedGraphEdgeId(null);
     setSelectedGraphEdgeDetail(null);
     setModuleTooltip(null);
@@ -1007,9 +1815,24 @@ export function ResearchMemoryPanel({
   }
 
   async function handleSelectGraphEdge(edgeId: string) {
+    if (graphView === "idea") {
+      setSelectedGraphEdgeId(null);
+      setSelectedGraphNodeId(null);
+      setSelectedGraphNodeDetail(null);
+      setSelectedGraphEdgeDetail(null);
+      setSelectedIdea(null);
+      setIsIdeaEditing(false);
+      setIdeaSaveError(null);
+      setModuleTooltip(null);
+      setIsGraphDetailLoading(false);
+      return;
+    }
     setSelectedGraphEdgeId(edgeId);
     setSelectedGraphNodeId(null);
     setSelectedGraphNodeDetail(null);
+    setSelectedIdea(null);
+    setIsIdeaEditing(false);
+    setIdeaSaveError(null);
     setModuleTooltip(null);
     setIsGraphDetailLoading(true);
     try {
@@ -1058,6 +1881,62 @@ export function ResearchMemoryPanel({
       onStatus?.(`加载 Idea 候选失败：${String(error)}`, "error");
     } finally {
       setIsIdeasLoading(false);
+    }
+  }
+
+  function beginIdeaEdit() {
+    if (!selectedIdea) return;
+    setIdeaDraft({ title: selectedIdea.title, summary: selectedIdea.summary });
+    setIsIdeaEditing(true);
+    setIdeaSaveError(null);
+  }
+
+  function cancelIdeaEdit() {
+    if (selectedIdea) {
+      setIdeaDraft({
+        title: selectedIdea.title,
+        summary: selectedIdea.summary,
+      });
+    }
+    setIsIdeaEditing(false);
+    setIdeaSaveError(null);
+  }
+
+  async function saveIdeaEdit() {
+    if (!selectedIdea) return;
+    const title = ideaDraft.title.trim();
+    const summary = ideaDraft.summary.trim();
+    if (!title || !summary) {
+      setIdeaSaveError("标题和摘要不能为空。");
+      return;
+    }
+    setIsIdeaSaving(true);
+    setIdeaSaveError(null);
+    try {
+      const updated = await invoke<IdeaCandidate>("update_idea_candidate", {
+        ideaId: selectedIdea.id,
+        title,
+        summary,
+      });
+      setSelectedIdea(updated);
+      setIdeas((current) =>
+        current.map((idea) => (idea.id === updated.id ? updated : idea)),
+      );
+      const nodeId = ideaNodeId(updated.id);
+      setIdeaNodeIndex((current) => ({ ...current, [nodeId]: updated }));
+      setGraphCache((current) => {
+        const ideaGraph = current.idea;
+        if (!ideaGraph) return current;
+        const nodes = ideaGraph.nodes.map((node) =>
+          node.id === nodeId ? { ...node, label: updated.title } : node,
+        );
+        return { ...current, idea: { ...ideaGraph, nodes } };
+      });
+      setIsIdeaEditing(false);
+    } catch (error) {
+      setIdeaSaveError(`保存失败：${String(error)}`);
+    } finally {
+      setIsIdeaSaving(false);
     }
   }
 
@@ -1400,6 +2279,12 @@ export function ResearchMemoryPanel({
           >
             Problem DAG
           </button>
+          <button
+            className={`research-inline-tab ${graphView === "idea" ? "active" : ""}`}
+            onClick={() => setGraphView("idea")}
+          >
+            Idea Map
+          </button>
         </div>
         <button
           className="action-button"
@@ -1653,6 +2538,10 @@ export function ResearchMemoryPanel({
           <span>{chatModel}</span>
         </div>
         <div className="research-meta-row">
+          <span>Extract Provider</span>
+          <span>{extractProviderLabel}</span>
+        </div>
+        <div className="research-meta-row">
           <span>Extract Fast</span>
           <span>{extractFastModel}</span>
         </div>
@@ -1759,7 +2648,9 @@ export function ResearchMemoryPanel({
                   <div className="research-section-title tight research-graph-heading">
                     {graphView === "method"
                       ? "Method DAG Canvas"
-                      : "Problem DAG Canvas"}
+                      : graphView === "problem"
+                        ? "Problem DAG Canvas"
+                        : "Idea Map Canvas"}
                   </div>
                   <div className="research-graph-summary-row">
                     <span className="research-graph-summary-pill">
@@ -1816,7 +2707,16 @@ export function ResearchMemoryPanel({
               <div className="research-graph-workspace">
                 <div className="research-graph-stage-panel">
                   {activeGraph && activeGraph.nodes.length > 0 ? (
-                    <div className="research-graph-canvas fullscreen dark">
+                    <div
+                      className={`research-graph-canvas fullscreen dark ${
+                        isStarScrollOpen ? "is-print-open" : ""
+                      }`}
+                    >
+                      <canvas
+                        ref={starDustCanvasRef}
+                        className="star-dust-canvas"
+                        aria-hidden="true"
+                      />
                       <div className="research-graph-lane-strip">
                         {graphLaneDefinitions[graphView].map((lane) => (
                           <span
@@ -1828,10 +2728,216 @@ export function ResearchMemoryPanel({
                         ))}
                       </div>
                       <div
+                        className="research-graph-canvas-switcher"
+                        aria-label="Graph view switcher"
+                      >
+                        <button
+                          className={`research-graph-canvas-switch ${
+                            graphView === "method" ? "active" : ""
+                          }`}
+                          onClick={() => setGraphView("method")}
+                        >
+                          Method
+                        </button>
+                        <button
+                          className={`research-graph-canvas-switch ${
+                            graphView === "problem" ? "active" : ""
+                          }`}
+                          onClick={() => setGraphView("problem")}
+                        >
+                          Problem
+                        </button>
+                        <button
+                          className={`research-graph-canvas-switch ${
+                            graphView === "idea" ? "active" : ""
+                          }`}
+                          onClick={() => setGraphView("idea")}
+                        >
+                          Idea
+                        </button>
+                      </div>
+                      <div
                         ref={graphCanvasRef}
                         className="research-graph-cytoscape"
                         role="img"
                         aria-label={`${graphView} graph`}
+                      />
+                      <svg
+                        className="star-edge-flow-overlay"
+                        aria-hidden="true"
+                        onClick={(event) => {
+                          if (event.target !== event.currentTarget) return;
+                          clearGraphCanvasSelection();
+                        }}
+                      >
+                        <defs>
+                          <filter
+                            id="star-edge-spark-glow"
+                            x="-80%"
+                            y="-80%"
+                            width="260%"
+                            height="260%"
+                          >
+                            <feGaussianBlur stdDeviation="3.8" result="blur" />
+                            <feMerge>
+                              <feMergeNode in="blur" />
+                              <feMergeNode in="SourceGraphic" />
+                            </feMerge>
+                          </filter>
+                        </defs>
+                        {starEdgeFlows.map((edge, index) => {
+                          const isSelected = selectedGraphEdgeId === edge.id;
+                          const isRevealed =
+                            !edge.from ||
+                            !edge.to ||
+                            (enteredStarIds.has(edge.from) &&
+                              enteredStarIds.has(edge.to));
+                          const className = [
+                            "star-edge-flow",
+                            edge.isIdea ? "is-idea" : "",
+                            isRevealed ? "is-revealed" : "",
+                            isSelected ? "is-selected" : "",
+                          ]
+                            .filter(Boolean)
+                            .join(" ");
+                          return (
+                            <g key={edge.id} className={className}>
+                              <path
+                                className="star-edge-hit-path"
+                                d={edge.d}
+                                onClick={(event) => {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  if (graphView === "idea" || edge.isIdea) {
+                                    return;
+                                  }
+                                  void handleSelectGraphEdge(edge.id);
+                                }}
+                                onPointerEnter={() => {
+                                  const cy = cyRef.current;
+                                  if (!cy) return;
+                                  cy.getElementById(edge.id).addClass(
+                                    "graph-hover-edge",
+                                  );
+                                }}
+                                onPointerLeave={() => {
+                                  const cy = cyRef.current;
+                                  if (!cy) return;
+                                  cy.getElementById(edge.id).removeClass(
+                                    "graph-hover-edge",
+                                  );
+                                }}
+                              />
+                              <path
+                                className="star-edge-flow-line"
+                                d={edge.d}
+                                data-edge-id={edge.id}
+                                id={`star-edge-path-${edge.id}`}
+                              />
+                              {[0, 1, 2, 3, 4].map((sparkIndex) => (
+                                <circle
+                                  key={`${edge.id}:${sparkIndex}`}
+                                  className="star-edge-spark"
+                                  data-edge-id={edge.id}
+                                  r={
+                                    sparkIndex === 0
+                                      ? 2.35
+                                      : sparkIndex % 2 === 0
+                                        ? 1.75
+                                        : 1.25
+                                  }
+                                  filter="url(#star-edge-spark-glow)"
+                                >
+                                  <animateMotion
+                                    path={edge.d}
+                                    dur={`${4.4 + ((index + sparkIndex) % 5) * 0.52}s`}
+                                    begin={`${-(index * 0.31 + sparkIndex * 0.78)}s`}
+                                    repeatCount="indefinite"
+                                  />
+                                </circle>
+                              ))}
+                              {edge.isIdea && edge.label && (
+                                <text className="star-edge-label">
+                                  <textPath
+                                    href={`#star-edge-path-${edge.id}`}
+                                    startOffset="46%"
+                                  >
+                                    {edge.label}
+                                  </textPath>
+                                </text>
+                              )}
+                            </g>
+                          );
+                        })}
+                      </svg>
+                      <div className="star-map-overlay" aria-hidden="true">
+                        {starGlyphs.map((glyph) => {
+                          const isSelected = selectedGraphNodeId === glyph.id;
+                          const isHovered = hoveredGraphNodeId === glyph.id;
+                          const isNeighbor =
+                            neighborStarIds.has(glyph.id) && !isSelected;
+                          const isDimmed = dimmedStarIds.has(glyph.id);
+                          const isSpinning = spinningStarIds.has(glyph.id);
+                          const isIdea = glyph.kind === "idea";
+                          const className = [
+                            "star-glyph",
+                            `star-glyph-${glyph.kind}`,
+                            enteredStarIds.has(glyph.id) ? "is-entered" : "",
+                            isSelected ? "is-selected" : "",
+                            isHovered ? "is-hovered" : "",
+                            isNeighbor ? "is-neighbor" : "",
+                            isDimmed ? "is-dimmed" : "",
+                            isSpinning ? "is-spinning is-popping" : "",
+                          ]
+                            .filter(Boolean)
+                            .join(" ");
+                          return (
+                            <div
+                              key={glyph.id}
+                              className={className}
+                              data-node-id={glyph.id}
+                              onPointerDown={(event) =>
+                                beginStarGlyphDrag(event, glyph.id)
+                              }
+                              onClick={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                triggerStarTapAnimation(glyph.id);
+                                syncStarFocusFromNode(glyph.id);
+                                void handleSelectGraphNode(glyph.id);
+                              }}
+                              style={{
+                                left: `${glyph.x}px`,
+                                top: `${glyph.y}px`,
+                              }}
+                            >
+                              {isIdea ? (
+                                <>
+                                  <span className="star-glyph-image idea-pulsar-image" />
+                                  <span className="idea-pulsar-orbit" />
+                                  <span className="idea-pulsar-orbit secondary" />
+                                </>
+                              ) : (
+                                <span className="star-glyph-image" />
+                              )}
+                              <span className="star-glyph-copy">
+                                <span className="star-glyph-type">
+                                  {graphKindLabels[glyph.kind] ??
+                                    glyph.kindLabel}
+                                </span>
+                                <span className="star-glyph-label">
+                                  {glyph.label}
+                                </span>
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <div
+                        className={`star-scroll-reveal ${
+                          isStarScrollOpen ? "is-open" : ""
+                        }`}
+                        aria-hidden="true"
                       />
                       {moduleTooltip && (
                         <div
@@ -1878,11 +2984,152 @@ export function ResearchMemoryPanel({
                   )}
                   {!isGraphDetailLoading &&
                     !selectedGraphNodeDetail &&
-                    !selectedGraphEdgeDetail && (
+                    !selectedGraphEdgeDetail &&
+                    !selectedIdea && (
                       <div className="support-empty">
                         点击一个节点或边，在右侧查看证据和关联论文。
                       </div>
                     )}
+                  {selectedIdea && (
+                    <div className="research-card idea-detail-card">
+                      <div className="research-card-head">
+                        <strong>Idea: {selectedIdea.title}</strong>
+                        <span className="research-chip">
+                          {selectedIdea.ruleType}
+                        </span>
+                      </div>
+                      <div className="research-meta-row">
+                        <span>
+                          confidence {scoreLabel(selectedIdea.confidence)}
+                        </span>
+                        <span>
+                          {selectedIdea.evidence.length} evidence refs
+                        </span>
+                      </div>
+                      {!isIdeaEditing && (
+                        <div className="support-item-text">
+                          {trimText(selectedIdea.summary, 280)}
+                        </div>
+                      )}
+                      {selectedIdeaLinkedNodes.length > 0 && (
+                        <>
+                          <div className="research-section-title">Linked</div>
+                          <div className="research-tag-row">
+                            {selectedIdeaLinkedNodes.map((node) => (
+                              <button
+                                key={`idea-link:${node.id}`}
+                                className="research-tag-button"
+                                onClick={() =>
+                                  void handleSelectGraphNode(node.id)
+                                }
+                              >
+                                {graphKindLabels[node.kind]}: {node.label}
+                              </button>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                      {isIdeaEditing && (
+                        <>
+                          <input
+                            className="research-text-input compact"
+                            value={ideaDraft.title}
+                            onChange={(event) =>
+                              setIdeaDraft((current) => ({
+                                ...current,
+                                title: event.target.value,
+                              }))
+                            }
+                            placeholder="Idea title"
+                          />
+                          <textarea
+                            className="research-text-input"
+                            rows={6}
+                            value={ideaDraft.summary}
+                            onChange={(event) =>
+                              setIdeaDraft((current) => ({
+                                ...current,
+                                summary: event.target.value,
+                              }))
+                            }
+                            placeholder="Idea summary"
+                          />
+                        </>
+                      )}
+                      {ideaSaveError && (
+                        <div className="support-item-text">{ideaSaveError}</div>
+                      )}
+                      <div className="support-item-actions">
+                        {!isIdeaEditing ? (
+                          <button
+                            className="action-button"
+                            onClick={beginIdeaEdit}
+                          >
+                            Edit
+                          </button>
+                        ) : (
+                          <>
+                            <button
+                              className="action-button primary"
+                              onClick={() => void saveIdeaEdit()}
+                              disabled={isIdeaSaving}
+                            >
+                              {isIdeaSaving ? "Saving..." : "Save"}
+                            </button>
+                            <button
+                              className="action-button"
+                              onClick={cancelIdeaEdit}
+                              disabled={isIdeaSaving}
+                            >
+                              Cancel
+                            </button>
+                          </>
+                        )}
+                      </div>
+                      {selectedIdea.evidence.length > 0 && (
+                        <>
+                          <div className="research-section-title">Evidence</div>
+                          <div className="research-evidence-list">
+                            {selectedIdea.evidence
+                              .slice(0, 6)
+                              .map((evidence, index) => (
+                                <div
+                                  key={`${selectedIdea.id}:${index}`}
+                                  className="research-evidence-item"
+                                >
+                                  <div className="research-meta-row">
+                                    <span>{evidence.paperTitle}</span>
+                                    <span>
+                                      {pageLabel(
+                                        evidence.pageStart,
+                                        evidence.pageEnd,
+                                      )}
+                                    </span>
+                                  </div>
+                                  <div className="support-item-text">
+                                    {trimText(evidence.snippet, 180)}
+                                  </div>
+                                  <div className="support-item-actions">
+                                    <button
+                                      className="action-button"
+                                      onClick={() =>
+                                        void handleOpenFile(
+                                          evidence.paperPath,
+                                          evidence.pageStart,
+                                          evidence.snippet,
+                                        )
+                                      }
+                                    >
+                                      Open evidence
+                                    </button>
+                                  </div>
+                                </div>
+                              ))}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
                   {selectedGraphNodeDetail && (
                     <div className="research-card">
                       <div className="research-card-head">

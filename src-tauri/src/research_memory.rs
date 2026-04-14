@@ -6,8 +6,8 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema};
 use futures_util::{stream, StreamExt, TryStreamExt};
-use lancedb::{connect, Connection};
 use lancedb::query::{ExecutableQuery, QueryBase};
+use lancedb::{connect, Connection};
 use rusqlite::{params, Connection as SqliteConnection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -116,7 +116,7 @@ pub enum ExtractionProviderKind {
     OpenAiCompatible,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ExtractionProviderSettings {
     pub provider: ExtractionProviderKind,
@@ -128,6 +128,23 @@ pub struct ExtractionProviderSettings {
     pub extract_pipeline_name_model: Option<String>,
     pub extract_edge_model: Option<String>,
     pub extract_edge_validate_model: Option<String>,
+}
+
+impl Default for ExtractionProviderSettings {
+    fn default() -> Self {
+        let deepseek_chat = Some("deepseek-chat".to_string());
+        Self {
+            provider: ExtractionProviderKind::OpenAiCompatible,
+            base_url: Some("https://api.deepseek.com".to_string()),
+            api_key: None,
+            extract_fast_model: deepseek_chat.clone(),
+            extract_fallback_model: deepseek_chat.clone(),
+            extract_pipeline_summary_model: deepseek_chat.clone(),
+            extract_pipeline_name_model: deepseek_chat.clone(),
+            extract_edge_model: deepseek_chat.clone(),
+            extract_edge_validate_model: deepseek_chat,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -560,24 +577,16 @@ fn merge_local_extraction_items(
     sanitize_local_extraction_items(kind, merged)
 }
 
-fn build_seed_context(
-    seed_candidates: &[CandidateExtraction],
-) -> LocalExtraction {
+fn build_seed_context(seed_candidates: &[CandidateExtraction]) -> LocalExtraction {
     let mut context = LocalExtraction::default();
     for candidate in seed_candidates {
         context.tasks = merge_local_extraction_items("task", &context.tasks, &candidate.tasks);
         context.modules =
             merge_local_extraction_items("module", &context.modules, &candidate.modules);
-        context.challenges = merge_local_extraction_items(
-            "challenge",
-            &context.challenges,
-            &candidate.challenges,
-        );
-        context.insights = merge_local_extraction_items(
-            "insight",
-            &context.insights,
-            &candidate.insights,
-        );
+        context.challenges =
+            merge_local_extraction_items("challenge", &context.challenges, &candidate.challenges);
+        context.insights =
+            merge_local_extraction_items("insight", &context.insights, &candidate.insights);
     }
     context
 }
@@ -875,8 +884,10 @@ pub async fn ingest_research_corpus(
     let mode = options.mode.unwrap_or_default();
     let extraction_mode = parse_extraction_mode(options.extraction_mode.as_deref());
     let stored_provider_settings = load_extraction_provider_settings(app).unwrap_or_default();
-    let provider_settings =
-        merge_extraction_provider_settings(&stored_provider_settings, options.extract_provider.as_ref());
+    let provider_settings = merge_extraction_provider_settings(
+        &stored_provider_settings,
+        options.extract_provider.as_ref(),
+    );
     let provider_runtime = resolve_extraction_provider_runtime(&provider_settings)?;
     let extract_model = options.extract_model.clone();
     let extract_fast_model = resolve_extraction_model(
@@ -893,7 +904,10 @@ pub async fn ingest_research_corpus(
     );
     let extract_pipeline_summary_model = resolve_extraction_model(
         options.extract_pipeline_summary_model.clone(),
-        options.extract_fallback_model.clone().or(extract_model.clone()),
+        options
+            .extract_fallback_model
+            .clone()
+            .or(extract_model.clone()),
         provider_settings.extract_pipeline_summary_model.clone(),
         || "qwen3.5:9b".to_string(),
     );
@@ -909,7 +923,10 @@ pub async fn ingest_research_corpus(
     );
     let extract_edge_model = resolve_extraction_model(
         options.extract_edge_model.clone(),
-        options.extract_fallback_model.clone().or(extract_model.clone()),
+        options
+            .extract_fallback_model
+            .clone()
+            .or(extract_model.clone()),
         provider_settings.extract_edge_model.clone(),
         || "qwen3.5:9b".to_string(),
     );
@@ -986,9 +1003,9 @@ pub async fn ingest_research_corpus(
     emit_progress(
         window,
         IngestProgress::new(
-                "parse_pages",
-                0,
-                documents.len(),
+            "parse_pages",
+            0,
+            documents.len(),
             format!(
                 "已发现 {} 篇待处理论文（{}），候选 {} / 节点回退 {} / Pipeline {} / Edge {}",
                 documents.len(),
@@ -1185,7 +1202,11 @@ pub async fn get_research_graph(app: &AppHandle, view: &str) -> Result<ResearchG
         ),
     };
 
-    let node_placeholders = allowed_kinds.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let node_placeholders = allowed_kinds
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
     let node_sql = format!(
         "SELECT g.node_id, g.kind, g.label, COALESCE(g.aliases_json, '[]'),
                 COALESCE(s.paper_count, 0), COALESCE(g.support_count, 0),
@@ -1197,26 +1218,31 @@ pub async fn get_research_graph(app: &AppHandle, view: &str) -> Result<ResearchG
         node_placeholders
     );
     let mut node_stmt = conn.prepare(&node_sql)?;
-    let node_rows = node_stmt.query_map(rusqlite::params_from_iter(allowed_kinds.iter()), |row| {
-        let aliases_json: String = row.get(3)?;
-        Ok(ResearchGraphNode {
-            id: row.get(0)?,
-            kind: row.get(1)?,
-            label: row.get(2)?,
-            aliases: serde_json::from_str(&aliases_json).unwrap_or_default(),
-            paper_count: row.get::<_, i64>(4).unwrap_or(0).max(0) as usize,
-            support_count: row.get::<_, i64>(5).unwrap_or(0).max(0) as usize,
-            in_degree: row.get::<_, i64>(6).unwrap_or(0).max(0) as usize,
-            out_degree: row.get::<_, i64>(7).unwrap_or(0).max(0) as usize,
-            is_orphan: row.get::<_, i64>(8).unwrap_or(0) > 0,
-        })
-    })?;
+    let node_rows =
+        node_stmt.query_map(rusqlite::params_from_iter(allowed_kinds.iter()), |row| {
+            let aliases_json: String = row.get(3)?;
+            Ok(ResearchGraphNode {
+                id: row.get(0)?,
+                kind: row.get(1)?,
+                label: row.get(2)?,
+                aliases: serde_json::from_str(&aliases_json).unwrap_or_default(),
+                paper_count: row.get::<_, i64>(4).unwrap_or(0).max(0) as usize,
+                support_count: row.get::<_, i64>(5).unwrap_or(0).max(0) as usize,
+                in_degree: row.get::<_, i64>(6).unwrap_or(0).max(0) as usize,
+                out_degree: row.get::<_, i64>(7).unwrap_or(0).max(0) as usize,
+                is_orphan: row.get::<_, i64>(8).unwrap_or(0) > 0,
+            })
+        })?;
     let mut nodes = Vec::new();
     for row in node_rows {
         nodes.push(row?);
     }
 
-    let edge_placeholders = allowed_edges.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let edge_placeholders = allowed_edges
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
     let edge_sql = format!(
         "SELECT edge_id, edge_type, from_node_id, to_node_id, support_count
          FROM graph_edges
@@ -1225,15 +1251,16 @@ pub async fn get_research_graph(app: &AppHandle, view: &str) -> Result<ResearchG
         edge_placeholders
     );
     let mut edge_stmt = conn.prepare(&edge_sql)?;
-    let edge_rows = edge_stmt.query_map(rusqlite::params_from_iter(allowed_edges.iter()), |row| {
-        Ok(ResearchGraphEdge {
-            id: row.get(0)?,
-            edge_type: row.get(1)?,
-            from: row.get(2)?,
-            to: row.get(3)?,
-            support_count: row.get::<_, i64>(4).unwrap_or(0).max(0) as usize,
-        })
-    })?;
+    let edge_rows =
+        edge_stmt.query_map(rusqlite::params_from_iter(allowed_edges.iter()), |row| {
+            Ok(ResearchGraphEdge {
+                id: row.get(0)?,
+                edge_type: row.get(1)?,
+                from: row.get(2)?,
+                to: row.get(3)?,
+                support_count: row.get::<_, i64>(4).unwrap_or(0).max(0) as usize,
+            })
+        })?;
     let mut edges = Vec::new();
     for row in edge_rows {
         edges.push(row?);
@@ -1261,27 +1288,30 @@ pub async fn list_extraction_reviews(app: &AppHandle) -> Result<Vec<ReviewRecord
          WHERE r.status = ?1 AND c.review_status = ?2
          ORDER BY c.confidence DESC, p.updated_at DESC, c.paper_id, r.review_id",
     )?;
-    let rows = stmt.query_map(params![REVIEW_PENDING_STATUS, REVIEW_PENDING_STATUS], |row| {
-        let evidence_json: String = row.get(14)?;
-        Ok(ReviewRecord {
-            review_id: row.get(0)?,
-            candidate_id: row.get(1)?,
-            paper_id: row.get(2)?,
-            paper_title: row.get(3)?,
-            paper_path: row.get(4)?,
-            candidate_kind: row.get(5)?,
-            entity_kind: row.get(6)?,
-            label: row.get(7)?,
-            description: row.get(8)?,
-            confidence: row.get(9)?,
-            from_kind: row.get(10)?,
-            from_label: row.get(11)?,
-            to_kind: row.get(12)?,
-            to_label: row.get(13)?,
-            evidence: serde_json::from_str(&evidence_json).unwrap_or_default(),
-            suggested_canonical_label: row.get(7).ok(),
-        })
-    })?;
+    let rows = stmt.query_map(
+        params![REVIEW_PENDING_STATUS, REVIEW_PENDING_STATUS],
+        |row| {
+            let evidence_json: String = row.get(14)?;
+            Ok(ReviewRecord {
+                review_id: row.get(0)?,
+                candidate_id: row.get(1)?,
+                paper_id: row.get(2)?,
+                paper_title: row.get(3)?,
+                paper_path: row.get(4)?,
+                candidate_kind: row.get(5)?,
+                entity_kind: row.get(6)?,
+                label: row.get(7)?,
+                description: row.get(8)?,
+                confidence: row.get(9)?,
+                from_kind: row.get(10)?,
+                from_label: row.get(11)?,
+                to_kind: row.get(12)?,
+                to_label: row.get(13)?,
+                evidence: serde_json::from_str(&evidence_json).unwrap_or_default(),
+                suggested_canonical_label: row.get(7).ok(),
+            })
+        },
+    )?;
     let mut reviews = Vec::new();
     for row in rows {
         reviews.push(row?);
@@ -1332,8 +1362,9 @@ pub async fn get_research_graph_edge_detail(
 ) -> Result<ResearchGraphEdgeDetail> {
     initialize(app).await?;
     let conn = open_sqlite(app)?;
-    let (edge_type, from_node_id, from_label, to_node_id, to_label, support_count) = conn.query_row(
-        "SELECT e.edge_type,
+    let (edge_type, from_node_id, from_label, to_node_id, to_label, support_count) = conn
+        .query_row(
+            "SELECT e.edge_type,
                 e.from_node_id,
                 fn.label,
                 e.to_node_id,
@@ -1343,18 +1374,18 @@ pub async fn get_research_graph_edge_detail(
          JOIN graph_nodes fn ON fn.node_id = e.from_node_id
          JOIN graph_nodes tn ON tn.node_id = e.to_node_id
          WHERE e.edge_id = ?1",
-        [edge_id],
-        |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, i64>(5)?.max(0) as usize,
-            ))
-        },
-    )?;
+            [edge_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)?.max(0) as usize,
+                ))
+            },
+        )?;
     let evidence = load_edge_evidence(&conn, edge_id, 8)?;
     let related_papers = related_papers_for_owner(&conn, "edge", edge_id, 8)?;
     Ok(ResearchGraphEdgeDetail {
@@ -1489,7 +1520,10 @@ pub async fn preview_extract_path(
 ) -> Result<ExtractionPreviewResult> {
     let file_path = PathBuf::from(request.path.trim());
     if !file_path.is_file() {
-        return Err(anyhow!("Preview path is not a file: {}", file_path.display()));
+        return Err(anyhow!(
+            "Preview path is not a file: {}",
+            file_path.display()
+        ));
     }
     let document = spawn_blocking(move || load_document_from_path(&file_path)).await??;
     let sections = detect_sections(&document);
@@ -1573,7 +1607,7 @@ pub async fn preview_extract_path(
                 &extract_fast_model,
                 &extract_fallback_model,
             )
-            .await;
+            .await?;
             let (candidate, _) = resolve_candidate_kind_conflicts(candidate);
             if candidate.item_count() > 0 {
                 seed_candidates.push(candidate);
@@ -1620,7 +1654,11 @@ pub async fn preview_extract_path(
                 candidate_status: candidate_phase_status_label(candidate_status).to_string(),
                 tasks: local.tasks.into_iter().map(|item| item.label).collect(),
                 modules: local.modules.into_iter().map(|item| item.label).collect(),
-                challenges: local.challenges.into_iter().map(|item| item.label).collect(),
+                challenges: local
+                    .challenges
+                    .into_iter()
+                    .map(|item| item.label)
+                    .collect(),
                 insights: local.insights.into_iter().map(|item| item.label).collect(),
                 pipelines: local.pipelines.into_iter().map(|item| item.label).collect(),
                 task_pipeline_count: local.task_pipeline_pairs.len(),
@@ -1645,7 +1683,7 @@ pub async fn preview_extract_path(
                 &extract_fast_model,
                 &extract_fallback_model,
             )
-            .await;
+            .await?;
             let (candidate, candidate_conflict_count) = resolve_candidate_kind_conflicts(candidate);
             previewed_units.push(ExtractionPreviewUnit {
                 unit_id: unit.unit_id,
@@ -1654,9 +1692,21 @@ pub async fn preview_extract_path(
                 page_end: unit.page_end,
                 candidate_status: candidate_phase_status_label(candidate_status).to_string(),
                 tasks: candidate.tasks.into_iter().map(|item| item.label).collect(),
-                modules: candidate.modules.into_iter().map(|item| item.label).collect(),
-                challenges: candidate.challenges.into_iter().map(|item| item.label).collect(),
-                insights: candidate.insights.into_iter().map(|item| item.label).collect(),
+                modules: candidate
+                    .modules
+                    .into_iter()
+                    .map(|item| item.label)
+                    .collect(),
+                challenges: candidate
+                    .challenges
+                    .into_iter()
+                    .map(|item| item.label)
+                    .collect(),
+                insights: candidate
+                    .insights
+                    .into_iter()
+                    .map(|item| item.label)
+                    .collect(),
                 pipelines: Vec::new(),
                 task_pipeline_count: 0,
                 task_module_count: 0,
@@ -1812,7 +1862,10 @@ fn classify_paper_type(document: &FileDocument, sections: &[SectionRecord]) -> S
 }
 
 fn count_matches(text: &str, needles: &[&str]) -> usize {
-    needles.iter().filter(|needle| text.contains(**needle)).count()
+    needles
+        .iter()
+        .filter(|needle| text.contains(**needle))
+        .count()
 }
 
 fn apply_candidate_budget(
@@ -1889,7 +1942,11 @@ fn filter_paper_level_candidates(
                     return false;
                 }
                 if paper_type != PAPER_TYPE_REVIEW
-                    && !is_method_connected_problem_candidate(&candidate.label, &description, snippet)
+                    && !is_method_connected_problem_candidate(
+                        &candidate.label,
+                        &description,
+                        snippet,
+                    )
                 {
                     return false;
                 }
@@ -2055,12 +2112,7 @@ pub async fn apply_extraction_review(
                                    AND candidate_kind = 'node'
                                    AND entity_kind = ?3
                                    AND normalized_label = ?4",
-                                params![
-                                    APPROVED_STATUS,
-                                    paper_id,
-                                    kind,
-                                    normalized_label
-                                ],
+                                params![APPROVED_STATUS, paper_id, kind, normalized_label],
                             )?;
                             tx.execute(
                                 "UPDATE review_queue
@@ -2073,12 +2125,7 @@ pub async fn apply_extraction_review(
                                      AND entity_kind = ?3
                                      AND normalized_label = ?4
                                  )",
-                                params![
-                                    REVIEW_DONE_STATUS,
-                                    paper_id,
-                                    kind,
-                                    normalized_label
-                                ],
+                                params![REVIEW_DONE_STATUS, paper_id, kind, normalized_label],
                             )?;
                         }
                     }
@@ -2128,6 +2175,49 @@ pub async fn list_idea_candidates(app: &AppHandle) -> Result<Vec<IdeaCandidate>>
     Ok(ideas)
 }
 
+pub async fn update_idea_candidate(
+    app: &AppHandle,
+    idea_id: &str,
+    title: &str,
+    summary: &str,
+) -> Result<IdeaCandidate> {
+    initialize(app).await?;
+    let conn = open_sqlite(app)?;
+    let now = cards::current_timestamp_iso_utc();
+    let updated = conn.execute(
+        "UPDATE idea_candidates
+         SET title = ?2, summary = ?3, updated_at = ?4
+         WHERE idea_id = ?1",
+        params![idea_id, title, summary, now],
+    )?;
+    if updated == 0 {
+        return Err(anyhow!("Idea candidate not found: {}", idea_id));
+    }
+
+    let mut stmt = conn.prepare(
+        "SELECT idea_id, rule_type, title, summary, confidence, challenge_node_id, module_node_id, task_node_id, pipeline_node_id,
+                COALESCE(evidence_json, '[]')
+         FROM idea_candidates
+         WHERE idea_id = ?1",
+    )?;
+    let idea = stmt.query_row([idea_id], |row| {
+        let evidence_json: String = row.get(9)?;
+        Ok(IdeaCandidate {
+            id: row.get(0)?,
+            rule_type: row.get(1)?,
+            title: row.get(2)?,
+            summary: row.get(3)?,
+            confidence: row.get(4)?,
+            challenge_node_id: row.get(5)?,
+            module_node_id: row.get(6)?,
+            task_node_id: row.get(7)?,
+            pipeline_node_id: row.get(8)?,
+            evidence: serde_json::from_str(&evidence_json).unwrap_or_default(),
+        })
+    })?;
+    Ok(idea)
+}
+
 pub async fn compare_papers(
     app: &AppHandle,
     left_paper_id: &str,
@@ -2138,7 +2228,11 @@ pub async fn compare_papers(
     let conn = open_sqlite(app)?;
     let left = paper_concepts(&conn, left_paper_id)?;
     let right = paper_concepts(&conn, right_paper_id)?;
-    let similarities = left.intersection(&right).take(6).cloned().collect::<Vec<_>>();
+    let similarities = left
+        .intersection(&right)
+        .take(6)
+        .cloned()
+        .collect::<Vec<_>>();
     let left_only = left.difference(&right).take(6).cloned().collect::<Vec<_>>();
     let right_only = right.difference(&left).take(6).cloned().collect::<Vec<_>>();
     let evidence = load_compare_evidence(&conn, left_paper_id, right_paper_id, 12)?;
@@ -2226,11 +2320,15 @@ pub async fn sync_index_state(app: &AppHandle, embedding_model: Option<&str>) ->
     let effective_model =
         resolve_embedding_model(embedding_model.or(Some(expected_model.as_str()))).await?;
     let chunk_count = conn
-        .query_row("SELECT COUNT(*) FROM chunks", [], |row| row.get::<_, i64>(0))
+        .query_row("SELECT COUNT(*) FROM chunks", [], |row| {
+            row.get::<_, i64>(0)
+        })
         .unwrap_or(0)
         .max(0) as usize;
     let concept_count = conn
-        .query_row("SELECT COUNT(*) FROM graph_nodes", [], |row| row.get::<_, i64>(0))
+        .query_row("SELECT COUNT(*) FROM graph_nodes", [], |row| {
+            row.get::<_, i64>(0)
+        })
         .unwrap_or(0)
         .max(0) as usize;
 
@@ -2242,7 +2340,9 @@ pub async fn sync_index_state(app: &AppHandle, embedding_model: Option<&str>) ->
 
     let db = open_lancedb(app).await?;
     let chunk_rows = count_lance_rows(&db, CHUNK_VECTOR_TABLE).await.unwrap_or(0);
-    let concept_rows = count_lance_rows(&db, CONCEPT_VECTOR_TABLE).await.unwrap_or(0);
+    let concept_rows = count_lance_rows(&db, CONCEPT_VECTOR_TABLE)
+        .await
+        .unwrap_or(0);
     if chunk_rows != chunk_count || concept_rows != concept_count {
         rebuild_vector_indexes(app, None, &effective_model).await?;
         refresh_idea_candidates(app, &effective_model).await?;
@@ -2551,7 +2651,10 @@ async fn ingest_single_document(
                 "INSERT INTO pages (page_id, paper_id, page_number, content, visual_note)
                  VALUES (?1, ?2, ?3, ?4, NULL)",
                 params![
-                    stable_id("page", format!("{}:{}", document.paper_id, page.page_number)),
+                    stable_id(
+                        "page",
+                        format!("{}:{}", document.paper_id, page.page_number)
+                    ),
                     document.paper_id,
                     page.page_number,
                     page.content,
@@ -2599,7 +2702,7 @@ async fn ingest_single_document(
                 extract_fast_model,
                 extract_fallback_model,
             )
-            .await;
+            .await?;
             let (candidate, _) = resolve_candidate_kind_conflicts(candidate);
             if candidate.item_count() > 0 {
                 seed_candidates.push(candidate);
@@ -2622,8 +2725,7 @@ async fn ingest_single_document(
         HashMap::new()
     };
     let completed_unit_count = persisted_units.len();
-    let candidates_already_materialized =
-        has_materialized_candidates(&conn, &document.paper_id)?;
+    let candidates_already_materialized = has_materialized_candidates(&conn, &document.paper_id)?;
     let diagnostics_already_materialized =
         has_persisted_extraction_diagnostics(&conn, &document.paper_id)?;
     let extraction_already_complete = has_completed_extraction
@@ -2720,8 +2822,12 @@ async fn ingest_single_document(
             CandidatePhaseStatus::FastHit => {}
         }
         if !persisted.nodes.is_empty() && extraction_mode == ExtractionMode::Balanced {
-            pipeline_summary_completed_units += 1;
-            pipeline_name_completed_units += 1;
+            if !persisted.diagnostics.pipeline_summary_empty {
+                pipeline_summary_completed_units += 1;
+            }
+            if !persisted.diagnostics.pipeline_name_empty {
+                pipeline_name_completed_units += 1;
+            }
             edge_completed_units += 1;
             edge_validate_completed_units += 1;
         }
@@ -2762,31 +2868,20 @@ async fn ingest_single_document(
                 &edge_validate_model,
             )
             .await
-            .unwrap_or((
-                LocalExtraction::default(),
-                CandidatePhaseStatus::DoubleFailure,
-                ExtractionDiagnostics::default(),
-            ));
-            (
-                unit,
-                chunk_id,
-                local,
-                candidate_status,
-                diagnostics,
-            )
+            .with_context(|| {
+                format!(
+                    "extract_map_unit failed for {} pages {}-{} ({})",
+                    document.title, unit.page_start, unit.page_end, unit.heading
+                )
+            })?;
+            Ok::<_, anyhow::Error>((unit, chunk_id, local, candidate_status, diagnostics))
         }
     }))
     .buffer_unordered(MAP_EXTRACT_CONCURRENCY);
     tokio::pin!(extraction_stream);
 
-    while let Some((
-        unit,
-        chunk_id,
-        local,
-        candidate_status,
-        diagnostics,
-    )) = extraction_stream.next().await
-    {
+    while let Some(result) = extraction_stream.next().await {
+        let (unit, chunk_id, local, candidate_status, diagnostics) = result?;
         candidate_completed_units += 1;
         candidate_conflict_count += diagnostics.candidate_conflict_count;
         match candidate_status {
@@ -2824,45 +2919,51 @@ async fn ingest_single_document(
             ),
         );
         if local.node_count() > 0 && extraction_mode == ExtractionMode::Balanced {
-            pipeline_summary_completed_units += 1;
+            if !diagnostics.pipeline_summary_empty {
+                pipeline_summary_completed_units += 1;
+                emit_progress(
+                    window,
+                    IngestProgress::new(
+                        "pipeline_summarize",
+                        pipeline_summary_completed_units,
+                        map_unit_total,
+                        format!(
+                            "正在总结 Pipeline 骨架（{}/{}，候选冲突 {}，summary 为空 {}）：{}",
+                            pipeline_summary_completed_units,
+                            map_unit_total,
+                            candidate_conflict_count,
+                            pipeline_summary_empty_count,
+                            document.title
+                        ),
+                    ),
+                );
+            }
             if diagnostics.pipeline_summary_empty {
                 pipeline_summary_empty_count += 1;
             }
-            emit_progress(
-                window,
-                IngestProgress::new(
-                    "pipeline_summarize",
-                    pipeline_summary_completed_units,
-                    map_unit_total,
-                    format!(
-                        "正在总结 Pipeline 骨架（{}/{}，候选冲突 {}，summary 为空 {}）：{}",
-                        pipeline_summary_completed_units,
+
+            if !diagnostics.pipeline_name_empty {
+                pipeline_name_completed_units += 1;
+                emit_progress(
+                    window,
+                    IngestProgress::new(
+                        "pipeline_name_extract",
+                        pipeline_name_completed_units,
                         map_unit_total,
-                        candidate_conflict_count,
-                        pipeline_summary_empty_count,
-                        document.title
+                        format!(
+                            "正在提取 Pipeline 名称（{}/{}，空命名 {}）：{}",
+                            pipeline_name_completed_units,
+                            map_unit_total,
+                            pipeline_name_empty_count,
+                            document.title
+                        ),
                     ),
-                ),
-            );
-            pipeline_name_completed_units += 1;
+                );
+            }
             if diagnostics.pipeline_name_empty {
                 pipeline_name_empty_count += 1;
             }
-            emit_progress(
-                window,
-                IngestProgress::new(
-                    "pipeline_name_extract",
-                    pipeline_name_completed_units,
-                    map_unit_total,
-                    format!(
-                        "正在提取 Pipeline 名称（{}/{}，空命名 {}）：{}",
-                        pipeline_name_completed_units,
-                        map_unit_total,
-                        pipeline_name_empty_count,
-                        document.title
-                    ),
-                ),
-            );
+
             edge_completed_units += 1;
             edge_candidate_count += diagnostics.edge_candidate_count;
             emit_progress(
@@ -2873,10 +2974,7 @@ async fn ingest_single_document(
                     map_unit_total,
                     format!(
                         "正在抽取 Edge（{}/{}，候选边累计 {}）：{}",
-                        edge_completed_units,
-                        map_unit_total,
-                        edge_candidate_count,
-                        document.title
+                        edge_completed_units, map_unit_total, edge_candidate_count, document.title
                     ),
                 ),
             );
@@ -3126,19 +3224,21 @@ fn reduce_edge_candidates_for_backfill(
             edge.normalized_from_label.clone(),
             edge.normalized_to_label.clone(),
         );
-        let entry = grouped_edges.entry(key).or_insert_with(|| AggregatedEdgeCandidate {
-            edge_type: edge.edge_type.clone(),
-            from_kind: edge.from_kind.clone(),
-            from_label: edge.from_label.clone(),
-            normalized_from_label: edge.normalized_from_label.clone(),
-            to_kind: edge.to_kind.clone(),
-            to_label: edge.to_label.clone(),
-            normalized_to_label: edge.normalized_to_label.clone(),
-            confidence_sum: 0.0,
-            confidence_count: 0,
-            paper_ids: HashSet::new(),
-            evidence: Vec::new(),
-        });
+        let entry = grouped_edges
+            .entry(key)
+            .or_insert_with(|| AggregatedEdgeCandidate {
+                edge_type: edge.edge_type.clone(),
+                from_kind: edge.from_kind.clone(),
+                from_label: edge.from_label.clone(),
+                normalized_from_label: edge.normalized_from_label.clone(),
+                to_kind: edge.to_kind.clone(),
+                to_label: edge.to_label.clone(),
+                normalized_to_label: edge.normalized_to_label.clone(),
+                confidence_sum: 0.0,
+                confidence_count: 0,
+                paper_ids: HashSet::new(),
+                evidence: Vec::new(),
+            });
         entry.confidence_sum += edge.confidence;
         entry.confidence_count += 1;
         entry.paper_ids.insert(edge.paper_id.clone());
@@ -3322,11 +3422,23 @@ fn persist_unit_extraction_result(
             chunk_id,
             candidate_status.as_str(),
             diagnostics.candidate_conflict_count as i64,
-            if diagnostics.pipeline_summary_empty { 1 } else { 0 },
-            if diagnostics.pipeline_name_empty { 1 } else { 0 },
+            if diagnostics.pipeline_summary_empty {
+                1
+            } else {
+                0
+            },
+            if diagnostics.pipeline_name_empty {
+                1
+            } else {
+                0
+            },
             diagnostics.edge_candidate_count as i64,
             diagnostics.edge_validated_count as i64,
-            if diagnostics.edge_validate_used_fallback { 1 } else { 0 },
+            if diagnostics.edge_validate_used_fallback {
+                1
+            } else {
+                0
+            },
             serde_json::to_string(nodes)?,
             serde_json::to_string(edges)?,
             cards::current_timestamp_iso_utc(),
@@ -3376,7 +3488,9 @@ fn reduce_local_extraction(
                     item.summary.filter(|value| !value.trim().is_empty()),
                     item.kind_rationale.filter(|value| !value.trim().is_empty()),
                 ) {
-                    (Some(summary), Some(rationale)) => format!("{} | {}", summary.trim(), rationale.trim()),
+                    (Some(summary), Some(rationale)) => {
+                        format!("{} | {}", summary.trim(), rationale.trim())
+                    }
                     (Some(summary), None) => summary,
                     (None, Some(rationale)) => rationale,
                     (None, None) => String::new(),
@@ -3455,7 +3569,12 @@ fn reduce_local_extraction(
                 });
             }
         };
-    push_edges("task_pipeline", "task", "pipeline", local.task_pipeline_pairs);
+    push_edges(
+        "task_pipeline",
+        "task",
+        "pipeline",
+        local.task_pipeline_pairs,
+    );
     push_edges("task_module", "task", "module", local.task_module_pairs);
     push_edges(
         "pipeline_module",
@@ -3485,17 +3604,19 @@ async fn canonicalize_candidates_small(
             continue;
         }
         let key = (candidate.kind.clone(), candidate.normalized_label.clone());
-        let entry = grouped_nodes.entry(key).or_insert_with(|| AggregatedNodeCandidate {
-            kind: candidate.kind.clone(),
-            normalized_label: candidate.normalized_label.clone(),
-            labels: Vec::new(),
-            descriptions: Vec::new(),
-            aliases: Vec::new(),
-            confidence_sum: 0.0,
-            confidence_count: 0,
-            paper_ids: HashSet::new(),
-            evidence: Vec::new(),
-        });
+        let entry = grouped_nodes
+            .entry(key)
+            .or_insert_with(|| AggregatedNodeCandidate {
+                kind: candidate.kind.clone(),
+                normalized_label: candidate.normalized_label.clone(),
+                labels: Vec::new(),
+                descriptions: Vec::new(),
+                aliases: Vec::new(),
+                confidence_sum: 0.0,
+                confidence_count: 0,
+                paper_ids: HashSet::new(),
+                evidence: Vec::new(),
+            });
         entry.labels.push(candidate.label.clone());
         if !candidate.description.trim().is_empty() {
             entry.descriptions.push(candidate.description.clone());
@@ -3507,7 +3628,8 @@ async fn canonicalize_candidates_small(
         entry.evidence.extend(candidate.evidence.clone());
     }
 
-    let mut grouped_edges: HashMap<(String, String, String), AggregatedEdgeCandidate> = HashMap::new();
+    let mut grouped_edges: HashMap<(String, String, String), AggregatedEdgeCandidate> =
+        HashMap::new();
     for candidate in edge_candidates {
         if candidate.normalized_from_label.is_empty() || candidate.normalized_to_label.is_empty() {
             continue;
@@ -3517,19 +3639,21 @@ async fn canonicalize_candidates_small(
             candidate.normalized_from_label.clone(),
             candidate.normalized_to_label.clone(),
         );
-        let entry = grouped_edges.entry(key).or_insert_with(|| AggregatedEdgeCandidate {
-            edge_type: candidate.edge_type.clone(),
-            from_kind: candidate.from_kind.clone(),
-            from_label: candidate.from_label.clone(),
-            normalized_from_label: candidate.normalized_from_label.clone(),
-            to_kind: candidate.to_kind.clone(),
-            to_label: candidate.to_label.clone(),
-            normalized_to_label: candidate.normalized_to_label.clone(),
-            confidence_sum: 0.0,
-            confidence_count: 0,
-            paper_ids: HashSet::new(),
-            evidence: Vec::new(),
-        });
+        let entry = grouped_edges
+            .entry(key)
+            .or_insert_with(|| AggregatedEdgeCandidate {
+                edge_type: candidate.edge_type.clone(),
+                from_kind: candidate.from_kind.clone(),
+                from_label: candidate.from_label.clone(),
+                normalized_from_label: candidate.normalized_from_label.clone(),
+                to_kind: candidate.to_kind.clone(),
+                to_label: candidate.to_label.clone(),
+                normalized_to_label: candidate.normalized_to_label.clone(),
+                confidence_sum: 0.0,
+                confidence_count: 0,
+                paper_ids: HashSet::new(),
+                evidence: Vec::new(),
+            });
         entry.confidence_sum += candidate.confidence;
         entry.confidence_count += 1;
         entry.paper_ids.insert(candidate.paper_id.clone());
@@ -3810,7 +3934,10 @@ fn persist_candidates(
 fn materialize_graph_from_approved_candidates(conn: &SqliteConnection) -> Result<()> {
     conn.execute("DELETE FROM graph_edges", [])?;
     conn.execute("DELETE FROM graph_nodes", [])?;
-    conn.execute("DELETE FROM evidence_refs WHERE owner_type IN ('node', 'edge')", [])?;
+    conn.execute(
+        "DELETE FROM evidence_refs WHERE owner_type IN ('node', 'edge')",
+        [],
+    )?;
 
     let mut stmt = conn.prepare(
         "SELECT entity_kind, label, normalized_label, COALESCE(aliases_json, '[]'), COALESCE(description, ''),
@@ -3834,7 +3961,16 @@ fn materialize_graph_from_approved_candidates(conn: &SqliteConnection) -> Result
 
     let mut grouped: HashMap<(String, String), AggregatedNodeCandidate> = HashMap::new();
     for row in rows {
-        let (kind, label, normalized_label, aliases_json, description, confidence, paper_id, evidence_json) = row?;
+        let (
+            kind,
+            label,
+            normalized_label,
+            aliases_json,
+            description,
+            confidence,
+            paper_id,
+            evidence_json,
+        ) = row?;
         let entry = grouped
             .entry((kind.clone(), normalized_label.clone()))
             .or_insert_with(|| AggregatedNodeCandidate {
@@ -3852,7 +3988,9 @@ fn materialize_graph_from_approved_candidates(conn: &SqliteConnection) -> Result
         if !description.trim().is_empty() {
             entry.descriptions.push(description);
         }
-        entry.aliases.extend(serde_json::from_str::<Vec<String>>(&aliases_json).unwrap_or_default());
+        entry
+            .aliases
+            .extend(serde_json::from_str::<Vec<String>>(&aliases_json).unwrap_or_default());
         entry.confidence_sum += confidence;
         entry.confidence_count += 1;
         entry.paper_ids.insert(paper_id);
@@ -3915,16 +4053,28 @@ fn materialize_graph_from_approved_candidates(conn: &SqliteConnection) -> Result
             row.get::<_, String>(5)?,
         ))
     })?;
-    let mut edge_groups: HashMap<(String, String, String), (usize, Vec<EvidenceRef>)> = HashMap::new();
+    let mut edge_groups: HashMap<(String, String, String), (usize, Vec<EvidenceRef>)> =
+        HashMap::new();
     for row in rows {
-        let (edge_type, from_kind, normalized_from_label, to_kind, normalized_to_label, evidence_json) = row?;
+        let (
+            edge_type,
+            from_kind,
+            normalized_from_label,
+            to_kind,
+            normalized_to_label,
+            evidence_json,
+        ) = row?;
         if !is_allowed_edge(&edge_type, &from_kind, &to_kind) {
             continue;
         }
-        let Some(from_node_id) = label_to_node_id.get(&(from_kind.clone(), normalized_from_label.clone())) else {
+        let Some(from_node_id) =
+            label_to_node_id.get(&(from_kind.clone(), normalized_from_label.clone()))
+        else {
             continue;
         };
-        let Some(to_node_id) = label_to_node_id.get(&(to_kind.clone(), normalized_to_label.clone())) else {
+        let Some(to_node_id) =
+            label_to_node_id.get(&(to_kind.clone(), normalized_to_label.clone()))
+        else {
             continue;
         };
         let entry = edge_groups
@@ -3937,7 +4087,10 @@ fn materialize_graph_from_approved_candidates(conn: &SqliteConnection) -> Result
     }
 
     for ((edge_type, from_node_id, to_node_id), (support_count, evidence)) in edge_groups {
-        let edge_id = stable_id("edge", format!("{}:{}:{}", edge_type, from_node_id, to_node_id));
+        let edge_id = stable_id(
+            "edge",
+            format!("{}:{}:{}", edge_type, from_node_id, to_node_id),
+        );
         let now = cards::current_timestamp_iso_utc();
         conn.execute(
             "INSERT INTO graph_edges (edge_id, edge_type, from_node_id, to_node_id, support_count, created_at, updated_at)
@@ -4044,17 +4197,27 @@ async fn rebuild_vector_indexes(
                 IngestProgress::new("index_vectors", 0, total.max(1), "正在写入 chunk 向量..."),
             );
         }
-        create_vector_table_from_chunks(&db, CHUNK_VECTOR_TABLE, &chunk_rows, embedding_model).await?;
+        create_vector_table_from_chunks(&db, CHUNK_VECTOR_TABLE, &chunk_rows, embedding_model)
+            .await?;
     }
     if !page_rows.is_empty() {
-        create_vector_table_from_chunks(&db, PAGE_VECTOR_TABLE, &page_rows, embedding_model).await?;
+        create_vector_table_from_chunks(&db, PAGE_VECTOR_TABLE, &page_rows, embedding_model)
+            .await?;
     }
     if !concept_rows.is_empty() {
-        create_vector_table_from_concepts(&db, CONCEPT_VECTOR_TABLE, &concept_rows, embedding_model).await?;
+        create_vector_table_from_concepts(
+            &db,
+            CONCEPT_VECTOR_TABLE,
+            &concept_rows,
+            embedding_model,
+        )
+        .await?;
     }
 
-    conn.execute("UPDATE chunks SET embedding_status = ?1", [READY_STATUS]).ok();
-    conn.execute("UPDATE papers SET index_status = ?1", [READY_STATUS]).ok();
+    conn.execute("UPDATE chunks SET embedding_status = ?1", [READY_STATUS])
+        .ok();
+    conn.execute("UPDATE papers SET index_status = ?1", [READY_STATUS])
+        .ok();
     set_meta(&conn, "schema_version", SCHEMA_VERSION).ok();
     set_meta(&conn, "embedding_model", embedding_model).ok();
     set_meta(&conn, "chunk_count", &chunk_rows.len().to_string()).ok();
@@ -4085,8 +4248,10 @@ async fn create_vector_table_from_chunks(
     }
     let batch = build_chunk_record_batch(rows, &vectors)?;
     let schema = batch.schema();
-    let batches: Box<dyn RecordBatchReader + Send> =
-        Box::new(RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema));
+    let batches: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
+        vec![Ok(batch)].into_iter(),
+        schema,
+    ));
     db.create_table(table_name, batches).execute().await?;
     Ok(())
 }
@@ -4106,8 +4271,10 @@ async fn create_vector_table_from_concepts(
     }
     let batch = build_concept_record_batch(rows, &vectors)?;
     let schema = batch.schema();
-    let batches: Box<dyn RecordBatchReader + Send> =
-        Box::new(RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema));
+    let batches: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
+        vec![Ok(batch)].into_iter(),
+        schema,
+    ));
     db.create_table(table_name, batches).execute().await?;
     Ok(())
 }
@@ -4127,26 +4294,59 @@ fn build_chunk_record_batch(rows: &[ChunkRow], vectors: &[Vec<f32>]) -> Result<R
         Field::new("page_end", DataType::Int32, false),
         Field::new(
             "vector",
-            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), dim as i32),
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                dim as i32,
+            ),
             true,
         ),
     ]));
-    let vector_array = Arc::new(FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
-        vectors
-            .iter()
-            .map(|vector| Some(vector.iter().copied().map(Some).collect::<Vec<_>>())),
-        dim as i32,
-    ));
+    let vector_array = Arc::new(
+        FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+            vectors
+                .iter()
+                .map(|vector| Some(vector.iter().copied().map(Some).collect::<Vec<_>>())),
+            dim as i32,
+        ),
+    );
     Ok(RecordBatch::try_new(
         schema,
         vec![
-            Arc::new(StringArray::from(rows.iter().map(|row| row.chunk_id.as_str()).collect::<Vec<_>>())),
-            Arc::new(StringArray::from(rows.iter().map(|row| row.paper_id.as_str()).collect::<Vec<_>>())),
-            Arc::new(StringArray::from(rows.iter().map(|row| row.paper_path.as_str()).collect::<Vec<_>>())),
-            Arc::new(StringArray::from(rows.iter().map(|row| row.paper_title.as_str()).collect::<Vec<_>>())),
-            Arc::new(StringArray::from(rows.iter().map(|row| row.content.as_str()).collect::<Vec<_>>())),
-            Arc::new(Int32Array::from(rows.iter().map(|row| row.page_start as i32).collect::<Vec<_>>())),
-            Arc::new(Int32Array::from(rows.iter().map(|row| row.page_end as i32).collect::<Vec<_>>())),
+            Arc::new(StringArray::from(
+                rows.iter()
+                    .map(|row| row.chunk_id.as_str())
+                    .collect::<Vec<_>>(),
+            )),
+            Arc::new(StringArray::from(
+                rows.iter()
+                    .map(|row| row.paper_id.as_str())
+                    .collect::<Vec<_>>(),
+            )),
+            Arc::new(StringArray::from(
+                rows.iter()
+                    .map(|row| row.paper_path.as_str())
+                    .collect::<Vec<_>>(),
+            )),
+            Arc::new(StringArray::from(
+                rows.iter()
+                    .map(|row| row.paper_title.as_str())
+                    .collect::<Vec<_>>(),
+            )),
+            Arc::new(StringArray::from(
+                rows.iter()
+                    .map(|row| row.content.as_str())
+                    .collect::<Vec<_>>(),
+            )),
+            Arc::new(Int32Array::from(
+                rows.iter()
+                    .map(|row| row.page_start as i32)
+                    .collect::<Vec<_>>(),
+            )),
+            Arc::new(Int32Array::from(
+                rows.iter()
+                    .map(|row| row.page_end as i32)
+                    .collect::<Vec<_>>(),
+            )),
             vector_array,
         ],
     )?)
@@ -4164,23 +4364,40 @@ fn build_concept_record_batch(rows: &[ConceptRow], vectors: &[Vec<f32>]) -> Resu
         Field::new("text", DataType::Utf8, false),
         Field::new(
             "vector",
-            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), dim as i32),
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                dim as i32,
+            ),
             true,
         ),
     ]));
-    let vector_array = Arc::new(FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
-        vectors
-            .iter()
-            .map(|vector| Some(vector.iter().copied().map(Some).collect::<Vec<_>>())),
-        dim as i32,
-    ));
+    let vector_array = Arc::new(
+        FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+            vectors
+                .iter()
+                .map(|vector| Some(vector.iter().copied().map(Some).collect::<Vec<_>>())),
+            dim as i32,
+        ),
+    );
     Ok(RecordBatch::try_new(
         schema,
         vec![
-            Arc::new(StringArray::from(rows.iter().map(|row| row.node_id.as_str()).collect::<Vec<_>>())),
-            Arc::new(StringArray::from(rows.iter().map(|row| row.kind.as_str()).collect::<Vec<_>>())),
-            Arc::new(StringArray::from(rows.iter().map(|row| row.label.as_str()).collect::<Vec<_>>())),
-            Arc::new(StringArray::from(rows.iter().map(|row| row.text.as_str()).collect::<Vec<_>>())),
+            Arc::new(StringArray::from(
+                rows.iter()
+                    .map(|row| row.node_id.as_str())
+                    .collect::<Vec<_>>(),
+            )),
+            Arc::new(StringArray::from(
+                rows.iter().map(|row| row.kind.as_str()).collect::<Vec<_>>(),
+            )),
+            Arc::new(StringArray::from(
+                rows.iter()
+                    .map(|row| row.label.as_str())
+                    .collect::<Vec<_>>(),
+            )),
+            Arc::new(StringArray::from(
+                rows.iter().map(|row| row.text.as_str()).collect::<Vec<_>>(),
+            )),
             vector_array,
         ],
     )?)
@@ -4256,7 +4473,10 @@ async fn search_module_concepts_by_vector(
     Ok(hits)
 }
 
-fn parse_chunk_search_batch(batch: &RecordBatch, conn: &SqliteConnection) -> Result<Vec<ResearchSearchHit>> {
+fn parse_chunk_search_batch(
+    batch: &RecordBatch,
+    conn: &SqliteConnection,
+) -> Result<Vec<ResearchSearchHit>> {
     let ids = batch
         .column_by_name("id")
         .and_then(|array| array.as_any().downcast_ref::<StringArray>())
@@ -4355,15 +4575,14 @@ async fn extract_map_unit(
     extract_edge_model: &str,
     extract_edge_validate_model: &str,
 ) -> Result<(LocalExtraction, CandidatePhaseStatus, ExtractionDiagnostics)> {
-    let (candidate, candidate_status) =
-        extract_candidate_with_fallback(
-            unit,
-            document,
-            provider,
-            extract_fast_model,
-            extract_fallback_model,
-        )
-            .await;
+    let (candidate, candidate_status) = extract_candidate_with_fallback(
+        unit,
+        document,
+        provider,
+        extract_fast_model,
+        extract_fallback_model,
+    )
+    .await?;
 
     let (candidate, candidate_conflict_count) = resolve_candidate_kind_conflicts(candidate);
     let mut diagnostics = ExtractionDiagnostics {
@@ -4382,11 +4601,8 @@ async fn extract_map_unit(
         local.tasks = merge_local_extraction_items("task", &local.tasks, &seed_context.tasks);
         local.modules =
             merge_local_extraction_items("module", &local.modules, &seed_context.modules);
-        local.challenges = merge_local_extraction_items(
-            "challenge",
-            &local.challenges,
-            &seed_context.challenges,
-        );
+        local.challenges =
+            merge_local_extraction_items("challenge", &local.challenges, &seed_context.challenges);
         local.insights =
             merge_local_extraction_items("insight", &local.insights, &seed_context.insights);
     }
@@ -4401,7 +4617,7 @@ async fn extract_map_unit(
 
     let should_try_pipeline = should_try_pipeline_for_paper_type(paper_type);
     let pipeline_summary = if should_try_pipeline {
-        extract_pipeline_summary(
+        match extract_pipeline_summary(
             unit,
             document,
             &local,
@@ -4409,14 +4625,29 @@ async fn extract_map_unit(
             extract_pipeline_summary_model,
         )
         .await
-        .unwrap_or_default()
+        {
+            Ok(summary) => summary,
+            Err(error) if is_strict_extraction_runtime(provider) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "pipeline_summarize failed for {} pages {}-{} ({}) with model '{}'",
+                        document.title,
+                        unit.page_start,
+                        unit.page_end,
+                        unit.heading,
+                        extract_pipeline_summary_model
+                    )
+                });
+            }
+            Err(_) => PipelineSummary::default(),
+        }
     } else {
         PipelineSummary::default()
     };
     diagnostics.pipeline_summary_empty = pipeline_summary.summary.trim().is_empty();
 
     let pipelines = if should_try_pipeline && !diagnostics.pipeline_summary_empty {
-        extract_pipeline_names(
+        match extract_pipeline_names(
             unit,
             document,
             &local,
@@ -4425,15 +4656,29 @@ async fn extract_map_unit(
             extract_pipeline_name_model,
         )
         .await
-        .unwrap_or_default()
-        .pipelines
+        {
+            Ok(extraction) => extraction.pipelines,
+            Err(error) if is_strict_extraction_runtime(provider) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "pipeline_name_extract failed for {} pages {}-{} ({}) with model '{}'",
+                        document.title,
+                        unit.page_start,
+                        unit.page_end,
+                        unit.heading,
+                        extract_pipeline_name_model
+                    )
+                });
+            }
+            Err(_) => Vec::new(),
+        }
     } else {
         Vec::new()
     };
     diagnostics.pipeline_name_empty = pipelines.is_empty();
     local.pipelines = pipelines;
 
-    let edge_candidates = extract_edge_items(
+    let edge_candidates = match extract_edge_items(
         unit,
         document,
         &local,
@@ -4441,8 +4686,23 @@ async fn extract_map_unit(
         provider,
         extract_edge_model,
     )
-        .await
-        .unwrap_or_default();
+    .await
+    {
+        Ok(edges) => edges,
+        Err(error) if is_strict_extraction_runtime(provider) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "edge_extract failed for {} pages {}-{} ({}) with model '{}'",
+                    document.title,
+                    unit.page_start,
+                    unit.page_end,
+                    unit.heading,
+                    extract_edge_model
+                )
+            });
+        }
+        Err(_) => EdgeExtraction::default(),
+    };
     diagnostics.edge_candidate_count = edge_candidates.task_pipeline_pairs.len()
         + edge_candidates.task_module_pairs.len()
         + edge_candidates.pipeline_module_pairs.len()
@@ -4469,8 +4729,8 @@ async fn extract_map_unit(
                 provider,
                 extract_edge_model,
             )
-                .await
-                .unwrap_or(edge_candidates.clone().into())
+            .await
+            .unwrap_or(edge_candidates.clone().into())
         }
         Err(_) => edge_candidates.clone().into(),
     };
@@ -4509,10 +4769,10 @@ async fn extract_candidate_with_fallback(
     provider: &ExtractionProviderRuntime,
     extract_fast_model: &str,
     extract_fallback_model: &str,
-) -> (CandidateExtraction, CandidatePhaseStatus) {
+) -> Result<(CandidateExtraction, CandidatePhaseStatus)> {
     match extract_candidate_items(unit, document, provider, extract_fast_model).await {
         Ok(candidate) if candidate.item_count() > 0 => {
-            (candidate, CandidatePhaseStatus::FastHit)
+            Ok((candidate, CandidatePhaseStatus::FastHit))
         }
         Ok(_) | Err(_) => match extract_candidate_items(
             unit,
@@ -4523,12 +4783,56 @@ async fn extract_candidate_with_fallback(
         .await
         {
             Ok(candidate) if candidate.item_count() > 0 => {
-                (candidate, CandidatePhaseStatus::FallbackSuccess)
+                Ok((candidate, CandidatePhaseStatus::FallbackSuccess))
             }
-            Ok(candidate) => (candidate, CandidatePhaseStatus::NoCandidate),
-            Err(_) => (CandidateExtraction::default(), CandidatePhaseStatus::DoubleFailure),
+            Ok(candidate) => {
+                if is_strict_extraction_runtime(provider) {
+                    let rescue = extract_candidate_items_recall_rescue(
+                        unit,
+                        document,
+                        provider,
+                        extract_fallback_model,
+                    )
+                    .await?;
+                    if rescue.item_count() > 0 {
+                        return Ok((rescue, CandidatePhaseStatus::FallbackSuccess));
+                    }
+                }
+                Ok((candidate, CandidatePhaseStatus::NoCandidate))
+            }
+            Err(error) => Err(error).with_context(|| {
+                format!(
+                    "candidate_extract failed for {} pages {}-{} ({}) after fast model '{}' and fallback model '{}'",
+                    document.title,
+                    unit.page_start,
+                    unit.page_end,
+                    unit.heading,
+                    extract_fast_model,
+                    extract_fallback_model
+                )
+            }),
         },
     }
+}
+
+async fn extract_candidate_items_recall_rescue(
+    unit: &MapUnit,
+    document: &FileDocument,
+    provider: &ExtractionProviderRuntime,
+    model: &str,
+) -> Result<CandidateExtraction> {
+    let prompt = format!(
+        "Extract a small set of useful research-memory concepts from this paper excerpt.\n\nReturn exactly one JSON object with these keys: tasks, modules, challenges, insights.\nEach key must be an array of objects with: label, summary, confidence, evidenceSnippet, kindRationale.\n\nUse these rules:\n- Return 1-3 tasks if the excerpt states what the paper studies or surveys.\n- Return 1-5 modules for concrete methods, model families, data modalities, experimental instruments, or named analytic techniques discussed in the excerpt.\n- Return 1-5 challenges for explicit limitations, failure modes, assumptions, or open problems.\n- Return 1-5 insights for explicit solution ideas, invariance assumptions, causal principles, or interpretation principles.\n- Do not use placeholders like task/module/challenge/insight.\n- Do not invent terms beyond the excerpt.\n- Keep labels short noun phrases.\n- evidenceSnippet must quote or closely paraphrase the supporting local sentence.\n\nPaper title: {title}\nHeading: {heading}\nPages: {start_page}-{end_page}\n\nExcerpt:\n{content}",
+        title = document.title,
+        heading = unit.heading,
+        start_page = unit.page_start,
+        end_page = unit.page_end,
+        content = truncate_chars(&unit.content, MAP_PROMPT_CHAR_LIMIT),
+    );
+    let value = run_json_generate(provider, model, &prompt).await?;
+    Ok(sanitize_candidate_extraction(serde_json::from_value(
+        value,
+    )?))
 }
 
 fn candidate_extraction_schema() -> serde_json::Value {
@@ -4629,7 +4933,7 @@ async fn extract_candidate_items(
 ) -> Result<CandidateExtraction> {
     let prompt_content = truncate_chars(&unit.content, MAP_PROMPT_CHAR_LIMIT);
     let prompt = format!(
-        "你会收到一段学术论文片段。请提取该片段中有明确上下文支持的局部 Task、Module、Challenge、Insight，返回 JSON。\n\n排他性定义：\n1. Task = 研究任务、目标、问题设定，不是具体实现手段。例如“单细胞因果推断”“空间转录组去卷积”可视为 Task。\n2. Module = 具体算法组件、子模块、机制或可替换部件，不是泛泛研究方向。像“graph neural network encoder”“cross-attention fusion block”是 Module；“foundation model for biology”“causal machine learning”不是 Module。\n3. Challenge = 当前方法或任务中的技术困难、失效点、瓶颈。\n4. Insight = 针对 Challenge 的高层解决思想、关键观察或设计原则，不是完整实现细节。\n\n规则：\n1. 每个数组最多返回 {max_items} 项。\n2. 不要求术语逐字出现，只要该片段能明确支持该局部概念即可。\n3. 允许从摘要、引言、方法段落中做保守抽象，但不要编造超出片段的信息。\n4. 每个条目都必须带简短 evidenceSnippet，优先直接引用或贴近原句改写。\n5. 每个条目都必须带 kindRationale，简要解释为什么它属于该 kind。\n6. 如果该片段没有某类概念，就返回空数组。\n7. 不要输出数组以外的字段。\n\n论文标题：{title}\n片段标题：{heading}\n页码：{start_page}-{end_page}\n\n片段内容：\n{content}",
+        "你会收到一段学术论文片段。请提取该片段中有明确上下文支持的局部 Task、Module、Challenge、Insight，返回 JSON。\n\n排他性定义：\n1. Task = 论文正在研究、综述或评估的任务/目标/问题设定，不是泛泛应用收益。例如“causal machine learning for single-cell genomics”“predict perturbation effects in single-cell data”可视为 Task。\n2. Module = 片段明确讨论的方法组件、模型族、数据模态、实验技术、分析技术或可替换机制；综述论文中可包括被讨论的技术模块。例如“large-scale perturbation screens”“causal models”“dimensionality reduction”“trajectory inference”可作为 Module；但“biology”“machine learning”这种裸词不是 Module。\n3. Challenge = 当前方法、数据或建模任务中的技术困难、失效点、假设风险、瓶颈或开放问题。\n4. Insight = 针对 Challenge 的高层解决思想、关键观察、建模原则或因果假设；不是完整实现细节。\n\n规则：\n1. 每个数组最多返回 {max_items} 项。\n2. 摘要、引言、Perspective/Review 片段也要抽取，只要证据明确即可；不要因为不是方法论文就全部返回空。\n3. 允许做局部抽象，但必须锚定片段原文，不要编造超出片段的信息。\n4. 每个条目都必须带简短 evidenceSnippet，优先直接引用或贴近原句改写。\n5. 每个条目都必须带 kindRationale，简要解释为什么它属于该 kind。\n6. 如果该片段确实没有某类概念，就返回空数组；但不要过度保守。\n7. 不要输出数组以外的字段。\n\n论文标题：{title}\n片段标题：{heading}\n页码：{start_page}-{end_page}\n\n片段内容：\n{content}",
         max_items = MAP_MAX_ITEMS_PER_KIND,
         title = document.title,
         heading = unit.heading,
@@ -4640,7 +4944,7 @@ async fn extract_candidate_items(
     let value = run_structured_json_with_fallback(
         provider,
         model,
-        "You extract evidence-backed local research concepts from paper excerpts. Be conservative but not overly literal; summary and intro sections may require brief abstraction grounded in the text.",
+        "You extract evidence-backed local research concepts from paper excerpts. Prefer useful recall over empty output when the excerpt clearly states a task, method family, data modality, challenge, or insight. Keep every item grounded in local evidence.",
         &prompt,
         candidate_extraction_schema(),
     )
@@ -4833,7 +5137,10 @@ fn edge_evidence_score(edge: &LocalExtractionEdge) -> usize {
     score
 }
 
-fn top_task_module_edges(mut edges: Vec<LocalExtractionEdge>, max_items: usize) -> Vec<LocalExtractionEdge> {
+fn top_task_module_edges(
+    mut edges: Vec<LocalExtractionEdge>,
+    max_items: usize,
+) -> Vec<LocalExtractionEdge> {
     edges.sort_by(|left, right| {
         edge_evidence_score(right)
             .cmp(&edge_evidence_score(left))
@@ -4887,7 +5194,10 @@ fn heuristic_edge_fallback(
         }
     }
 
-    if challenge_insight_pairs.is_empty() && !candidate.challenges.is_empty() && !candidate.insights.is_empty() {
+    if challenge_insight_pairs.is_empty()
+        && !candidate.challenges.is_empty()
+        && !candidate.insights.is_empty()
+    {
         for (challenge, insight) in candidate
             .challenges
             .iter()
@@ -4918,11 +5228,14 @@ fn heuristic_edge_fallback(
                 to_label: insight.label.clone(),
                 confidence: Some(0.56),
                 evidence_snippet: Some(truncate_chars(&snippet, 220)),
-                });
+            });
         }
     }
 
-    if challenge_insight_pairs.is_empty() && !candidate.challenges.is_empty() && !candidate.insights.is_empty() {
+    if challenge_insight_pairs.is_empty()
+        && !candidate.challenges.is_empty()
+        && !candidate.insights.is_empty()
+    {
         for (challenge, insight) in candidate
             .challenges
             .iter()
@@ -4995,7 +5308,10 @@ fn heuristic_edge_fallback(
             }
         }
 
-        if task_module_pairs.is_empty() && !candidate.tasks.is_empty() && !candidate.modules.is_empty() {
+        if task_module_pairs.is_empty()
+            && !candidate.tasks.is_empty()
+            && !candidate.modules.is_empty()
+        {
             let task = &candidate.tasks[0];
             for module in candidate.modules.iter().take(2) {
                 let snippet = module
@@ -5020,7 +5336,10 @@ fn heuristic_edge_fallback(
     }
 }
 
-fn sanitize_local_extraction_items(kind: &str, items: Vec<LocalExtractionItem>) -> Vec<LocalExtractionItem> {
+fn sanitize_local_extraction_items(
+    kind: &str,
+    items: Vec<LocalExtractionItem>,
+) -> Vec<LocalExtractionItem> {
     let mut seen = HashSet::new();
     let mut sanitized = Vec::new();
     for mut item in items {
@@ -5037,7 +5356,14 @@ fn sanitize_local_extraction_items(kind: &str, items: Vec<LocalExtractionItem>) 
         }
         if matches!(
             normalized.as_str(),
-            "task" | "tasks" | "module" | "modules" | "challenge" | "challenges" | "insight" | "insights"
+            "task"
+                | "tasks"
+                | "module"
+                | "modules"
+                | "challenge"
+                | "challenges"
+                | "insight"
+                | "insights"
         ) {
             continue;
         }
@@ -5075,10 +5401,7 @@ fn resolve_candidate_kind_conflicts(
             if normalized.is_empty() {
                 continue;
             }
-            label_to_kinds
-                .entry(normalized)
-                .or_default()
-                .insert(kind);
+            label_to_kinds.entry(normalized).or_default().insert(kind);
         }
     }
 
@@ -5088,7 +5411,8 @@ fn resolve_candidate_kind_conflicts(
         .collect::<HashSet<_>>();
 
     let filter_items = |items: Vec<LocalExtractionItem>| {
-        items.into_iter()
+        items
+            .into_iter()
             .filter(|item| !conflicted.contains(&normalize_label(&item.label)))
             .collect::<Vec<_>>()
     };
@@ -5113,7 +5437,7 @@ async fn extract_pipeline_summary(
 ) -> Result<PipelineSummary> {
     let prompt_content = truncate_chars(&unit.content, MAP_PROMPT_CHAR_LIMIT);
     let prompt = format!(
-        "你会收到一段论文片段，以及已经抽出的候选节点。请先用 2-4 句总结当前切片的方法论骨架，输出 pipeline summary，而不是直接命名实体。\n\n规则：\n1. summary 只描述当前切片能支持的方法骨架。\n2. summary 要说明任务如何经过若干关键步骤或机制走到输出。\n3. 不要输出 pipeline 列表，不要输出边。\n4. 若片段不足以稳定总结方法骨架，summary 置空。\n5. 只返回 JSON。\n\n论文标题：{title}\n片段标题：{heading}\n页码：{start_page}-{end_page}\n候选 Task：{tasks}\n候选 Module：{modules}\n候选 Challenge：{challenges}\n候选 Insight：{insights}\n\n片段内容：\n{content}",
+        "你会收到一段论文片段，以及已经抽出的候选节点。请先用 2-4 句总结当前切片的方法论/概念工作流骨架，输出 pipeline summary，而不是直接命名实体。\n\n规则：\n1. 对 method 论文，summary 描述作者方法如何从输入经过关键模块到输出。\n2. 对 review / survey / perspective 论文，允许总结片段明确讨论的概念性技术路线，例如数据来源 -> 建模范式 -> 解决的挑战；但必须标明这是 conceptual workflow，不要伪装成作者提出的新算法。\n3. summary 要说明 Task 如何连接到 Module / Challenge / Insight。\n4. 不要输出 pipeline 列表，不要输出边。\n5. 若片段完全没有技术路线或概念流程，summary 置空。\n6. 只返回 JSON。\n\n论文标题：{title}\n片段标题：{heading}\n页码：{start_page}-{end_page}\n候选 Task：{tasks}\n候选 Module：{modules}\n候选 Challenge：{challenges}\n候选 Insight：{insights}\n\n片段内容：\n{content}",
         title = document.title,
         heading = unit.heading,
         start_page = unit.page_start,
@@ -5127,7 +5451,7 @@ async fn extract_pipeline_summary(
     let value = run_structured_json_with_fallback(
         provider,
         model,
-        "You summarize only the supported local method skeleton from a paper excerpt. Be conservative and keep the summary short.",
+        "You summarize the supported local method skeleton or, for review/perspective excerpts, the explicit conceptual workflow. Keep it short and evidence-grounded; do not invent a new algorithm.",
         &prompt,
         pipeline_summary_schema(),
     )
@@ -5144,7 +5468,7 @@ async fn extract_pipeline_names(
     model: &str,
 ) -> Result<PipelineExtraction> {
     let prompt = format!(
-        "你会收到一段论文片段的 pipeline_summary，以及候选节点。请从 summary 中提取最多 {max_items} 个标准化 pipeline 名称。\n\n规则：\n1. pipeline_name 必须能从 summary 中直接归纳出来，不能重新发散命名。\n2. pipeline 是方法路线、框架骨架，不是具体 Module，也不是泛泛 Task。\n3. 每个 pipeline 都要带 evidenceSnippet 与 kindRationale。\n4. 如果 summary 无法支持稳定命名，返回空数组。\n5. 只返回 JSON。\n\n论文标题：{title}\n片段标题：{heading}\n页码：{start_page}-{end_page}\n候选 Task：{tasks}\n候选 Module：{modules}\n\npipeline_summary：\n{summary}\n\n原始片段锚点：\n{content}",
+        "你会收到一段论文片段的 pipeline_summary，以及候选节点。请从 summary 中提取最多 {max_items} 个标准化 pipeline 名称。\n\n规则：\n1. pipeline_name 必须能从 summary 中直接归纳出来，不能重新发散命名。\n2. pipeline 可以是作者方法路线，也可以是 review/perspective 片段明确呈现的 conceptual workflow；后者名称中可以包含“conceptual workflow / framework”。\n3. pipeline 不是单个具体 Module，也不是过泛 Task；应表达多个概念/模块之间的技术路线。\n4. 每个 pipeline 都要带 evidenceSnippet 与 kindRationale。\n5. 如果 summary 无法支持稳定命名，返回空数组。\n6. 只返回 JSON。\n\n论文标题：{title}\n片段标题：{heading}\n页码：{start_page}-{end_page}\n候选 Task：{tasks}\n候选 Module：{modules}\n\npipeline_summary：\n{summary}\n\n原始片段锚点：\n{content}",
         max_items = MAP_MAX_ITEMS_PER_KIND,
         title = document.title,
         heading = unit.heading,
@@ -5158,7 +5482,7 @@ async fn extract_pipeline_names(
     let value = run_structured_json_with_fallback(
         provider,
         model,
-        "You derive standardized pipeline names from a controlled pipeline summary. Keep names stable, concise, and evidence-backed.",
+        "You derive standardized pipeline or conceptual workflow names from a controlled summary. Keep names stable, concise, and evidence-backed; do not invent unsupported algorithms.",
         &prompt,
         pipeline_name_extraction_schema(),
     )
@@ -5181,7 +5505,7 @@ async fn extract_edge_items(
 ) -> Result<EdgeExtraction> {
     let prompt_content = truncate_chars(&unit.content, MAP_PROMPT_CHAR_LIMIT);
     let prompt = format!(
-        "你会收到一段论文片段，以及已经确认的候选节点。请只补全片段内部明确支持的 task->pipeline、task->module、pipeline->module、challenge->insight 四种关系。\n\n规则：\n1. 不要创造新节点；只能在给定候选标签之间连边。\n2. 对 review / survey / perspective 风格论文，如果缺少稳定 pipeline，可直接抽 task->module 与 challenge->insight。\n3. 每条边必须有当前片段中的直接证据支持，并带 evidenceSnippet。\n4. 如果某类边没有足够证据，返回空数组。\n5. 只返回 JSON。\n\n论文标题：{title}\n片段标题：{heading}\n页码：{start_page}-{end_page}\n候选 Task：{tasks}\n候选 Pipeline：{pipelines}\n候选 Module：{modules}\n候选 Challenge：{challenges}\n候选 Insight：{insights}\n\n片段内容：\n{content}",
+        "你会收到一段论文片段，以及已经确认的候选节点。请补全片段内部支持的 task->pipeline、task->module、pipeline->module、challenge->insight 四种关系。\n\n规则：\n1. 不要创造新节点；只能在给定候选标签之间连边。\n2. 对 method 论文，优先抽作者方法的 task->pipeline->module。\n3. 对 review / survey / perspective 论文，允许抽 conceptual workflow 的 task->pipeline、pipeline->module，也允许直接抽 task->module 与 challenge->insight；不要因为 pipeline 是概念性路线就全部置空。\n4. evidenceSnippet 可以是同时讨论两端节点的局部句子，也可以是连续相邻句的简短合并；但必须来自当前片段。\n5. 如果某类边没有局部支持，返回空数组；不要编造节点。\n6. 只返回 JSON。\n\n论文标题：{title}\n片段标题：{heading}\n页码：{start_page}-{end_page}\n候选 Task：{tasks}\n候选 Pipeline：{pipelines}\n候选 Module：{modules}\n候选 Challenge：{challenges}\n候选 Insight：{insights}\n\n片段内容：\n{content}",
         title = document.title,
         heading = unit.heading,
         start_page = unit.page_start,
@@ -5197,18 +5521,16 @@ async fn extract_edge_items(
     let value = run_structured_json_with_fallback(
         provider,
         model,
-        "You extract only supported method/problem edges between provided nodes. Never invent unsupported links.",
+        "You extract supported method/problem edges between provided nodes. For review or perspective excerpts, conceptual workflow edges are allowed when explicitly grounded in the excerpt. Never invent new nodes.",
         &prompt,
         edge_extraction_schema(),
     )
     .await;
     match value {
-        Ok(value) => {
-            match serde_json::from_value::<EdgeExtraction>(value) {
-                Ok(extracted) => Ok(merge_edge_extractions(extracted, fallback)),
-                Err(_) => Ok(fallback),
-            }
-        }
+        Ok(value) => match serde_json::from_value::<EdgeExtraction>(value) {
+            Ok(extracted) => Ok(merge_edge_extractions(extracted, fallback)),
+            Err(_) => Ok(fallback),
+        },
         Err(_) => Ok(fallback),
     }
 }
@@ -5308,6 +5630,31 @@ async fn run_structured_json(
             parse_structured_output(raw, &schema)
         }
         ExtractionProviderRuntime::OpenAiCompatible { base_url, api_key } => {
+            if is_deepseek_provider(base_url) {
+                let raw = run_openai_compatible_chat(
+                    base_url,
+                    api_key.as_deref(),
+                    model,
+                    vec![
+                        json!({
+                            "role": "system",
+                            "content": format!(
+                                "{system_prompt}\n\nReturn only one valid JSON object. Do not include Markdown, code fences, prose, or explanations."
+                            )
+                        }),
+                        json!({
+                            "role": "user",
+                            "content": format!(
+                                "{user_prompt}\n\n严格要求：只输出一个 JSON 对象，不要输出解释、前言、Markdown 或代码块。"
+                            )
+                        }),
+                    ],
+                    0.1,
+                    None,
+                )
+                .await?;
+                return parse_structured_output(&raw, &schema);
+            }
             let raw = run_openai_compatible_chat(
                 base_url,
                 api_key.as_deref(),
@@ -5363,6 +5710,23 @@ async fn run_json_generate(
             parse_json_like_output(raw)
         }
         ExtractionProviderRuntime::OpenAiCompatible { base_url, api_key } => {
+            if is_deepseek_provider(base_url) {
+                let raw = run_openai_compatible_chat(
+                    base_url,
+                    api_key.as_deref(),
+                    model,
+                    vec![json!({
+                        "role": "user",
+                        "content": format!(
+                            "{prompt}\n\nReturn only one valid JSON object. Do not include Markdown, code fences, prose, or explanations."
+                        )
+                    })],
+                    0.0,
+                    None,
+                )
+                .await?;
+                return parse_json_like_output(&raw);
+            }
             let raw = run_openai_compatible_chat(
                 base_url,
                 api_key.as_deref(),
@@ -5470,12 +5834,123 @@ fn normalize_extraction_value(
     let object = value
         .as_object_mut()
         .ok_or_else(|| anyhow!("Extraction output is not a JSON object"))?;
-    for (key, _) in properties {
+    for (key, property_schema) in properties {
         if !object.contains_key(key) {
-            object.insert(key.clone(), json!([]));
+            object.insert(key.clone(), default_value_for_schema(property_schema));
         }
     }
+    normalize_value_against_schema(&mut value, &schema);
     Ok(value)
+}
+
+fn normalize_value_against_schema(value: &mut serde_json::Value, schema: &serde_json::Value) {
+    if schema_accepts_string(schema) && !value.is_string() && !value.is_null() {
+        if let Some(text) = value_to_compact_text(value) {
+            *value = json!(text);
+        } else if schema_accepts_null(schema) {
+            *value = serde_json::Value::Null;
+        } else {
+            *value = json!("");
+        }
+        return;
+    }
+    if schema_accepts_array(schema) {
+        if let (Some(items_schema), Some(items)) = (schema.get("items"), value.as_array_mut()) {
+            for item in items {
+                normalize_value_against_schema(item, items_schema);
+            }
+        }
+        return;
+    }
+    if schema_accepts_object(schema) {
+        if let (Some(properties), Some(object)) = (
+            schema
+                .get("properties")
+                .and_then(|properties| properties.as_object()),
+            value.as_object_mut(),
+        ) {
+            for (key, property_schema) in properties {
+                if let Some(child) = object.get_mut(key) {
+                    normalize_value_against_schema(child, property_schema);
+                }
+            }
+        }
+    }
+}
+
+fn schema_accepts_type(schema: &serde_json::Value, expected: &str) -> bool {
+    match schema.get("type") {
+        Some(serde_json::Value::String(value)) => value == expected,
+        Some(serde_json::Value::Array(values)) => values
+            .iter()
+            .any(|value| value.as_str().is_some_and(|value| value == expected)),
+        _ => false,
+    }
+}
+
+fn schema_accepts_string(schema: &serde_json::Value) -> bool {
+    schema_accepts_type(schema, "string")
+}
+
+fn schema_accepts_array(schema: &serde_json::Value) -> bool {
+    schema_accepts_type(schema, "array")
+}
+
+fn schema_accepts_object(schema: &serde_json::Value) -> bool {
+    schema_accepts_type(schema, "object")
+}
+
+fn schema_accepts_null(schema: &serde_json::Value) -> bool {
+    schema_accepts_type(schema, "null")
+}
+
+fn default_value_for_schema(schema: &serde_json::Value) -> serde_json::Value {
+    if schema_accepts_array(schema) {
+        json!([])
+    } else if schema_accepts_string(schema) && !schema_accepts_null(schema) {
+        json!("")
+    } else {
+        serde_json::Value::Null
+    }
+}
+
+fn value_to_compact_text(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(text) => {
+            let trimmed = text.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        }
+        serde_json::Value::Number(number) => Some(number.to_string()),
+        serde_json::Value::Bool(flag) => Some(flag.to_string()),
+        serde_json::Value::Array(items) => {
+            let text = items
+                .iter()
+                .filter_map(value_to_compact_text)
+                .filter(|text| !text.trim().is_empty())
+                .collect::<Vec<_>>()
+                .join("; ");
+            (!text.trim().is_empty()).then_some(text)
+        }
+        serde_json::Value::Object(object) => {
+            for key in [
+                "summary",
+                "text",
+                "content",
+                "description",
+                "label",
+                "evidenceSnippet",
+                "kindRationale",
+            ] {
+                if let Some(text) = object.get(key).and_then(value_to_compact_text) {
+                    if !text.trim().is_empty() {
+                        return Some(text);
+                    }
+                }
+            }
+            serde_json::to_string(value).ok()
+        }
+        serde_json::Value::Null => None,
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -5550,7 +6025,10 @@ fn resolve_extraction_provider_runtime(
             }
             Ok(ExtractionProviderRuntime::OpenAiCompatible {
                 base_url,
-                api_key: settings.api_key.clone().filter(|value| !value.trim().is_empty()),
+                api_key: settings
+                    .api_key
+                    .clone()
+                    .filter(|value| !value.trim().is_empty()),
             })
         }
     }
@@ -5578,6 +6056,18 @@ fn openai_chat_completions_url(base_url: &str) -> String {
     }
 }
 
+fn is_deepseek_provider(base_url: &str) -> bool {
+    base_url.to_ascii_lowercase().contains("deepseek")
+}
+
+fn is_strict_extraction_runtime(provider: &ExtractionProviderRuntime) -> bool {
+    matches!(
+        provider,
+        ExtractionProviderRuntime::OpenAiCompatible { base_url, .. }
+            if is_deepseek_provider(base_url)
+    )
+}
+
 async fn run_openai_compatible_chat(
     base_url: &str,
     api_key: Option<&str>,
@@ -5589,11 +6079,15 @@ async fn run_openai_compatible_chat(
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(OLLAMA_REQUEST_TIMEOUT_SECS))
         .build()?;
+    let is_deepseek_reasoner =
+        is_deepseek_provider(base_url) && model.to_ascii_lowercase().contains("deepseek-reasoner");
     let mut payload = json!({
         "model": model,
         "messages": messages,
-        "temperature": temperature,
     });
+    if !is_deepseek_reasoner {
+        payload["temperature"] = json!(temperature);
+    }
     if let Some(response_format) = response_format {
         payload["response_format"] = response_format;
     }
@@ -5605,9 +6099,11 @@ async fn run_openai_compatible_chat(
     }
     let res = request.json(&payload).send().await?;
     if !res.status().is_success() {
+        let status = res.status();
+        let body = res.text().await.unwrap_or_default();
+        let body = truncate_chars(body.trim(), 1200);
         return Err(anyhow!(
-            "OpenAI-compatible chat failed: {}",
-            res.status()
+            "OpenAI-compatible chat failed: {status}. Response body: {body}"
         ));
     }
     let value: serde_json::Value = res.json().await?;
@@ -5620,7 +6116,10 @@ async fn run_openai_compatible_chat(
     if let Some(content) = message.get("content").and_then(|content| content.as_str()) {
         return Ok(content.trim().to_string());
     }
-    if let Some(parts) = message.get("content").and_then(|content| content.as_array()) {
+    if let Some(parts) = message
+        .get("content")
+        .and_then(|content| content.as_array())
+    {
         let text = parts
             .iter()
             .filter_map(|part| {
@@ -5663,15 +6162,8 @@ async fn run_chat_text(
                 .to_string())
         }
         ExtractionProviderRuntime::OpenAiCompatible { base_url, api_key } => {
-            run_openai_compatible_chat(
-                base_url,
-                api_key.as_deref(),
-                model,
-                messages,
-                0.1,
-                None,
-            )
-            .await
+            run_openai_compatible_chat(base_url, api_key.as_deref(), model, messages, 0.1, None)
+                .await
         }
     }
 }
@@ -5687,7 +6179,12 @@ async fn resolve_embedding_model(preferred: Option<&str>) -> Result<String> {
             candidates.push(preferred.trim().to_string());
         }
     }
-    for candidate in ["qwen3-embedding", "embeddinggemma", "nomic-embed-text", "mxbai-embed-large"] {
+    for candidate in [
+        "qwen3-embedding",
+        "embeddinggemma",
+        "nomic-embed-text",
+        "mxbai-embed-large",
+    ] {
         if !candidates.iter().any(|value| value == candidate) {
             candidates.push(candidate.to_string());
         }
@@ -5724,11 +6221,17 @@ async fn embed_text(text: &str, model: &str) -> Result<Vec<f32>> {
 fn parse_embedding_json(json: &serde_json::Value) -> Result<Vec<f32>> {
     if let Some(array) = json.get("embeddings").and_then(|value| value.as_array()) {
         if let Some(first) = array.first().and_then(|value| value.as_array()) {
-            return Ok(first.iter().map(|value| value.as_f64().unwrap_or(0.0) as f32).collect());
+            return Ok(first
+                .iter()
+                .map(|value| value.as_f64().unwrap_or(0.0) as f32)
+                .collect());
         }
     }
     if let Some(array) = json.get("embedding").and_then(|value| value.as_array()) {
-        return Ok(array.iter().map(|value| value.as_f64().unwrap_or(0.0) as f32).collect());
+        return Ok(array
+            .iter()
+            .map(|value| value.as_f64().unwrap_or(0.0) as f32)
+            .collect());
     }
     Err(anyhow!("Embedding response missing vector payload"))
 }
@@ -5790,7 +6293,11 @@ fn load_concept_rows(conn: &SqliteConnection) -> Result<Vec<ConceptRow>> {
             node_id: row.get(0)?,
             kind: row.get(1)?,
             label: label.clone(),
-            text: if description.trim().is_empty() { label } else { format!("{}: {}", label, description) },
+            text: if description.trim().is_empty() {
+                label
+            } else {
+                format!("{}: {}", label, description)
+            },
         })
     })?;
     let mut result = Vec::new();
@@ -5916,7 +6423,9 @@ fn materialize_rule2_ideas(conn: &SqliteConnection) -> Result<()> {
          GROUP BY t.node_id, t.label
          HAVING COUNT(DISTINCT e.to_node_id) > COUNT(DISTINCT mp.module_node_id)",
     )?;
-    let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
     for row in rows {
         let (task_node_id, task_label) = row?;
         let evidence = load_node_evidence(conn, &task_node_id, 3)?;
@@ -5951,7 +6460,8 @@ async fn materialize_rule3_ideas(app: &AppHandle, embedding_model: &str) -> Resu
             Ok(vector) if !vector.is_empty() => vector,
             _ => continue,
         };
-        let modules = search_module_concepts_by_vector(app, &vector, RULE3_MODULE_SEARCH_LIMIT).await?;
+        let modules =
+            search_module_concepts_by_vector(app, &vector, RULE3_MODULE_SEARCH_LIMIT).await?;
         if modules.is_empty() {
             continue;
         }
@@ -6061,7 +6571,10 @@ fn load_rule3_challenges(conn: &SqliteConnection, limit: usize) -> Result<Vec<Ru
     Ok(challenges)
 }
 
-fn load_rule3_module_paths(conn: &SqliteConnection, module_node_id: &str) -> Result<Vec<Rule3ModulePath>> {
+fn load_rule3_module_paths(
+    conn: &SqliteConnection,
+    module_node_id: &str,
+) -> Result<Vec<Rule3ModulePath>> {
     let mut stmt = conn.prepare(
         "SELECT mp.task_node_id, task_node.label, mp.pipeline_node_id, pipeline_node.label
          FROM method_paths mp
@@ -6091,8 +6604,9 @@ fn paper_concepts(conn: &SqliteConnection, paper_id: &str) -> Result<HashSet<Str
          FROM extraction_candidates
          WHERE paper_id = ?1 AND review_status = ?2",
     )?;
-    let rows =
-        stmt.query_map(params![paper_id, APPROVED_STATUS], |row| row.get::<_, Option<String>>(0))?;
+    let rows = stmt.query_map(params![paper_id, APPROVED_STATUS], |row| {
+        row.get::<_, Option<String>>(0)
+    })?;
     let mut set = HashSet::new();
     for row in rows {
         if let Some(value) = row? {
@@ -6104,7 +6618,12 @@ fn paper_concepts(conn: &SqliteConnection, paper_id: &str) -> Result<HashSet<Str
     Ok(set)
 }
 
-fn load_compare_evidence(conn: &SqliteConnection, left_paper_id: &str, right_paper_id: &str, limit: usize) -> Result<Vec<EvidenceRef>> {
+fn load_compare_evidence(
+    conn: &SqliteConnection,
+    left_paper_id: &str,
+    right_paper_id: &str,
+    limit: usize,
+) -> Result<Vec<EvidenceRef>> {
     let mut stmt = conn.prepare(
         "SELECT paper_id, page_start, page_end, chunk_id, snippet, source_type
          FROM evidence_refs
@@ -6112,16 +6631,19 @@ fn load_compare_evidence(conn: &SqliteConnection, left_paper_id: &str, right_pap
          ORDER BY page_start ASC
          LIMIT ?3",
     )?;
-    let rows = stmt.query_map(params![left_paper_id, right_paper_id, limit as i64], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, i64>(1)?,
-            row.get::<_, i64>(2)?,
-            row.get::<_, Option<String>>(3)?,
-            row.get::<_, String>(4)?,
-            row.get::<_, String>(5)?,
-        ))
-    })?;
+    let rows = stmt.query_map(
+        params![left_paper_id, right_paper_id, limit as i64],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+            ))
+        },
+    )?;
     let mut evidence = Vec::new();
     for row in rows {
         let (paper_id, page_start, page_end, chunk_id, snippet, source_type) = row?;
@@ -6144,7 +6666,11 @@ fn load_compare_evidence(conn: &SqliteConnection, left_paper_id: &str, right_pap
     Ok(evidence)
 }
 
-fn load_node_evidence(conn: &SqliteConnection, node_id: &str, limit: usize) -> Result<Vec<EvidenceRef>> {
+fn load_node_evidence(
+    conn: &SqliteConnection,
+    node_id: &str,
+    limit: usize,
+) -> Result<Vec<EvidenceRef>> {
     let mut stmt = conn.prepare(
         "SELECT paper_id, page_start, page_end, chunk_id, snippet, source_type
          FROM evidence_refs
@@ -6184,7 +6710,11 @@ fn load_node_evidence(conn: &SqliteConnection, node_id: &str, limit: usize) -> R
     Ok(evidence)
 }
 
-fn load_edge_evidence(conn: &SqliteConnection, edge_id: &str, limit: usize) -> Result<Vec<EvidenceRef>> {
+fn load_edge_evidence(
+    conn: &SqliteConnection,
+    edge_id: &str,
+    limit: usize,
+) -> Result<Vec<EvidenceRef>> {
     let mut stmt = conn.prepare(
         "SELECT paper_id, page_start, page_end, chunk_id, snippet, source_type
          FROM evidence_refs
@@ -6292,7 +6822,11 @@ fn load_adjacent_nodes(
     Ok(adjacent)
 }
 
-fn related_graph_nodes_for_paper(conn: &SqliteConnection, paper_id: &str, limit: usize) -> Result<Vec<String>> {
+fn related_graph_nodes_for_paper(
+    conn: &SqliteConnection,
+    paper_id: &str,
+    limit: usize,
+) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
         "SELECT DISTINCT COALESCE(label, from_label, to_label)
          FROM extraction_candidates
@@ -6350,8 +6884,7 @@ fn search_chunks_keyword(
          JOIN papers p ON p.paper_id = c.paper_id
          WHERE chunk_fts MATCH ?1",
     );
-    let mut params_values: Vec<rusqlite::types::Value> =
-        vec![rusqlite::types::Value::from(tokens)];
+    let mut params_values: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::from(tokens)];
     if let Some(path) = scope.path {
         sql.push_str(" AND p.path = ?");
         sql.push_str(&(params_values.len() + 1).to_string());
@@ -6386,7 +6919,8 @@ fn search_chunks_keyword(
             page_end: row.get(5)?,
             snippet: truncate_chars(&row.get::<_, String>(6)?, 420),
             score: 0.68,
-            related_graph_nodes: related_graph_nodes_for_paper(conn, &paper_id, 6).unwrap_or_default(),
+            related_graph_nodes: related_graph_nodes_for_paper(conn, &paper_id, 6)
+                .unwrap_or_default(),
         })
     })?;
     let mut hits = Vec::new();
@@ -6400,7 +6934,10 @@ async fn collect_documents(path: &str) -> Result<Vec<FileDocument>> {
     let input = path.to_string();
     spawn_blocking(move || {
         let mut documents = Vec::new();
-        for entry in WalkDir::new(input).into_iter().filter_map(|entry| entry.ok()) {
+        for entry in WalkDir::new(input)
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+        {
             let file_path = entry.path();
             if !file_path.is_file() {
                 continue;
@@ -6485,13 +7022,23 @@ fn read_pdf_page_text(path: &Path, page_number: i64) -> Result<String> {
 fn detect_sections(document: &FileDocument) -> Vec<SectionRecord> {
     let mut sections = Vec::new();
     let mut current_heading = String::from("Document");
-    let mut current_start = document.pages.first().map(|page| page.page_number).unwrap_or(1);
+    let mut current_start = document
+        .pages
+        .first()
+        .map(|page| page.page_number)
+        .unwrap_or(1);
     let mut current_pages = Vec::new();
     for page in &document.pages {
         if let Some(heading) = detect_heading_candidate(&page.content) {
             if !current_pages.is_empty() {
                 sections.push(SectionRecord {
-                    section_id: stable_id("section", format!("{}:{}:{}", document.paper_id, current_heading, current_start)),
+                    section_id: stable_id(
+                        "section",
+                        format!(
+                            "{}:{}:{}",
+                            document.paper_id, current_heading, current_start
+                        ),
+                    ),
                     heading: current_heading.clone(),
                     start_page: current_start,
                     end_page: page.page_number - 1,
@@ -6506,14 +7053,28 @@ fn detect_sections(document: &FileDocument) -> Vec<SectionRecord> {
     }
     if !current_pages.is_empty() {
         sections.push(SectionRecord {
-            section_id: stable_id("section", format!("{}:{}:{}", document.paper_id, current_heading, current_start)),
+            section_id: stable_id(
+                "section",
+                format!(
+                    "{}:{}:{}",
+                    document.paper_id, current_heading, current_start
+                ),
+            ),
             heading: current_heading,
             start_page: current_start,
-            end_page: document.pages.last().map(|page| page.page_number).unwrap_or(current_start),
+            end_page: document
+                .pages
+                .last()
+                .map(|page| page.page_number)
+                .unwrap_or(current_start),
             content: current_pages.join("\n\n"),
         });
     }
-    if sections.len() <= 1 { Vec::new() } else { sections }
+    if sections.len() <= 1 {
+        Vec::new()
+    } else {
+        sections
+    }
 }
 
 fn build_map_units(document: &FileDocument, sections: &[SectionRecord]) -> Vec<MapUnit> {
@@ -6599,8 +7160,8 @@ fn build_map_units(document: &FileDocument, sections: &[SectionRecord]) -> Vec<M
             RELATION_FOCUSED_PAGE_WINDOW_CHAR_LIMIT,
             RELATION_FOCUSED_PAGE_WINDOW_OVERLAP,
         )
-            .into_iter()
-            .enumerate()
+        .into_iter()
+        .enumerate()
         {
             units.push(MapUnit {
                 unit_id: format!("page-window-{}-{}", page.page_number, chunk_index),
@@ -6728,8 +7289,12 @@ fn validate_graph_depth(conn: &SqliteConnection) -> Result<()> {
 }
 
 fn delete_paper(conn: &SqliteConnection, paper_id: &str, path: &str) -> Result<()> {
-    conn.execute("DELETE FROM chunk_fts WHERE paper_id = ?1", [paper_id]).ok();
-    conn.execute("DELETE FROM papers WHERE paper_id = ?1 OR path = ?2", params![paper_id, path])?;
+    conn.execute("DELETE FROM chunk_fts WHERE paper_id = ?1", [paper_id])
+        .ok();
+    conn.execute(
+        "DELETE FROM papers WHERE paper_id = ?1 OR path = ?2",
+        params![paper_id, path],
+    )?;
     Ok(())
 }
 
@@ -6799,7 +7364,11 @@ fn render_markdown_list(values: &[String]) -> String {
     if values.is_empty() {
         "- 无明显项".to_string()
     } else {
-        values.iter().map(|value| format!("- {}", value)).collect::<Vec<_>>().join("\n")
+        values
+            .iter()
+            .map(|value| format!("- {}", value))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
@@ -6813,7 +7382,11 @@ fn select_best_label(labels: &[String]) -> String {
     }
     counts
         .into_iter()
-        .max_by(|left, right| left.1.cmp(&right.1).then_with(|| right.0.len().cmp(&left.0.len())))
+        .max_by(|left, right| {
+            left.1
+                .cmp(&right.1)
+                .then_with(|| right.0.len().cmp(&left.0.len()))
+        })
         .map(|pair| pair.0)
         .unwrap_or_else(|| labels.first().cloned().unwrap_or_default())
 }
@@ -6869,7 +7442,9 @@ fn try_build_evidence_snippet(content: &str, query: &str) -> Option<String> {
             content,
             (position + needle.len() + 80).min(content.len()),
         );
-        return content.get(start..end).map(|snippet| snippet.replace('\n', " "));
+        return content
+            .get(start..end)
+            .map(|snippet| snippet.replace('\n', " "));
     }
     None
 }
@@ -6974,19 +7549,20 @@ fn looks_like_structured_heading(line: &str) -> bool {
     let uppercase_initials = rest
         .split_whitespace()
         .filter(|token| {
-            token.chars()
+            token
+                .chars()
                 .next()
                 .map(|ch| ch.is_ascii_uppercase())
                 .unwrap_or(false)
         })
         .count();
-    if uppercase_initials == 0 && !rest_lower.starts_with("abstract") && !rest_lower.starts_with("introduction") {
+    if uppercase_initials == 0
+        && !rest_lower.starts_with("abstract")
+        && !rest_lower.starts_with("introduction")
+    {
         return false;
     }
-    !is_noise_heading_line(&rest_lower)
-        && rest_lower
-            .chars()
-            .any(|ch| ch.is_ascii_alphabetic())
+    !is_noise_heading_line(&rest_lower) && rest_lower.chars().any(|ch| ch.is_ascii_alphabetic())
 }
 
 fn should_extract_map_unit(unit: &MapUnit) -> bool {
@@ -7075,9 +7651,30 @@ fn is_overly_generic_label(kind: &str, label: &str) -> bool {
             "general insight",
             "interventional trajectory generation potential",
         ],
-        "task" => &["task", "tasks", "analysis", "prediction task", "modeling", "inference"],
-        "module" => &["module", "modules", "framework", "model", "algorithm", "pipeline"],
-        "pipeline" => &["pipeline", "pipelines", "framework", "model", "algorithm", "method"],
+        "task" => &[
+            "task",
+            "tasks",
+            "analysis",
+            "prediction task",
+            "modeling",
+            "inference",
+        ],
+        "module" => &[
+            "module",
+            "modules",
+            "framework",
+            "model",
+            "algorithm",
+            "pipeline",
+        ],
+        "pipeline" => &[
+            "pipeline",
+            "pipelines",
+            "framework",
+            "model",
+            "algorithm",
+            "method",
+        ],
         _ => &[],
     };
     if generic_by_kind.iter().any(|item| normalized == *item) {
@@ -7322,7 +7919,12 @@ fn clamp_to_char_boundary_right(text: &str, mut index: usize) -> usize {
 fn sanitize_fts_query(query: &str) -> String {
     query
         .split_whitespace()
-        .map(|token| token.chars().filter(|ch| ch.is_alphanumeric() || *ch == '_' || *ch == '-').collect::<String>())
+        .map(|token| {
+            token
+                .chars()
+                .filter(|ch| ch.is_alphanumeric() || *ch == '_' || *ch == '-')
+                .collect::<String>()
+        })
         .filter(|token| !token.is_empty())
         .collect::<Vec<_>>()
         .join(" ")
@@ -7343,7 +7945,10 @@ fn is_allowed_edge(edge_type: &str, from_kind: &str, to_kind: &str) -> bool {
 }
 
 fn research_root(app: &AppHandle) -> Result<PathBuf> {
-    let app_data_dir = app.path().app_data_dir().map_err(|error| anyhow!(error.to_string()))?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| anyhow!(error.to_string()))?;
     let root = app_data_dir.join("research_memory");
     if !root.exists() {
         fs::create_dir_all(&root)?;
@@ -7352,7 +7957,10 @@ fn research_root(app: &AppHandle) -> Result<PathBuf> {
 }
 
 fn extraction_provider_settings_path(app: &AppHandle) -> Result<PathBuf> {
-    let app_data_dir = app.path().app_data_dir().map_err(|error| anyhow!(error.to_string()))?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| anyhow!(error.to_string()))?;
     if !app_data_dir.exists() {
         fs::create_dir_all(&app_data_dir)?;
     }
@@ -7362,31 +7970,28 @@ fn extraction_provider_settings_path(app: &AppHandle) -> Result<PathBuf> {
 fn default_cli_app_data_dir() -> Result<PathBuf> {
     #[cfg(target_os = "windows")]
     {
-        let appdata = std::env::var("APPDATA")
-            .map_err(|_| anyhow!("APPDATA is not set; cannot locate extraction provider settings"))?;
+        let appdata = std::env::var("APPDATA").map_err(|_| {
+            anyhow!("APPDATA is not set; cannot locate extraction provider settings")
+        })?;
         return Ok(PathBuf::from(appdata).join("com.xingyve.researchassistant"));
     }
     #[cfg(target_os = "macos")]
     {
         let home = std::env::var("HOME")
             .map_err(|_| anyhow!("HOME is not set; cannot locate extraction provider settings"))?;
-        return Ok(
-            PathBuf::from(home)
-                .join("Library")
-                .join("Application Support")
-                .join("com.xingyve.researchassistant"),
-        );
+        return Ok(PathBuf::from(home)
+            .join("Library")
+            .join("Application Support")
+            .join("com.xingyve.researchassistant"));
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         let home = std::env::var("HOME")
             .map_err(|_| anyhow!("HOME is not set; cannot locate extraction provider settings"))?;
-        return Ok(
-            PathBuf::from(home)
-                .join(".local")
-                .join("share")
-                .join("com.xingyve.researchassistant"),
-        );
+        return Ok(PathBuf::from(home)
+            .join(".local")
+            .join("share")
+            .join("com.xingyve.researchassistant"));
     }
 }
 
@@ -7437,12 +8042,20 @@ fn open_sqlite(app: &AppHandle) -> Result<SqliteConnection> {
 }
 
 fn stable_id(namespace: &str, value: impl AsRef<str>) -> String {
-    Uuid::new_v5(&Uuid::NAMESPACE_URL, format!("researchassistant:{}:{}", namespace, value.as_ref()).as_bytes()).to_string()
+    Uuid::new_v5(
+        &Uuid::NAMESPACE_URL,
+        format!("researchassistant:{}:{}", namespace, value.as_ref()).as_bytes(),
+    )
+    .to_string()
 }
 
 fn get_meta(conn: &SqliteConnection, key: &str) -> Result<Option<String>> {
     Ok(conn
-        .query_row("SELECT value FROM runtime_state WHERE key = ?1", [key], |row| row.get::<_, String>(0))
+        .query_row(
+            "SELECT value FROM runtime_state WHERE key = ?1",
+            [key],
+            |row| row.get::<_, String>(0),
+        )
         .optional()?)
 }
 
