@@ -9,6 +9,7 @@ import {
   ChevronUp,
   FilePlus,
   FolderOpen,
+  Inbox,
   LayoutGrid,
   Search,
   Settings,
@@ -51,11 +52,16 @@ const ResearchMemoryPanel = lazy(() =>
     default: module.ResearchMemoryPanel,
   })),
 );
+const MobileInboxPanel = lazy(() =>
+  import("./components/MobileInboxPanel").then((module) => ({
+    default: module.MobileInboxPanel,
+  })),
+);
 
 type InferenceMode = "single_mm" | "dual_pipeline";
 type IngestMode = "overwrite" | "incremental";
 type ExtractionRunMode = "fast" | "balanced";
-type SidebarTool = "workspace" | "notes" | "knowledge" | "cards";
+type SidebarTool = "workspace" | "notes" | "inbox" | "knowledge" | "cards";
 type StatusTone = "info" | "error";
 type AiRequirement = "chat" | "index" | "translate";
 type SettingsTab = "general" | "models" | "mobile";
@@ -2805,6 +2811,21 @@ function App() {
           ))}
         </div>
       </div>
+    ) : activeSidebarTool === "inbox" ? (
+      <Suspense
+        fallback={<div className="support-empty">Loading inbox...</div>}
+      >
+        <MobileInboxPanel
+          isActive={activeSidebarTool === "inbox"}
+          onStatus={(message, tone = "info", persistent = false) => {
+            if (tone === "error" || persistent) {
+              showPersistentStatus(message, tone);
+              return;
+            }
+            showTemporaryStatus(message, tone, 2600);
+          }}
+        />
+      </Suspense>
     ) : (
       <Suspense
         fallback={
@@ -3493,6 +3514,13 @@ function App() {
                   <StickyNote size={18} />
                 </button>
                 <button
+                  className={`rail-button ${activeSidebarTool === "inbox" && !isSidebarCollapsed ? "active" : ""}`}
+                  onClick={() => handleSidebarToolToggle("inbox")}
+                  title="Mobile Inbox"
+                >
+                  <Inbox size={18} />
+                </button>
+                <button
                   className={`rail-button ${activeSidebarTool === "knowledge" && !isSidebarCollapsed ? "active" : ""}`}
                   onClick={() => handleSidebarToolToggle("knowledge")}
                   title="Knowledge Search"
@@ -3525,9 +3553,11 @@ function App() {
                       ? "Workspace"
                       : activeSidebarTool === "notes"
                         ? "Notes"
-                        : activeSidebarTool === "knowledge"
-                          ? "Knowledge"
-                          : "Knowledge Cards"}
+                        : activeSidebarTool === "inbox"
+                          ? "Inbox"
+                          : activeSidebarTool === "knowledge"
+                            ? "Knowledge"
+                            : "Knowledge Cards"}
                   </span>
                   {activeSidebarTool === "workspace" ? (
                     <div className="sidebar-actions">

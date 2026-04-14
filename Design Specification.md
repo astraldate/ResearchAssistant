@@ -1,6 +1,6 @@
 # Design Specification
 
-更新日期：2026-03-26
+更新日期：2026-04-14
 
 ## 1. 目标
 
@@ -19,9 +19,10 @@ ResearchAssistant 当前的产品目标是把桌面端资料处理能力和移�
 - 关键能力：
   - 资料导入与知识库检索
   - Research Memory：论文索引、审核流、图谱与 Idea 推荐
+  - Graph Canvas：Method DAG / Problem DAG / Idea Map 的 Cytoscape + overlay 可视化
   - PDF 阅读、术语解释、知识卡片保存
   - 移动端配对面板
-  - 待处理收件箱视图
+  - 左侧 rail `Inbox` 待处理收件箱视图
   - 复习状态持久化
 
 ### 2.2 移动端
@@ -64,6 +65,7 @@ ResearchAssistant 当前的产品目标是把桌面端资料处理能力和移�
 - `mobile_inbox`：移动端采集内容
 - `review_state`：复习事件和聚合状态
 - 桌面端 UI 允许查看、标记已处理、恢复待处理和打开附件
+- 桌面端 Inbox 入口位于左侧 rail，接收手机端 `Capture` 页提交的图片、链接和文字笔记。
 
 ## 4. 移动端本地模型
 
@@ -111,10 +113,16 @@ Windows + monorepo + Expo / React Native 原生构建链，主要风险来自：
 - 在 Windows 下对 Hermes 字节码输出和输入路径使用绝对路径
 - 避免 `windowsAwareCommandLine` 在当前 React Native 版本组合下生成不可执行的 Hermes 命令
 
-### 5.4 构建产物
+### 5.4 构建产物与图标
 
 - 原始路径：`mobile-app/android/app/build/outputs/apk/release/app-release.apk`
-- 稳定命名副本：`mobile-app/dist/android/researchassistant-mobile-release.apk`
+- 未配置私有 `keystore.properties` 时，release APK 会回退使用 debug keystore，只适合本地安装测试。
+- 移动端图标以 `dist/icon.svg` 为源，派生到：
+  - `mobile-app/assets/icon.png`
+  - `mobile-app/assets/adaptive-icon.png`
+  - `mobile-app/assets/splash-icon.png`
+  - `mobile-app/android/app/src/main/res/mipmap-*`
+- 桌面端图标同样以 `dist/icon.svg` 为源，派生到 `src-tauri/icons/*` 中 Tauri 实际引用的 PNG / ICO / ICNS。
 
 ## 6. Research Memory 设计
 
@@ -131,11 +139,14 @@ Windows + monorepo + Expo / React Native 原生构建链，主要风险来自：
 
 ### 6.2 抽取模型职责
 
+- 默认隐私路径仍使用本地 Ollama。
 - 聊天默认模型：`qwen3.5:9b`
 - 候选节点抽取：`qwen3:8b`
 - Pipeline Summary / Pipeline 命名：`qwen3.5:9b`
 - Edge 抽取 / Edge 校验：`qwen3.5:9b`
-- embedding 与聊天、抽取模型分离管理
+- embedding 与聊天、抽取模型分离管理。
+- Research Memory 抽取链支持测试期 `OpenAI-compatible` provider，例如 DeepSeek。该 provider 只影响 `candidate_extract / pipeline_summarize / pipeline_name_extract / edge_extract / edge_validate / canonicalize_candidates_small` 等抽取与评测链，不影响普通聊天、翻译和 `/brief`。
+- DeepSeek 兼容分支不强制使用 OpenAI `json_schema` response format，而是使用 prompt-only JSON + 本地 JSON 解析与 normalize，避免接口兼容差异被误判为“无候选”。
 
 ### 6.3 抽取流水线
 
@@ -169,12 +180,13 @@ prepare_ingest
 - `Pipeline` 必须先做 `pipeline_summarize`，再做 `pipeline_name_extract`
 - `edge_extract` 只在稳定节点与已抽出的 `Pipeline` 之间连边
 - `edge_validate` 只负责删除、保留与重排，不得创建新边
+- `Perspective / Review / Survey` 类论文不强制抽 Pipeline 主干；Pipeline 为空时仍允许继续抽 `challenge -> insight`、`task -> module` 等更宽松关系，避免关系层整体归零。
 - 低信息片段直接过滤，减少无效模型调用
 - `map unit` 优先按章节切分，没有可靠章节时退化为页窗口
 - `Introduction / Method / Approach / Framework / Overview` 章节会使用更大的 relation map unit 和 overlap
 - 当前实现优先稳定吞吐、证据可审计和进度可见性，不追求整篇一次性全量结构化
 
-### 6.4 图谱约束
+### 6.4 图谱约束与可视化
 
 主干图谱固定为两棵 DAG：
 
@@ -189,6 +201,19 @@ Challenge -> Insight
 - 无限嵌套子树
 - 跨层主干边
 
+图谱 UI 分三种视图：
+
+- `Method DAG`：展示 `Task / Pipeline / Module`
+- `Problem DAG`：展示 `Challenge / Insight`
+- `Idea Map`：展示系统或用户产生的二阶想法，不混入论文客观证据图
+
+Graph Canvas 采用 Cytoscape + SVG/React overlay：
+
+- Cytoscape 负责布局、hitbox、拖动、选中和邻域关系。
+- React overlay 负责星体节点、Idea 脉冲星、标签和动画。
+- SVG overlay 负责低亮度航线、流动光点和透明 hit path。
+- Idea 节点使用暖金/洋红视觉，边使用 `inspired_by` / `resolves` 的金色虚线语义。
+
 ### 6.5 UI 入口
 
 - 工作区文件树支持右键：
@@ -199,6 +224,12 @@ Challenge -> Insight
   - `Graph`
   - `Review`
   - `Ideas`
+- 左侧 rail 包含：
+  - `Workspace`
+  - `Notes`
+  - `Inbox`
+  - `Knowledge Search`
+  - `Knowledge Cards`
 - 面板顶部会显示：
   - 当前聊天模型
   - 当前候选抽取模型
@@ -215,6 +246,8 @@ Challenge -> Insight
 - Chat 输入框当前支持：
   - `@paper` 指定论文 scope
   - `/brief` 生成单论文核心 Markdown 简报
+  - `/ask`、`/method`、`/exp`、`/claim` 单论文只读命令
+  - `/note`、`/review` 生成草稿并在聊天流中回显可点击状态卡片
 
 ### 6.6 Review、Graph 与 Ideas
 
@@ -230,6 +263,8 @@ Challenge -> Insight
 - `Graph` 页当前提供：
   - `Method DAG`
   - `Problem DAG`
+  - `Idea Map`
+- `Idea Map` 支持编辑 Idea 的 `title` 和 `summary`；`ruleType / confidence / evidence / linked node ids` 保持只读。
 - `Ideas` 当前已有 3 类规则：
   - 热点 `Challenge` 缺少成熟 `Insight`
   - 某个 `Task` 下已有多条 `Pipeline`，但模块覆盖仍不完整
@@ -254,6 +289,8 @@ Challenge -> Insight
 
 - 如果 `LanceDB` 与 `SQLite` 漂移，当前策略仍以 `SQLite` 为准重建派生索引。
 - 如果索引时缺少候选、Pipeline 或 Edge 相关模型，前端会在 `prepare_models` 阶段尝试自动拉取并收敛到当前实际配置。
+- 抽取进度 UI 采用全流程累计进度，并显示各子阶段状态；被跳过的阶段会给出原因，避免把未运行阶段误显示为失败。
+- 索引支持断点续建图。开发阶段需要从零验证时，应使用重建/覆盖入口；恢复入口只应消费已有进度，不应伪造空完成。
 - 仓库内提供小样本回归工具：
   - `pnpm research-eval:scaffold`：从当前 `research_memory.sqlite3` 生成 `research_memory_eval_samples.json`
   - `pnpm research-eval:run`：读取 gold 样本并生成 `research_memory_eval_report.json`
@@ -273,7 +310,8 @@ Challenge -> Insight
 - `pnpm --dir mobile-app exec tsc --noEmit`
 - `cargo check --manifest-path src-tauri/Cargo.toml`
 - `pnpm build`
-- `cd mobile-app/android && .\gradlew.bat clean assembleRelease --console=plain`
+- `cd mobile-app/android && .\gradlew.bat assembleRelease --console=plain --no-daemon`
+- `pnpm tauri build --bundles nsis --ci`
 - 真机或模拟器可完成配对、采集、收件箱显示和复习状态同步
 - 桌面端可完成论文导入、候选抽取、审核入图与向量检索
 
@@ -283,8 +321,8 @@ Challenge -> Insight
 - `mobile-app/android/autolink-*.json` 含有本机绝对路径，因此只作为本地缓存，不入库。
 - 没有 `keystore.properties` 时，release 仍使用 debug keystore，本质上是“可安装 release 包”，不是可对外分发的正式签名包。
 - Expo / React Native 升级后，需要同步更新 `patches/` 与 Android 构建脚本。
-- `Research Memory` 的 `Graph` 仍是轻量 lane 视图，不是 Cytoscape 交互图。
+- Graph Canvas 已是 Cytoscape + React/SVG overlay 交互图，但节点拖动、边命中区、星图入场动画和大图性能仍需继续打磨。
 - `analyze_pdf_page_visual` 当前仍是页文本回退，不是真正的视觉模型解析。
 - `compare_papers` 已有后端实现，但前端完整工作流仍待补齐。
-- `/brief` 当前只做单论文核心简报，不支持多文献比较，也没有独立字段后处理层。
+- 第一批 slash command 当前仍聚焦单论文阅读，不支持多文献比较，也没有独立字段后处理层。
 - `Research Memory` 说明已经并入本文件，不再维护单独的 `RESEARCH_MEMORY_MANUAL.md`。
