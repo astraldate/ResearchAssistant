@@ -17,10 +17,10 @@ pub struct CardSettings {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SaveKnowledgeCardRequest {
-  pub term: String,
-  pub selected_text: String,
-  pub plain_summary: String,
-  pub source_title: Option<String>,
+    pub term: String,
+    pub selected_text: String,
+    pub plain_summary: String,
+    pub source_title: Option<String>,
     pub source_url: Option<String>,
     pub source_provider: Option<String>,
     pub source_lang: Option<String>,
@@ -30,7 +30,7 @@ pub struct SaveKnowledgeCardRequest {
     pub pdf_page: Option<u32>,
     pub source_status: String,
     pub model: String,
-  pub lookup_mode: TermLookupMode,
+    pub lookup_mode: TermLookupMode,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -159,7 +159,9 @@ pub fn delete_knowledge_card(card_path: String) -> Result<(), String> {
     Ok(())
 }
 
-pub fn update_knowledge_card(request: UpdateKnowledgeCardRequest) -> Result<KnowledgeCardDetail, String> {
+pub fn update_knowledge_card(
+    request: UpdateKnowledgeCardRequest,
+) -> Result<KnowledgeCardDetail, String> {
     let path = PathBuf::from(&request.card_path);
     let raw = fs::read_to_string(&path)
         .map_err(|e| format!("Failed to read card '{}': {}", path.display(), e))?;
@@ -168,8 +170,7 @@ pub fn update_knowledge_card(request: UpdateKnowledgeCardRequest) -> Result<Know
         .ok_or_else(|| format!("Card '{}' is missing YAML frontmatter.", path.display()))?;
     let values = parse_frontmatter(frontmatter);
     let updated_markdown = render_updated_card_markdown(&values, &request);
-    fs::write(&path, updated_markdown)
-        .map_err(|e| format!("Failed to write card file: {}", e))?;
+    fs::write(&path, updated_markdown).map_err(|e| format!("Failed to write card file: {}", e))?;
     read_knowledge_card(path.to_string_lossy().to_string())
 }
 
@@ -387,7 +388,10 @@ fn render_updated_card_markdown(
     let source_url = parse_optional_string(values.get("source_url"));
     let source_provider = parse_optional_string(values.get("source_provider"));
     let source_lang = parse_optional_string(values.get("source_lang"));
-    let model = values.get("model").cloned().unwrap_or_else(|| "unknown".to_string());
+    let model = values
+        .get("model")
+        .cloned()
+        .unwrap_or_else(|| "unknown".to_string());
     let lookup_mode = values
         .get("lookup_mode")
         .cloned()

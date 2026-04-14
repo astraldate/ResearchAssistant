@@ -398,6 +398,57 @@ const EDGE_VALIDATE_MODEL_KEY = "ra_edge_validate_model_v1";
 const TRANSLATION_MODEL_KEY = "ra_translation_model_v1";
 const INGEST_EXTRACTION_MODE_KEY = "ra_ingest_extraction_mode_v1";
 const APP_THEME_KEY = "ra_app_theme_v1";
+const DEFAULT_EXTRACTION_PROVIDER: ExtractionProviderSettings = {
+  provider: "open_ai_compatible",
+  baseUrl: "https://api.deepseek.com",
+  apiKey: "",
+  extractFastModel: "deepseek-chat",
+  extractFallbackModel: "deepseek-chat",
+  extractPipelineSummaryModel: "deepseek-chat",
+  extractPipelineNameModel: "deepseek-chat",
+  extractEdgeModel: "deepseek-chat",
+  extractEdgeValidateModel: "deepseek-chat",
+};
+
+const normalizeExtractionProviderSettings = (
+  settings?: Partial<ExtractionProviderSettings>,
+): ExtractionProviderSettings => {
+  const provider = settings?.provider ?? DEFAULT_EXTRACTION_PROVIDER.provider;
+  const apiDefaults =
+    provider === "open_ai_compatible"
+      ? DEFAULT_EXTRACTION_PROVIDER
+      : {
+          provider,
+          baseUrl: "",
+          apiKey: "",
+          extractFastModel: "",
+          extractFallbackModel: "",
+          extractPipelineSummaryModel: "",
+          extractPipelineNameModel: "",
+          extractEdgeModel: "",
+          extractEdgeValidateModel: "",
+        };
+  return {
+    provider,
+    baseUrl: settings?.baseUrl ?? apiDefaults.baseUrl,
+    apiKey: settings?.apiKey ?? "",
+    extractFastModel:
+      settings?.extractFastModel ?? apiDefaults.extractFastModel,
+    extractFallbackModel:
+      settings?.extractFallbackModel ?? apiDefaults.extractFallbackModel,
+    extractPipelineSummaryModel:
+      settings?.extractPipelineSummaryModel ??
+      apiDefaults.extractPipelineSummaryModel,
+    extractPipelineNameModel:
+      settings?.extractPipelineNameModel ??
+      apiDefaults.extractPipelineNameModel,
+    extractEdgeModel:
+      settings?.extractEdgeModel ?? apiDefaults.extractEdgeModel,
+    extractEdgeValidateModel:
+      settings?.extractEdgeValidateModel ??
+      apiDefaults.extractEdgeValidateModel,
+  };
+};
 const SIDEBAR_COLLAPSED_WIDTH_PX = 58;
 
 const STAGE_LABELS: Record<string, string> = {
@@ -437,6 +488,17 @@ const EXTRACTION_SUBSTAGE_ORDER = [
   "edge_extract",
   "edge_validate",
 ] as const;
+
+const REQUIRED_EXTRACTION_SUBSTAGE_ORDER = [
+  "candidate_extract",
+  "edge_extract",
+  "edge_validate",
+] as const;
+
+const OPTIONAL_EXTRACTION_SUBSTAGES = new Set<string>([
+  "pipeline_summarize",
+  "pipeline_name_extract",
+]);
 
 const INGEST_STAGE_WEIGHTS: Record<string, number> = {
   prepare_ingest: 2,
@@ -675,17 +737,7 @@ function App() {
   const [isSavingInferenceMode, setIsSavingInferenceMode] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [extractionProviderSettings, setExtractionProviderSettings] =
-    useState<ExtractionProviderSettings>({
-      provider: "ollama",
-      baseUrl: "",
-      apiKey: "",
-      extractFastModel: "",
-      extractFallbackModel: "",
-      extractPipelineSummaryModel: "",
-      extractPipelineNameModel: "",
-      extractEdgeModel: "",
-      extractEdgeValidateModel: "",
-    });
+    useState<ExtractionProviderSettings>(DEFAULT_EXTRACTION_PROVIDER);
   const [extractionProviderError, setExtractionProviderError] = useState<
     string | null
   >(null);
@@ -703,6 +755,36 @@ function App() {
   const [editCardTitle, setEditCardTitle] = useState("");
   const [editCardBody, setEditCardBody] = useState("");
   const [isSavingCardEdit, setIsSavingCardEdit] = useState(false);
+  const usesExtractionApiProvider =
+    extractionProviderSettings.provider === "open_ai_compatible";
+  const effectiveExtractFastModel = usesExtractionApiProvider
+    ? extractionProviderSettings.extractFastModel?.trim() ||
+      DEFAULT_EXTRACTION_PROVIDER.extractFastModel ||
+      REQUIRED_MODELS.extractFast
+    : extractModel || REQUIRED_MODELS.extractFast;
+  const effectiveExtractFallbackModel = usesExtractionApiProvider
+    ? extractionProviderSettings.extractFallbackModel?.trim() ||
+      effectiveExtractFastModel
+    : extractFallbackModel || REQUIRED_MODELS.extractFallback;
+  const effectivePipelineSummaryModel = usesExtractionApiProvider
+    ? extractionProviderSettings.extractPipelineSummaryModel?.trim() ||
+      effectiveExtractFallbackModel
+    : pipelineSummaryModel || REQUIRED_MODELS.pipelineSummary;
+  const effectivePipelineNameModel = usesExtractionApiProvider
+    ? extractionProviderSettings.extractPipelineNameModel?.trim() ||
+      effectivePipelineSummaryModel
+    : pipelineNameModel || REQUIRED_MODELS.pipelineName;
+  const effectiveEdgeExtractModel = usesExtractionApiProvider
+    ? extractionProviderSettings.extractEdgeModel?.trim() ||
+      effectiveExtractFallbackModel
+    : edgeExtractModel || REQUIRED_MODELS.edgeExtract;
+  const effectiveEdgeValidateModel = usesExtractionApiProvider
+    ? extractionProviderSettings.extractEdgeValidateModel?.trim() ||
+      effectiveEdgeExtractModel
+    : edgeValidateModel || REQUIRED_MODELS.edgeValidate;
+  const extractionProviderLabel = usesExtractionApiProvider
+    ? `DeepSeek / ${extractionProviderSettings.baseUrl?.trim() || "OpenAI-compatible"}`
+    : "Ollama";
   const selectedCardBody = useMemo(() => {
     if (!selectedCard) return "";
     return stripCardMetadata(
@@ -786,6 +868,84 @@ function App() {
   }, [ingestProgress]);
   const cumulativeProgressPercent = useMemo(() => {
     if (!ingestProgress) return 0;
+    if (
+      ingestProgress.stage === "candidate_extract" ||
+      ingestProgress.stage === "pipeline_summarize" ||
+      ingestProgress.stage === "pipeline_name_extract" ||
+      ingestProgress.stage === "edge_extract" ||
+      ingestProgress.stage === "edge_validate"
+    ) {
+      const extractionTotal = Math.max(
+        ingestProgress.total,
+        ...EXTRACTION_SUBSTAGE_ORDER.map(
+          (stage) => ingestStageSnapshots[stage]?.total ?? 0,
+        ),
+        1,
+      );
+      const completedRequiredWork = REQUIRED_EXTRACTION_SUBSTAGE_ORDER.reduce(
+        (sum, stage) => {
+          const snapshot =
+            ingestProgress.stage === stage
+              ? {
+                  current: ingestProgress.current,
+                  total: ingestProgress.total,
+                }
+              : ingestStageSnapshots[stage];
+          return sum + Math.min(snapshot?.current ?? 0, extractionTotal);
+        },
+        0,
+      );
+      const completedOptionalWork = EXTRACTION_SUBSTAGE_ORDER.reduce(
+        (sum, stage) => {
+          if (!OPTIONAL_EXTRACTION_SUBSTAGES.has(stage)) return sum;
+          const snapshot =
+            ingestProgress.stage === stage
+              ? {
+                  current: ingestProgress.current,
+                  total: ingestProgress.total,
+                }
+              : ingestStageSnapshots[stage];
+          if (!snapshot) return sum;
+          return sum + Math.min(snapshot.current, extractionTotal);
+        },
+        0,
+      );
+      const optionalWorkTotal = EXTRACTION_SUBSTAGE_ORDER.reduce(
+        (sum, stage) =>
+          OPTIONAL_EXTRACTION_SUBSTAGES.has(stage) &&
+          ingestStageSnapshots[stage]
+            ? sum + extractionTotal
+            : sum,
+        0,
+      );
+      const extractionWorkTotal =
+        extractionTotal * REQUIRED_EXTRACTION_SUBSTAGE_ORDER.length +
+        optionalWorkTotal;
+      const extractionRatio =
+        extractionWorkTotal > 0
+          ? Math.min(
+              1,
+              (completedRequiredWork + completedOptionalWork) /
+                extractionWorkTotal,
+            )
+          : 0;
+      const beforeExtractionWeight = INGEST_STAGE_ORDER.slice(
+        0,
+        INGEST_STAGE_ORDER.indexOf("candidate_extract"),
+      ).reduce((sum, stage) => sum + (INGEST_STAGE_WEIGHTS[stage] ?? 0), 0);
+      const extractionWeight = EXTRACTION_SUBSTAGE_ORDER.reduce(
+        (sum, stage) => sum + (INGEST_STAGE_WEIGHTS[stage] ?? 0),
+        0,
+      );
+      return Math.min(
+        100,
+        Math.round(
+          ((beforeExtractionWeight + extractionWeight * extractionRatio) /
+            TOTAL_INGEST_STAGE_WEIGHT) *
+            100,
+        ),
+      );
+    }
     const stageIndex = INGEST_STAGE_ORDER.indexOf(
       ingestProgress.stage as (typeof INGEST_STAGE_ORDER)[number],
     );
@@ -815,7 +975,7 @@ function App() {
           100,
       ),
     );
-  }, [ingestProgress, stageProgressPercent]);
+  }, [ingestProgress, ingestStageSnapshots, stageProgressPercent]);
   const activePdfPath = useMemo(
     () => (isPdfFile(activeFilePath) ? activeFilePath : null),
     [activeFilePath],
@@ -843,7 +1003,9 @@ function App() {
         const skippedReason =
           ingestExtractionMode === "fast"
             ? "已跳过（当前为 fast 模式）"
-            : "已跳过（当前批次无可继续处理节点）";
+            : OPTIONAL_EXTRACTION_SUBSTAGES.has(stage)
+              ? "已跳过（当前论文未形成可稳定命名的 Pipeline）"
+              : "已跳过（当前批次无可继续处理节点）";
         return `${label} · ${skippedReason}`;
       }
       const ratioText =
@@ -1575,17 +1737,9 @@ function App() {
       const settings = await invoke<ExtractionProviderSettings>(
         "get_research_extraction_provider_settings",
       );
-      setExtractionProviderSettings({
-        provider: settings.provider ?? "ollama",
-        baseUrl: settings.baseUrl ?? "",
-        apiKey: settings.apiKey ?? "",
-        extractFastModel: settings.extractFastModel ?? "",
-        extractFallbackModel: settings.extractFallbackModel ?? "",
-        extractPipelineSummaryModel: settings.extractPipelineSummaryModel ?? "",
-        extractPipelineNameModel: settings.extractPipelineNameModel ?? "",
-        extractEdgeModel: settings.extractEdgeModel ?? "",
-        extractEdgeValidateModel: settings.extractEdgeValidateModel ?? "",
-      });
+      setExtractionProviderSettings(
+        normalizeExtractionProviderSettings(settings),
+      );
       setExtractionProviderError(null);
     } catch (error) {
       setExtractionProviderError(
@@ -1622,17 +1776,7 @@ function App() {
           },
         },
       );
-      setExtractionProviderSettings({
-        provider: saved.provider ?? "ollama",
-        baseUrl: saved.baseUrl ?? "",
-        apiKey: saved.apiKey ?? "",
-        extractFastModel: saved.extractFastModel ?? "",
-        extractFallbackModel: saved.extractFallbackModel ?? "",
-        extractPipelineSummaryModel: saved.extractPipelineSummaryModel ?? "",
-        extractPipelineNameModel: saved.extractPipelineNameModel ?? "",
-        extractEdgeModel: saved.extractEdgeModel ?? "",
-        extractEdgeValidateModel: saved.extractEdgeValidateModel ?? "",
-      });
+      setExtractionProviderSettings(normalizeExtractionProviderSettings(saved));
       setExtractionProviderError(null);
       showTemporaryStatus("已保存抽取实验 provider 设置。");
     } catch (error) {
@@ -2669,16 +2813,13 @@ function App() {
       >
         <ResearchMemoryPanel
           chatModel={currentModel || REQUIRED_MODELS.chat}
-          extractFastModel={extractModel || REQUIRED_MODELS.extractFast}
-          extractFallbackModel={
-            extractFallbackModel || REQUIRED_MODELS.extractFallback
-          }
-          pipelineSummaryModel={
-            pipelineSummaryModel || REQUIRED_MODELS.pipelineSummary
-          }
-          pipelineNameModel={pipelineNameModel || REQUIRED_MODELS.pipelineName}
-          edgeExtractModel={edgeExtractModel || REQUIRED_MODELS.edgeExtract}
-          edgeValidateModel={edgeValidateModel || REQUIRED_MODELS.edgeValidate}
+          extractProviderLabel={extractionProviderLabel}
+          extractFastModel={effectiveExtractFastModel}
+          extractFallbackModel={effectiveExtractFallbackModel}
+          pipelineSummaryModel={effectivePipelineSummaryModel}
+          pipelineNameModel={effectivePipelineNameModel}
+          edgeExtractModel={effectiveEdgeExtractModel}
+          edgeValidateModel={effectiveEdgeValidateModel}
           translationModel={translationModel || REQUIRED_MODELS.translation}
           onOpenPathInApp={handleOpenPathInApp}
           ingestProgress={ingestProgress}
@@ -2947,8 +3088,9 @@ function App() {
       <div className="settings-section">
         <label>Research Memory Extraction Provider</label>
         <p className="settings-help-text">
-          默认仍使用本地 Ollama。切换到外部 API
-          后，抽取测试与实验索引会把论文片段发送到外部服务。
+          实验抽取默认使用 DeepSeek API。切换到外部 API
+          后，抽取测试与实验索引会把论文片段发送到外部服务；如需全本地运行请改回
+          Ollama。
         </p>
         <div className="settings-model-stack">
           <div className="settings-model-card">
@@ -2962,10 +3104,14 @@ function App() {
                 <select
                   value={extractionProviderSettings.provider}
                   onChange={(event) =>
-                    setExtractionProviderSettings((current) => ({
-                      ...current,
-                      provider: event.target.value as ExtractionProviderKind,
-                    }))
+                    setExtractionProviderSettings((current) =>
+                      normalizeExtractionProviderSettings({
+                        ...(event.target.value === "open_ai_compatible"
+                          ? DEFAULT_EXTRACTION_PROVIDER
+                          : current),
+                        provider: event.target.value as ExtractionProviderKind,
+                      }),
+                    )
                   }
                 >
                   <option value="ollama">Ollama</option>
@@ -2983,7 +3129,7 @@ function App() {
                       baseUrl: event.target.value,
                     }))
                   }
-                  placeholder="https://api.openai.com/v1"
+                  placeholder="https://api.deepseek.com"
                 />
               </label>
               <label className="settings-provider-field">
@@ -3011,7 +3157,7 @@ function App() {
                       extractFastModel: event.target.value,
                     }))
                   }
-                  placeholder="gpt-4.1-mini"
+                  placeholder="deepseek-chat"
                 />
               </label>
               <label className="settings-provider-field">
@@ -3025,7 +3171,7 @@ function App() {
                       extractFallbackModel: event.target.value,
                     }))
                   }
-                  placeholder="gpt-4.1"
+                  placeholder="deepseek-chat"
                 />
               </label>
               <label className="settings-provider-field">
@@ -3041,7 +3187,7 @@ function App() {
                       extractPipelineSummaryModel: event.target.value,
                     }))
                   }
-                  placeholder="gpt-4.1"
+                  placeholder="deepseek-chat"
                 />
               </label>
               <label className="settings-provider-field">
@@ -3057,7 +3203,7 @@ function App() {
                       extractPipelineNameModel: event.target.value,
                     }))
                   }
-                  placeholder="gpt-4.1-mini"
+                  placeholder="deepseek-chat"
                 />
               </label>
               <label className="settings-provider-field">
@@ -3071,7 +3217,7 @@ function App() {
                       extractEdgeModel: event.target.value,
                     }))
                   }
-                  placeholder="gpt-4.1"
+                  placeholder="deepseek-chat"
                 />
               </label>
               <label className="settings-provider-field">
@@ -3087,7 +3233,7 @@ function App() {
                       extractEdgeValidateModel: event.target.value,
                     }))
                   }
-                  placeholder="gpt-4.1-mini"
+                  placeholder="deepseek-chat"
                 />
               </label>
             </div>

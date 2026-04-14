@@ -84,6 +84,49 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: ResearchAssistant ${{ github.ref_name }}
           releaseBody: |
-            Automated Windows desktop build for ${{ github.ref_name }}.
+            Automated desktop and mobile builds for ${{ github.ref_name }}.
           releaseDraft: true
           prerelease: false
+
+  android-apk-release:
+    name: Build And Release Android APK
+    runs-on: windows-latest
+    needs: windows-tauri-release
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Android release APK
+        working-directory: mobile-app/android
+        run: .\gradlew.bat assembleRelease --console=plain --no-daemon
+
+      - name: Upload Android APK to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          draft: true
+          files: mobile-app/android/app/build/outputs/apk/release/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

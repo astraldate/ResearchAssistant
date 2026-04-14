@@ -19,12 +19,29 @@ use cards::{
 use encyclopedia::TermLookupMode;
 use research_memory::{
     ApplyReviewRequest, ComparePapersResult, DocumentResult, ExtractionProviderSettings,
-    IdeaCandidate, IngestMode,
-    PageVisualNoteResult, ResearchExtractionDiagnosticsRecord, ResearchGraph, ResearchGraphEdgeDetail,
-    ResearchGraphNodeDetail, ResearchIngestOptions, ResearchPaperRecord, ResearchSearchHit,
-    ReviewRecord,
+    IdeaCandidate, IngestMode, PageVisualNoteResult, ResearchExtractionDiagnosticsRecord,
+    ResearchGraph, ResearchGraphEdgeDetail, ResearchGraphNodeDetail, ResearchIngestOptions,
+    ResearchPaperRecord, ResearchSearchHit, ReviewRecord,
 };
 use text_decode::{decode_command_output, decode_text_bytes, read_text_file_auto};
+
+fn format_anyhow_error(error: anyhow::Error) -> String {
+    let mut message = error.to_string();
+    let causes = error
+        .chain()
+        .skip(1)
+        .map(|cause| cause.to_string())
+        .filter(|cause| !cause.trim().is_empty())
+        .collect::<Vec<_>>();
+    if !causes.is_empty() {
+        message.push_str("\nCaused by:");
+        for cause in causes {
+            message.push_str("\n- ");
+            message.push_str(&cause);
+        }
+    }
+    message
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct FileNode {
@@ -303,7 +320,10 @@ impl InferenceSettingsState {
         Ok(guard.clone())
     }
 
-    pub fn set_thinking_enabled(&self, thinking_enabled: bool) -> Result<InferenceSettings, String> {
+    pub fn set_thinking_enabled(
+        &self,
+        thinking_enabled: bool,
+    ) -> Result<InferenceSettings, String> {
         let mut guard = self
             .settings
             .lock()
@@ -554,7 +574,11 @@ fn build_tree_with_depth(path: &Path, depth: usize) -> FileNode {
         .to_string_lossy()
         .to_string();
     let is_dir = path.is_dir();
-    let has_children = if is_dir { has_visible_children(path) } else { false };
+    let has_children = if is_dir {
+        has_visible_children(path)
+    } else {
+        false
+    };
     let children = if is_dir && depth > 0 {
         Some(read_tree_children(path, depth))
     } else {
@@ -775,7 +799,10 @@ fn move_to_trash(path: &Path) -> Result<(), String> {
     {
         use std::process::Command;
         let escaped = path.to_string_lossy().replace('"', "\\\"");
-        let script = format!("tell application \"Finder\" to delete POSIX file \"{}\"", escaped);
+        let script = format!(
+            "tell application \"Finder\" to delete POSIX file \"{}\"",
+            escaped
+        );
         Command::new("osascript")
             .args(["-e", &script])
             .output()
@@ -807,7 +834,10 @@ fn move_to_trash(path: &Path) -> Result<(), String> {
     Err("Trash is not implemented on this platform.".to_string())
 }
 
-fn copy_workspace_entry_internal(source_path: &Path, target_dir_path: &Path) -> Result<FileNode, String> {
+fn copy_workspace_entry_internal(
+    source_path: &Path,
+    target_dir_path: &Path,
+) -> Result<FileNode, String> {
     let destination = unique_destination_path(target_dir_path, source_path);
     if source_path.is_dir() {
         std::fs::create_dir_all(&destination).map_err(|e| e.to_string())?;
@@ -845,9 +875,8 @@ async fn create_workspace_folder(
     if destination.exists() {
         return Err("A file or folder with the same name already exists.".to_string());
     }
-    std::fs::create_dir_all(&destination).map_err(|e| {
-        format!("Failed to create folder '{}': {}", destination.display(), e)
-    })?;
+    std::fs::create_dir_all(&destination)
+        .map_err(|e| format!("Failed to create folder '{}': {}", destination.display(), e))?;
     Ok(build_tree_with_depth(&destination, 1))
 }
 
@@ -926,11 +955,19 @@ async fn move_workspace_entry(
             let copied = copy_workspace_entry_internal(&source, &target_dir)?;
             if source.is_dir() {
                 std::fs::remove_dir_all(&source).map_err(|e| {
-                    format!("Failed to remove moved source '{}': {}", source.display(), e)
+                    format!(
+                        "Failed to remove moved source '{}': {}",
+                        source.display(),
+                        e
+                    )
                 })?;
             } else {
                 std::fs::remove_file(&source).map_err(|e| {
-                    format!("Failed to remove moved source '{}': {}", source.display(), e)
+                    format!(
+                        "Failed to remove moved source '{}': {}",
+                        source.display(),
+                        e
+                    )
                 })?;
             }
             Ok(copied)
@@ -951,7 +988,11 @@ async fn get_workspace_relative_path(path: String, app: AppHandle) -> Result<Str
         .map(|segment| segment.to_string_lossy().to_string())
         .collect::<Vec<_>>()
         .join("/");
-    Ok(if display.is_empty() { ".".to_string() } else { display })
+    Ok(if display.is_empty() {
+        ".".to_string()
+    } else {
+        display
+    })
 }
 
 fn decode_js_string(value: &str) -> String {
@@ -1516,8 +1557,7 @@ async fn set_thinking_enabled(
 async fn get_research_extraction_provider_settings(
     app: AppHandle,
 ) -> Result<ExtractionProviderSettings, String> {
-    research_memory::load_extraction_provider_settings(&app)
-        .map_err(|e| e.to_string())
+    research_memory::load_extraction_provider_settings(&app).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2430,14 +2470,20 @@ async fn start_ollama(app: AppHandle, window: Window) -> Result<String, String> 
     if reused_local_models_dir {
         emit_ollama_runtime_progress(
             Some(&window),
-            format!("检测到本地 Ollama 模型库，应用私有引擎将复用：{}", models_dir.display()),
+            format!(
+                "检测到本地 Ollama 模型库，应用私有引擎将复用：{}",
+                models_dir.display()
+            ),
             None,
             None,
         );
     } else {
         emit_ollama_runtime_progress(
             Some(&window),
-            format!("未发现可复用的本地模型库，应用私有引擎将使用自有模型库：{}", models_dir.display()),
+            format!(
+                "未发现可复用的本地模型库，应用私有引擎将使用自有模型库：{}",
+                models_dir.display()
+            ),
             None,
             None,
         );
@@ -2818,7 +2864,7 @@ async fn ingest_knowledge_base(
         },
     )
     .await
-    .map_err(|e| e.to_string())
+    .map_err(format_anyhow_error)
 }
 
 #[tauri::command]
@@ -2830,17 +2876,14 @@ async fn ingest_research_corpus(
 ) -> Result<usize, String> {
     research_memory::ingest_research_corpus(&app, &window, &path, options.unwrap_or_default())
         .await
-        .map_err(|e| e.to_string())
+        .map_err(format_anyhow_error)
 }
 
 #[tauri::command]
-async fn unindex_research_path(
-    app: AppHandle,
-    path: String,
-) -> Result<usize, String> {
+async fn unindex_research_path(app: AppHandle, path: String) -> Result<usize, String> {
     research_memory::unindex_research_path(&app, &path, None)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(format_anyhow_error)
 }
 
 #[tauri::command]
@@ -2860,8 +2903,8 @@ async fn query_knowledge_base(
             paper_query: scope_paper.as_deref(),
         },
     )
-        .await
-        .map_err(|e| e.to_string())
+    .await
+    .map_err(format_anyhow_error)
 }
 
 #[tauri::command]
@@ -2882,18 +2925,15 @@ async fn search_research_memory(
             paper_query: scope_paper.as_deref(),
         },
     )
-        .await
-        .map_err(|e| e.to_string())
+    .await
+    .map_err(format_anyhow_error)
 }
 
 #[tauri::command]
-async fn get_research_graph(
-    app: AppHandle,
-    view: String,
-) -> Result<ResearchGraph, String> {
+async fn get_research_graph(app: AppHandle, view: String) -> Result<ResearchGraph, String> {
     research_memory::get_research_graph(&app, &view)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(format_anyhow_error)
 }
 
 #[tauri::command]
@@ -2903,7 +2943,7 @@ async fn get_research_graph_node_detail(
 ) -> Result<ResearchGraphNodeDetail, String> {
     research_memory::get_research_graph_node_detail(&app, &node_id)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(format_anyhow_error)
 }
 
 #[tauri::command]
@@ -2913,21 +2953,21 @@ async fn get_research_graph_edge_detail(
 ) -> Result<ResearchGraphEdgeDetail, String> {
     research_memory::get_research_graph_edge_detail(&app, &edge_id)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(format_anyhow_error)
 }
 
 #[tauri::command]
 async fn list_extraction_reviews(app: AppHandle) -> Result<Vec<ReviewRecord>, String> {
     research_memory::list_extraction_reviews(&app)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(format_anyhow_error)
 }
 
 #[tauri::command]
 async fn list_research_papers(app: AppHandle) -> Result<Vec<ResearchPaperRecord>, String> {
     research_memory::list_research_papers(&app)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(format_anyhow_error)
 }
 
 #[tauri::command]
@@ -2936,7 +2976,7 @@ async fn list_research_extraction_diagnostics(
 ) -> Result<Vec<ResearchExtractionDiagnosticsRecord>, String> {
     research_memory::list_research_extraction_diagnostics(&app)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(format_anyhow_error)
 }
 
 #[tauri::command]
@@ -2946,14 +2986,26 @@ async fn apply_extraction_review(
 ) -> Result<usize, String> {
     research_memory::apply_extraction_review(&app, request)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(format_anyhow_error)
 }
 
 #[tauri::command]
 async fn list_idea_candidates(app: AppHandle) -> Result<Vec<IdeaCandidate>, String> {
     research_memory::list_idea_candidates(&app)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(format_anyhow_error)
+}
+
+#[tauri::command]
+async fn update_idea_candidate(
+    app: AppHandle,
+    idea_id: String,
+    title: String,
+    summary: String,
+) -> Result<IdeaCandidate, String> {
+    research_memory::update_idea_candidate(&app, &idea_id, &title, &summary)
+        .await
+        .map_err(format_anyhow_error)
 }
 
 #[tauri::command]
@@ -2965,7 +3017,7 @@ async fn compare_papers(
 ) -> Result<ComparePapersResult, String> {
     research_memory::compare_papers(&app, &left_paper_id, &right_paper_id, focus.as_deref())
         .await
-        .map_err(|e| e.to_string())
+        .map_err(format_anyhow_error)
 }
 
 #[tauri::command]
@@ -2977,7 +3029,7 @@ async fn analyze_pdf_page_visual(
 ) -> Result<PageVisualNoteResult, String> {
     research_memory::analyze_pdf_page_visual(&app, &pdf_path, page, &model)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(format_anyhow_error)
 }
 
 #[tauri::command]
@@ -3054,14 +3106,20 @@ async fn activate_private_ollama(
     if reused_local_models_dir {
         emit_ollama_runtime_progress(
             Some(&window),
-            format!("检测到本地 Ollama 模型库，应用私有引擎将复用：{}", models_dir.display()),
+            format!(
+                "检测到本地 Ollama 模型库，应用私有引擎将复用：{}",
+                models_dir.display()
+            ),
             None,
             None,
         );
     } else {
         emit_ollama_runtime_progress(
             Some(&window),
-            format!("未发现可复用的本地模型库，应用私有引擎将使用自有模型库：{}", models_dir.display()),
+            format!(
+                "未发现可复用的本地模型库，应用私有引擎将使用自有模型库：{}",
+                models_dir.display()
+            ),
             None,
             None,
         );
@@ -3148,11 +3206,7 @@ async fn delete_ollama_model(name: String) -> Result<(), String> {
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        return Err(format!(
-            "Ollama delete failed: {} {}",
-            status,
-            body
-        ));
+        return Err(format!("Ollama delete failed: {} {}", status, body));
     }
     Ok(())
 }
@@ -3264,9 +3318,9 @@ fn locate_selection_segment_index(segments: &[String], selected_text: &str) -> O
         .position(|segment| segment.contains(normalized_selected))
         .or_else(|| {
             let selected_lower = normalized_selected.to_lowercase();
-            segments.iter().position(|segment| {
-                segment.to_lowercase().contains(&selected_lower)
-            })
+            segments
+                .iter()
+                .position(|segment| segment.to_lowercase().contains(&selected_lower))
         })
 }
 
@@ -3447,7 +3501,10 @@ fn sanitize_translation_output(original_text: &str, translated_text: &str) -> Op
         "Instruction:",
         "Instructions:",
     ];
-    if prefix_markers.iter().any(|marker| cleaned.starts_with(marker)) {
+    if prefix_markers
+        .iter()
+        .any(|marker| cleaned.starts_with(marker))
+    {
         let split_markers = [
             "\n\n译文：",
             "\n\nTranslation:",
@@ -3622,8 +3679,7 @@ async fn run_ollama_chat_stream(
                 continue;
             }
 
-            let json: serde_json::Value =
-                serde_json::from_str(&line).map_err(|e| e.to_string())?;
+            let json: serde_json::Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
             let message = json.get("message");
             let thinking_delta = message
                 .and_then(|value| value.get("thinking"))
@@ -3738,7 +3794,8 @@ async fn run_ollama_chat_stream(
         }
     }
 
-    let (reasoning_from_content, cleaned_answer) = split_reasoning_and_answer_from_content(&raw_answer);
+    let (reasoning_from_content, cleaned_answer) =
+        split_reasoning_and_answer_from_content(&raw_answer);
     let final_reasoning = if reasoning.trim().is_empty() {
         reasoning_from_content
     } else {
@@ -4453,12 +4510,27 @@ async fn build_brief_context(
 ) -> Result<(String, usize), String> {
     let scoped_queries = [
         ("Abstract / Summary", "abstract summary overview main idea"),
-        ("Task / Challenge / Motivation", "task challenge motivation problem limitation bottleneck"),
-        ("Contribution / Innovation", "contribution innovation propose proposed novelty"),
-        ("Method / Pipeline / Module", "method pipeline framework module architecture algorithm"),
-        ("Experiments / Baseline / Dataset", "experiment baseline dataset sota benchmark"),
+        (
+            "Task / Challenge / Motivation",
+            "task challenge motivation problem limitation bottleneck",
+        ),
+        (
+            "Contribution / Innovation",
+            "contribution innovation propose proposed novelty",
+        ),
+        (
+            "Method / Pipeline / Module",
+            "method pipeline framework module architecture algorithm",
+        ),
+        (
+            "Experiments / Baseline / Dataset",
+            "experiment baseline dataset sota benchmark",
+        ),
         ("Ablation", "ablation ablation study component removal"),
-        ("Limitation / Future Work", "limitation future work discussion weakness"),
+        (
+            "Limitation / Future Work",
+            "limitation future work discussion weakness",
+        ),
     ];
     let scope = research_memory::ResearchSearchScope {
         path: Some(paper.path.as_str()),
@@ -4488,12 +4560,7 @@ async fn build_brief_context(
     }
 
     let mut graph_nodes = graph_node_counts.into_iter().collect::<Vec<_>>();
-    graph_nodes.sort_by(|left, right| {
-        right
-            .1
-            .cmp(&left.1)
-            .then_with(|| left.0.cmp(&right.0))
-    });
+    graph_nodes.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
     graph_nodes.truncate(10);
 
     let graph_summary = if graph_nodes.is_empty() {
@@ -4536,28 +4603,61 @@ async fn build_brief_context(
 fn command_scoped_queries(command_type: &str) -> [(&'static str, &'static str); 4] {
     match command_type {
         "method" => [
-            ("Method / Pipeline", "method pipeline framework overview approach"),
-            ("Module / Architecture", "module architecture component algorithm design"),
-            ("Input / Output / Objective", "input output objective task formulation"),
+            (
+                "Method / Pipeline",
+                "method pipeline framework overview approach",
+            ),
+            (
+                "Module / Architecture",
+                "module architecture component algorithm design",
+            ),
+            (
+                "Input / Output / Objective",
+                "input output objective task formulation",
+            ),
             ("Technical Motivation", "motivation design reason why works"),
         ],
         "exp" => [
-            ("Experiment Setup", "experiment setup benchmark evaluation protocol"),
-            ("Dataset / Baseline", "dataset baseline benchmark comparison"),
-            ("Ablation / Robustness", "ablation robustness sensitivity failure case"),
-            ("Limitation / Discussion", "limitation discussion future work weakness"),
+            (
+                "Experiment Setup",
+                "experiment setup benchmark evaluation protocol",
+            ),
+            (
+                "Dataset / Baseline",
+                "dataset baseline benchmark comparison",
+            ),
+            (
+                "Ablation / Robustness",
+                "ablation robustness sensitivity failure case",
+            ),
+            (
+                "Limitation / Discussion",
+                "limitation discussion future work weakness",
+            ),
         ],
         "claim" => [
             ("Core Claims", "claim contribution key finding conclusion"),
-            ("Supporting Evidence", "result evidence experiment observation"),
+            (
+                "Supporting Evidence",
+                "result evidence experiment observation",
+            ),
             ("Method Support", "method mechanism insight motivation"),
-            ("Limitation / Caveat", "limitation caveat discussion uncertainty"),
+            (
+                "Limitation / Caveat",
+                "limitation caveat discussion uncertainty",
+            ),
         ],
         _ => [
-            ("Question-Relevant Evidence", "question answer key evidence relevant claim"),
+            (
+                "Question-Relevant Evidence",
+                "question answer key evidence relevant claim",
+            ),
             ("Method / Pipeline", "method pipeline framework module"),
             ("Experiment / Result", "experiment result baseline dataset"),
-            ("Limitation / Discussion", "limitation discussion future work"),
+            (
+                "Limitation / Discussion",
+                "limitation discussion future work",
+            ),
         ],
     }
 }
@@ -4852,7 +4952,10 @@ async fn run_paper_command(
     .and_then(|text| {
         trim_non_empty_model_output(
             text,
-            &format!("{} 返回了空结果。", command_display_name(&request.command_type)),
+            &format!(
+                "{} 返回了空结果。",
+                command_display_name(&request.command_type)
+            ),
         )
     })
 }
@@ -4980,12 +5083,30 @@ async fn route_chat_completion(
 ) -> Result<String, String> {
     match mode {
         InferenceMode::SingleMm => {
-            chat_via_ollama(window, request_id, query, context, model, image_path, thinking_enabled).await
+            chat_via_ollama(
+                window,
+                request_id,
+                query,
+                context,
+                model,
+                image_path,
+                thinking_enabled,
+            )
+            .await
         }
         InferenceMode::DualPipeline => {
             // Skeleton only: dual pipeline currently falls back to single-model chat.
             // Future implementation can split text and vision inference, then merge evidence.
-            chat_via_ollama(window, request_id, query, context, model, image_path, thinking_enabled).await
+            chat_via_ollama(
+                window,
+                request_id,
+                query,
+                context,
+                model,
+                image_path,
+                thinking_enabled,
+            )
+            .await
         }
     }
 }
@@ -5097,7 +5218,10 @@ pub fn run() {
             if let Err(error) = mobile::initialize_mobile_companion(handle.clone(), mobile_state) {
                 println!("Failed to initialize mobile companion service: {}", error);
             }
-            println!("[startup] tauri setup finished in {}ms", started.elapsed().as_millis());
+            println!(
+                "[startup] tauri setup finished in {}ms",
+                started.elapsed().as_millis()
+            );
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -5128,6 +5252,7 @@ pub fn run() {
             list_extraction_reviews,
             apply_extraction_review,
             list_idea_candidates,
+            update_idea_candidate,
             compare_papers,
             analyze_pdf_page_visual,
             get_ollama_models,

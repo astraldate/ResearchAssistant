@@ -274,10 +274,7 @@ fn run_eval(args: &[String]) -> anyhow::Result<()> {
             diagnostics_baseline: sample.diagnostics_baseline.clone(),
             diagnostics_current: current_diagnostics,
             task: compare_string_sets(&sample.gold.nodes.tasks, &predicted.nodes.tasks),
-            pipeline: compare_string_sets(
-                &sample.gold.nodes.pipelines,
-                &predicted.nodes.pipelines,
-            ),
+            pipeline: compare_string_sets(&sample.gold.nodes.pipelines, &predicted.nodes.pipelines),
             module: compare_string_sets(&sample.gold.nodes.modules, &predicted.nodes.modules),
             challenge: compare_string_sets(
                 &sample.gold.nodes.challenges,
@@ -368,8 +365,8 @@ fn run_preview(args: &[String]) -> anyhow::Result<()> {
     let paper = parse_flag_value(args, "--paper")
         .or_else(|| parse_flag_value(args, "--path"))
         .ok_or_else(|| anyhow::anyhow!("preview requires --paper <path>"))?;
-    let unit_limit = parse_flag_value(args, "--limit")
-        .and_then(|value| value.parse::<usize>().ok());
+    let unit_limit =
+        parse_flag_value(args, "--limit").and_then(|value| value.parse::<usize>().ok());
     let stage = parse_flag_value(args, "--stage");
     let extraction_mode = parse_flag_value(args, "--mode");
     let extract_fast_model = parse_flag_value(args, "--fast-model");
@@ -484,8 +481,8 @@ fn run_benchmark(args: &[String]) -> anyhow::Result<()> {
     let paper = parse_flag_value(args, "--paper")
         .or_else(|| parse_flag_value(args, "--path"))
         .ok_or_else(|| anyhow::anyhow!("benchmark requires --paper <path>"))?;
-    let unit_limit = parse_flag_value(args, "--limit")
-        .and_then(|value| value.parse::<usize>().ok());
+    let unit_limit =
+        parse_flag_value(args, "--limit").and_then(|value| value.parse::<usize>().ok());
     let stage = parse_flag_value(args, "--stage");
     let extraction_mode = parse_flag_value(args, "--mode");
     let show_content = has_flag(args, "--show-content");
