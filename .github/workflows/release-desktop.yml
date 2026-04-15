@@ -127,6 +127,15 @@ jobs:
             exit $LASTEXITCODE
           }
 
+      - name: Create temporary Android debug keystore
+        working-directory: mobile-app/android/app
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path "debug.keystore")) {
+            keytool -genkeypair -v -storetype JKS -keystore "debug.keystore" -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          }
+
       - name: Build Android release APK
         working-directory: mobile-app/android
         run: .\gradlew.bat assembleRelease --console=plain --no-daemon

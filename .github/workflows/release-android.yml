@@ -1,0 +1,80 @@
+name: Release Android
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to upload the APK to, for example v1.0.4"
+        required: true
+        default: "v1.0.4"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-android-${{ github.event.inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  android-apk-release:
+    name: Build And Upload Android APK
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Android autolink snapshot
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          pnpm --dir mobile-app exec expo-modules-autolinking react-native-config --json --platform android --project-root "." "node_modules" | Set-Content -Encoding utf8 "mobile-app/android/autolink-node-modules.json"
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+      - name: Create temporary Android debug keystore
+        working-directory: mobile-app/android/app
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path "debug.keystore")) {
+            keytool -genkeypair -v -storetype JKS -keystore "debug.keystore" -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          }
+
+      - name: Build Android release APK
+        working-directory: mobile-app/android
+        run: .\gradlew.bat assembleRelease --console=plain --no-daemon
+
+      - name: Upload Android APK to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag }}
+          draft: true
+          files: mobile-app/android/app/build/outputs/apk/release/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
