@@ -420,6 +420,17 @@ const TRANSLATION_MODEL_KEY = "ra_translation_model_v1";
 const INGEST_EXTRACTION_MODE_KEY = "ra_ingest_extraction_mode_v1";
 const APP_THEME_KEY = "ra_app_theme_v1";
 const DEFAULT_EXTRACTION_PROVIDER: ExtractionProviderSettings = {
+  provider: "ollama",
+  baseUrl: "",
+  apiKey: "",
+  extractFastModel: "",
+  extractFallbackModel: "",
+  extractPipelineSummaryModel: "",
+  extractPipelineNameModel: "",
+  extractEdgeModel: "",
+  extractEdgeValidateModel: "",
+};
+const DEFAULT_API_EXTRACTION_PROVIDER: ExtractionProviderSettings = {
   provider: "open_ai_compatible",
   baseUrl: "https://api.deepseek.com",
   apiKey: "",
@@ -431,13 +442,31 @@ const DEFAULT_EXTRACTION_PROVIDER: ExtractionProviderSettings = {
   extractEdgeValidateModel: "deepseek-chat",
 };
 
+const isLegacyDefaultApiExtractionProvider = (
+  settings?: Partial<ExtractionProviderSettings>,
+): boolean =>
+  settings?.provider === "open_ai_compatible" &&
+  (settings.baseUrl ?? "").trim() === DEFAULT_API_EXTRACTION_PROVIDER.baseUrl &&
+  (settings.extractFastModel ?? "").trim() ===
+    DEFAULT_API_EXTRACTION_PROVIDER.extractFastModel &&
+  (settings.extractFallbackModel ?? "").trim() ===
+    DEFAULT_API_EXTRACTION_PROVIDER.extractFallbackModel &&
+  (settings.extractPipelineSummaryModel ?? "").trim() ===
+    DEFAULT_API_EXTRACTION_PROVIDER.extractPipelineSummaryModel &&
+  (settings.extractPipelineNameModel ?? "").trim() ===
+    DEFAULT_API_EXTRACTION_PROVIDER.extractPipelineNameModel &&
+  (settings.extractEdgeModel ?? "").trim() ===
+    DEFAULT_API_EXTRACTION_PROVIDER.extractEdgeModel &&
+  (settings.extractEdgeValidateModel ?? "").trim() ===
+    DEFAULT_API_EXTRACTION_PROVIDER.extractEdgeValidateModel;
+
 const normalizeExtractionProviderSettings = (
   settings?: Partial<ExtractionProviderSettings>,
 ): ExtractionProviderSettings => {
   const provider = settings?.provider ?? DEFAULT_EXTRACTION_PROVIDER.provider;
   const apiDefaults =
     provider === "open_ai_compatible"
-      ? DEFAULT_EXTRACTION_PROVIDER
+      ? DEFAULT_API_EXTRACTION_PROVIDER
       : {
           provider,
           baseUrl: "",
@@ -1770,7 +1799,11 @@ function App() {
         "get_research_extraction_provider_settings",
       );
       setExtractionProviderSettings(
-        normalizeExtractionProviderSettings(settings),
+        normalizeExtractionProviderSettings(
+          isLegacyDefaultApiExtractionProvider(settings)
+            ? DEFAULT_EXTRACTION_PROVIDER
+            : settings,
+        ),
       );
       setExtractionProviderError(null);
     } catch (error) {
@@ -3389,25 +3422,25 @@ function App() {
                           provider: "open_ai_compatible",
                           baseUrl:
                             current.baseUrl ||
-                            DEFAULT_EXTRACTION_PROVIDER.baseUrl,
+                            DEFAULT_API_EXTRACTION_PROVIDER.baseUrl,
                           extractFastModel:
                             current.extractFastModel ||
-                            DEFAULT_EXTRACTION_PROVIDER.extractFastModel,
+                            DEFAULT_API_EXTRACTION_PROVIDER.extractFastModel,
                           extractFallbackModel:
                             current.extractFallbackModel ||
-                            DEFAULT_EXTRACTION_PROVIDER.extractFallbackModel,
+                            DEFAULT_API_EXTRACTION_PROVIDER.extractFallbackModel,
                           extractPipelineSummaryModel:
                             current.extractPipelineSummaryModel ||
-                            DEFAULT_EXTRACTION_PROVIDER.extractPipelineSummaryModel,
+                            DEFAULT_API_EXTRACTION_PROVIDER.extractPipelineSummaryModel,
                           extractPipelineNameModel:
                             current.extractPipelineNameModel ||
-                            DEFAULT_EXTRACTION_PROVIDER.extractPipelineNameModel,
+                            DEFAULT_API_EXTRACTION_PROVIDER.extractPipelineNameModel,
                           extractEdgeModel:
                             current.extractEdgeModel ||
-                            DEFAULT_EXTRACTION_PROVIDER.extractEdgeModel,
+                            DEFAULT_API_EXTRACTION_PROVIDER.extractEdgeModel,
                           extractEdgeValidateModel:
                             current.extractEdgeValidateModel ||
-                            DEFAULT_EXTRACTION_PROVIDER.extractEdgeValidateModel,
+                            DEFAULT_API_EXTRACTION_PROVIDER.extractEdgeValidateModel,
                         }
                       : {
                           ...current,
@@ -3436,7 +3469,7 @@ function App() {
                     setExtractionProviderSettings((current) =>
                       normalizeExtractionProviderSettings({
                         ...(event.target.value === "open_ai_compatible"
-                          ? DEFAULT_EXTRACTION_PROVIDER
+                          ? DEFAULT_API_EXTRACTION_PROVIDER
                           : current),
                         provider: event.target.value as ExtractionProviderKind,
                       }),

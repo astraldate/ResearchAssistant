@@ -132,18 +132,58 @@ pub struct ExtractionProviderSettings {
 
 impl Default for ExtractionProviderSettings {
     fn default() -> Self {
-        let deepseek_chat = Some("deepseek-chat".to_string());
         Self {
-            provider: ExtractionProviderKind::OpenAiCompatible,
-            base_url: Some("https://api.deepseek.com".to_string()),
+            provider: ExtractionProviderKind::Ollama,
+            base_url: None,
             api_key: None,
-            extract_fast_model: deepseek_chat.clone(),
-            extract_fallback_model: deepseek_chat.clone(),
-            extract_pipeline_summary_model: deepseek_chat.clone(),
-            extract_pipeline_name_model: deepseek_chat.clone(),
-            extract_edge_model: deepseek_chat.clone(),
-            extract_edge_validate_model: deepseek_chat,
+            extract_fast_model: None,
+            extract_fallback_model: None,
+            extract_pipeline_summary_model: None,
+            extract_pipeline_name_model: None,
+            extract_edge_model: None,
+            extract_edge_validate_model: None,
         }
+    }
+}
+
+fn is_legacy_default_api_extraction_provider(settings: &ExtractionProviderSettings) -> bool {
+    matches!(settings.provider, ExtractionProviderKind::OpenAiCompatible)
+        && settings.base_url.as_deref().unwrap_or("").trim() == "https://api.deepseek.com"
+        && settings.extract_fast_model.as_deref().unwrap_or("").trim() == "deepseek-chat"
+        && settings
+            .extract_fallback_model
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            == "deepseek-chat"
+        && settings
+            .extract_pipeline_summary_model
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            == "deepseek-chat"
+        && settings
+            .extract_pipeline_name_model
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            == "deepseek-chat"
+        && settings.extract_edge_model.as_deref().unwrap_or("").trim() == "deepseek-chat"
+        && settings
+            .extract_edge_validate_model
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            == "deepseek-chat"
+}
+
+fn normalize_loaded_extraction_provider_settings(
+    settings: ExtractionProviderSettings,
+) -> (ExtractionProviderSettings, bool) {
+    if is_legacy_default_api_extraction_provider(&settings) {
+        (ExtractionProviderSettings::default(), true)
+    } else {
+        (settings, false)
     }
 }
 
@@ -7999,8 +8039,14 @@ pub fn load_default_extraction_provider_settings() -> Result<ExtractionProviderS
     if !path.exists() {
         return Ok(ExtractionProviderSettings::default());
     }
-    let content = fs::read_to_string(path)?;
-    Ok(serde_json::from_str(&content)?)
+    let content = fs::read_to_string(&path)?;
+    let (settings, migrated) =
+        normalize_loaded_extraction_provider_settings(serde_json::from_str(&content)?);
+    if migrated {
+        let payload = serde_json::to_string_pretty(&settings)?;
+        fs::write(path, payload)?;
+    }
+    Ok(settings)
 }
 
 pub fn load_extraction_provider_settings(app: &AppHandle) -> Result<ExtractionProviderSettings> {
@@ -8008,8 +8054,14 @@ pub fn load_extraction_provider_settings(app: &AppHandle) -> Result<ExtractionPr
     if !path.exists() {
         return Ok(ExtractionProviderSettings::default());
     }
-    let content = fs::read_to_string(path)?;
-    Ok(serde_json::from_str(&content)?)
+    let content = fs::read_to_string(&path)?;
+    let (settings, migrated) =
+        normalize_loaded_extraction_provider_settings(serde_json::from_str(&content)?);
+    if migrated {
+        let payload = serde_json::to_string_pretty(&settings)?;
+        fs::write(path, payload)?;
+    }
+    Ok(settings)
 }
 
 pub fn save_extraction_provider_settings(
