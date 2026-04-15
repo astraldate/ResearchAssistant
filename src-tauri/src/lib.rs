@@ -284,6 +284,43 @@ pub struct PaperDraftResult {
     pub content: String,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PaperDraftSummary {
+    pub kind: String,
+    pub title: String,
+    pub path: String,
+    pub created_at: String,
+    pub source_paper: Option<String>,
+    pub preview_text: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PaperDraftDetail {
+    pub kind: String,
+    pub title: String,
+    pub path: String,
+    pub created_at: String,
+    pub source_paper: Option<String>,
+    pub preview_text: String,
+    pub content: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdatePaperDraftRequest {
+    pub path: String,
+    pub content: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatePaperDraftRequest {
+    pub title: String,
+    pub content: String,
+}
+
 impl Default for InferenceSettings {
     fn default() -> Self {
         Self {
@@ -3977,60 +4014,6 @@ async fn chat_via_ollama(
     .await
 }
 
-async fn translate_pdf_selection_text(
-    selected_text: &str,
-    page_context: Option<&str>,
-    model: &str,
-) -> Result<String, String> {
-    let context_block = page_context
-        .map(|text| truncate_chars(text, 1200))
-        .filter(|text| !text.trim().is_empty())
-        .unwrap_or_else(|| "当前页上下文不可用。".to_string());
-    let user_prompt = format!(
-        "请把下面来自学术 PDF 的选中文本翻译成中文。\n\n要求：\n1. 只输出中文译文，不要前言，不要解释。\n2. 优先直译，并结合当前页语境做必要消歧。\n3. 专有名词保留英文原文放在括号中。\n4. 不扩写，不做百科说明。\n5. 公式、变量名、URL、DOI、代码片段尽量保持原样。\n\n当前页上下文（仅用于消歧）：\n{context_block}\n\n待翻译原文：\n{selected_text}"
-    );
-
-    run_ollama_chat(
-        model,
-        vec![
-            serde_json::json!({
-                "role": "system",
-                "content": "你是学术 PDF 阅读助手中的精准翻译器。你的任务是把用户选中的原文准确翻译成中文，只输出译文正文。"
-            }),
-            serde_json::json!({
-                "role": "user",
-                "content": user_prompt
-            }),
-        ],
-        false,
-    )
-    .await
-    .and_then(|text| trim_non_empty_model_output(text, "模型返回了空翻译。"))
-}
-
-async fn translate_pdf_page_markdown(page_text: &str, model: &str) -> Result<String, String> {
-    let user_prompt = format!(
-        "请把下面这一整页学术 PDF 文本翻译成中文 Markdown。\n\n要求：\n1. 只输出 Markdown 正文，不要写前言或总结。\n2. 尽量保留原有段落和小标题结构。\n3. 不总结，不省略主干文本。\n4. 公式、变量名、URL、DOI、代码片段尽量保留原样。\n5. 如果某些行明显是碎片化 OCR 或提取噪声，可在不改变主干信息的前提下做最少整理。\n\n待翻译页面文本：\n{page_text}"
-    );
-
-    run_ollama_chat(
-        model,
-        vec![
-            serde_json::json!({
-                "role": "system",
-                "content": "你是学术论文整页翻译助手。请忠实翻译为中文 Markdown，保留段落层次，不要总结。"
-            }),
-            serde_json::json!({
-                "role": "user",
-                "content": user_prompt
-            }),
-        ],
-        false,
-    )
-    .await
-    .and_then(|text| trim_non_empty_model_output(text, "模型返回了空翻译。"))
-}
-
 async fn translate_pdf_selection_text_v2(
     selected_text: &str,
     page_context: Option<&str>,
@@ -4822,6 +4805,183 @@ fn draft_directory_path(app: &AppHandle, draft_kind: &str) -> Result<PathBuf, St
     Ok(folder)
 }
 
+fn extract_markdown_frontmatter_value(content: &str, key: &str) -> Option<String> {
+    let trimmed = content.strip_prefix("---\n")?;
+    let end = trimmed.find("\n---")?;
+    trimmed[..end].lines().find_map(|line| {
+        let (field, value) = line.split_once(':')?;
+        if field.trim() == key {
+            let value = value.trim();
+            if value.is_empty() {
+                None
+            } else {
+                Some(value.to_string())
+            }
+        } else {
+            None
+        }
+    })
+}
+
+fn strip_markdown_frontmatter(content: &str) -> &str {
+    if let Some(trimmed) = content.strip_prefix("---\n") {
+        if let Some(end) = trimmed.find("\n---") {
+            return trimmed[end + 4..].trim_start();
+        }
+    }
+    content
+}
+
+fn draft_title_from_content(content: &str, path: &Path) -> String {
+    extract_markdown_frontmatter_value(content, "title")
+        .or_else(|| {
+            strip_markdown_frontmatter(content)
+                .lines()
+                .find_map(|line| line.trim().strip_prefix("# ").map(|title| title.trim().to_string()))
+        })
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or_else(|| {
+            path.file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or("Untitled note")
+                .to_string()
+        })
+}
+
+fn draft_preview_from_content(content: &str) -> String {
+    let body = strip_markdown_frontmatter(content);
+    let preview = body
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                None
+            } else {
+                Some(trimmed)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    truncate_chars(preview.trim(), 180)
+}
+
+fn paper_draft_summary_from_path(path: &Path) -> Result<PaperDraftSummary, String> {
+    let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let created_at = extract_markdown_frontmatter_value(&content, "created_at")
+        .or_else(|| {
+            std::fs::metadata(path)
+                .ok()
+                .and_then(|metadata| metadata.modified().ok())
+                .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+                .map(|duration| duration.as_secs().to_string())
+        })
+        .unwrap_or_default();
+    Ok(PaperDraftSummary {
+        kind: "note_draft".to_string(),
+        title: draft_title_from_content(&content, path),
+        path: path.to_string_lossy().to_string(),
+        created_at,
+        source_paper: extract_markdown_frontmatter_value(&content, "source_paper"),
+        preview_text: draft_preview_from_content(&content),
+    })
+}
+
+fn validate_note_draft_path(app: &AppHandle, path: &str) -> Result<PathBuf, String> {
+    let notes_dir = draft_directory_path(app, "note_draft")?;
+    let target = PathBuf::from(path);
+    if target.extension().and_then(|value| value.to_str()) != Some("md") {
+        return Err("只允许操作 Markdown 笔记草稿。".to_string());
+    }
+    let notes_dir = notes_dir.canonicalize().map_err(|e| e.to_string())?;
+    let target = target.canonicalize().map_err(|e| e.to_string())?;
+    if !target.starts_with(&notes_dir) {
+        return Err("笔记路径不在 paper_drafts/notes 目录内。".to_string());
+    }
+    Ok(target)
+}
+
+#[tauri::command]
+async fn list_paper_note_drafts(app: AppHandle) -> Result<Vec<PaperDraftSummary>, String> {
+    let notes_dir = draft_directory_path(&app, "note_draft")?;
+    let mut drafts = Vec::new();
+    let entries = std::fs::read_dir(notes_dir).map_err(|e| e.to_string())?;
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("md") {
+            continue;
+        }
+        if let Ok(summary) = paper_draft_summary_from_path(&path) {
+            drafts.push(summary);
+        }
+    }
+    drafts.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+    Ok(drafts)
+}
+
+#[tauri::command]
+async fn read_paper_note_draft(app: AppHandle, path: String) -> Result<PaperDraftDetail, String> {
+    let path = validate_note_draft_path(&app, &path)?;
+    let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    Ok(PaperDraftDetail {
+        kind: "note_draft".to_string(),
+        title: draft_title_from_content(&content, &path),
+        path: path.to_string_lossy().to_string(),
+        created_at: extract_markdown_frontmatter_value(&content, "created_at").unwrap_or_default(),
+        source_paper: extract_markdown_frontmatter_value(&content, "source_paper"),
+        preview_text: draft_preview_from_content(&content),
+        content,
+    })
+}
+
+#[tauri::command]
+async fn update_paper_note_draft(
+    app: AppHandle,
+    request: UpdatePaperDraftRequest,
+) -> Result<PaperDraftDetail, String> {
+    let path = validate_note_draft_path(&app, &request.path)?;
+    if request.content.trim().is_empty() {
+        return Err("笔记内容不能为空。".to_string());
+    }
+    std::fs::write(&path, request.content.as_bytes()).map_err(|e| e.to_string())?;
+    read_paper_note_draft(app, path.to_string_lossy().to_string()).await
+}
+
+#[tauri::command]
+async fn create_manual_paper_note_draft(
+    app: AppHandle,
+    request: CreatePaperDraftRequest,
+) -> Result<PaperDraftDetail, String> {
+    let title = request.title.trim();
+    if title.is_empty() {
+        return Err("笔记标题不能为空。".to_string());
+    }
+    let content = request.content.trim();
+    if content.is_empty() {
+        return Err("笔记内容不能为空。".to_string());
+    }
+    let directory = draft_directory_path(&app, "note_draft")?;
+    let path = directory.join(format!(
+        "{}-{}-note.md",
+        current_timestamp_file_tag(),
+        sanitize_draft_file_stem(title)
+    ));
+    let markdown = format!(
+        "---\nkind: paper_note_draft\ntitle: {title}\nsource_paper: \ncreated_at: {created_at}\nmodel: manual\nuser_instruction: manual\n---\n\n# {title}\n\n{content}\n",
+        title = title,
+        created_at = cards::current_timestamp_iso_utc(),
+        content = content
+    );
+    std::fs::write(&path, markdown.as_bytes()).map_err(|e| e.to_string())?;
+    read_paper_note_draft(app, path.to_string_lossy().to_string()).await
+}
+
+#[tauri::command]
+async fn delete_paper_note_draft(app: AppHandle, path: String) -> Result<(), String> {
+    let path = validate_note_draft_path(&app, &path)?;
+    std::fs::remove_file(path).map_err(|e| e.to_string())
+}
+
 fn build_note_draft_markdown(
     paper: &ResearchPaperRecord,
     content: &str,
@@ -5274,6 +5434,11 @@ pub fn run() {
             generate_brief_report,
             create_paper_note_draft,
             create_paper_review_draft,
+            list_paper_note_drafts,
+            read_paper_note_draft,
+            create_manual_paper_note_draft,
+            update_paper_note_draft,
+            delete_paper_note_draft,
             explain_pdf_selection,
             reveal_in_explorer,
             open_file,

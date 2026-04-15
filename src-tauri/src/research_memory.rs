@@ -623,7 +623,6 @@ impl CandidatePhaseStatus {
 #[derive(Clone, Debug)]
 struct PersistedUnitExtraction {
     unit_id: String,
-    chunk_id: String,
     candidate_status: CandidatePhaseStatus,
     diagnostics: ExtractionDiagnostics,
     nodes: Vec<ReducedNodeCandidate>,
@@ -632,7 +631,6 @@ struct PersistedUnitExtraction {
 
 #[derive(Clone, Debug)]
 struct ResumePaperState {
-    index_status: String,
     extraction_status: String,
     has_checkpoint: bool,
 }
@@ -665,7 +663,6 @@ struct FileDocument {
     path: String,
     title: String,
     pages: Vec<PageRecord>,
-    full_text: String,
     content_hash: String,
 }
 
@@ -3118,8 +3115,7 @@ fn load_resume_paper_state(
     document: &FileDocument,
 ) -> Result<Option<ResumePaperState>> {
     conn.query_row(
-        "SELECT index_status,
-                extraction_status,
+        "SELECT extraction_status,
                 EXISTS(
                     SELECT 1
                     FROM extraction_unit_results
@@ -3131,9 +3127,8 @@ fn load_resume_paper_state(
         params![document.paper_id, document.path, document.content_hash],
         |row| {
             Ok(ResumePaperState {
-                index_status: row.get(0)?,
-                extraction_status: row.get(1)?,
-                has_checkpoint: row.get::<_, i64>(2).unwrap_or(0) != 0,
+                extraction_status: row.get(0)?,
+                has_checkpoint: row.get::<_, i64>(1).unwrap_or(0) != 0,
             })
         },
     )
@@ -3147,7 +3142,6 @@ fn load_persisted_unit_extractions(
 ) -> Result<HashMap<String, PersistedUnitExtraction>> {
     let mut stmt = conn.prepare(
         "SELECT unit_id,
-                chunk_id,
                 candidate_status,
                 candidate_conflict_count,
                 pipeline_summary_empty,
@@ -3161,19 +3155,18 @@ fn load_persisted_unit_extractions(
          WHERE paper_id = ?1",
     )?;
     let rows = stmt.query_map([paper_id], |row| {
-        let nodes_json: String = row.get(9)?;
-        let edges_json: String = row.get(10)?;
+        let nodes_json: String = row.get(8)?;
+        let edges_json: String = row.get(9)?;
         Ok(PersistedUnitExtraction {
             unit_id: row.get(0)?,
-            chunk_id: row.get(1)?,
-            candidate_status: CandidatePhaseStatus::from_str(&row.get::<_, String>(2)?),
+            candidate_status: CandidatePhaseStatus::from_str(&row.get::<_, String>(1)?),
             diagnostics: ExtractionDiagnostics {
-                candidate_conflict_count: row.get::<_, i64>(3).unwrap_or(0).max(0) as usize,
-                pipeline_summary_empty: row.get::<_, i64>(4).unwrap_or(0) != 0,
-                pipeline_name_empty: row.get::<_, i64>(5).unwrap_or(0) != 0,
-                edge_candidate_count: row.get::<_, i64>(6).unwrap_or(0).max(0) as usize,
-                edge_validated_count: row.get::<_, i64>(7).unwrap_or(0).max(0) as usize,
-                edge_validate_used_fallback: row.get::<_, i64>(8).unwrap_or(0) != 0,
+                candidate_conflict_count: row.get::<_, i64>(2).unwrap_or(0).max(0) as usize,
+                pipeline_summary_empty: row.get::<_, i64>(3).unwrap_or(0) != 0,
+                pipeline_name_empty: row.get::<_, i64>(4).unwrap_or(0) != 0,
+                edge_candidate_count: row.get::<_, i64>(5).unwrap_or(0).max(0) as usize,
+                edge_validated_count: row.get::<_, i64>(6).unwrap_or(0).max(0) as usize,
+                edge_validate_used_fallback: row.get::<_, i64>(7).unwrap_or(0) != 0,
             },
             nodes: serde_json::from_str(&nodes_json).unwrap_or_default(),
             edges: serde_json::from_str(&edges_json).unwrap_or_default(),
@@ -3308,7 +3301,6 @@ fn backfill_missing_edge_candidates_from_checkpoints(conn: &SqliteConnection) ->
             path,
             title,
             pages: Vec::new(),
-            full_text: String::new(),
             content_hash: String::new(),
         };
         persist_candidates(conn, &document, &[], &reduced_edges)?;
@@ -6985,7 +6977,6 @@ fn load_document_from_path(file_path: &Path) -> Result<FileDocument> {
             .to_string(),
         pages,
         content_hash: stable_id("hash", &full_text),
-        full_text,
     })
 }
 

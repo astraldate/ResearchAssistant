@@ -4097,36 +4097,40 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
 
         {viewerMode === "pdfjs" && !isLoading && (
           <div
-            className="pdfjs-stage"
-            ref={stageRef}
-            onContextMenu={handlePdfContextMenu}
+            className={`pdfjs-stage ${pageTranslation.open ? "has-page-translation" : ""}`}
           >
-            <div className="pdfjs-pages">
-              {pageNumbers.map((pageNumber) => (
-                <PdfPageCanvas
-                  key={`${activePdfPath}:${pageNumber}`}
-                  pageNumber={pageNumber}
-                  pdfDocument={pdfDocument as PDFDocumentProxy}
-                  stageWidth={stageWidth}
-                  zoomPercent={zoomPercent}
-                  pageWidth={targetPageWidth}
-                  estimatedHeight={
-                    targetPageWidth *
-                    (pageAspectRatios[pageNumber] ?? fallbackAspectRatio)
-                  }
-                  shouldRender={
-                    pageNumber >= renderWindow.start &&
-                    pageNumber <= renderWindow.end
-                  }
-                  annotations={annotationsByPage.get(pageNumber) ?? []}
-                  onSelectionStart={handleSelectionStart}
-                  onSelectionCapture={handleSelectionCapture}
-                  onAnnotationNoteClick={handleAnnotationNoteClick}
-                  onPageRefChange={handlePageRefChange}
-                  onPageMetricsChange={handlePageMetricsChange}
-                  onRenderError={handlePdfRenderError}
-                />
-              ))}
+            <div
+              className="pdfjs-pages-pane"
+              ref={stageRef}
+              onContextMenu={handlePdfContextMenu}
+            >
+              <div className="pdfjs-pages">
+                {pageNumbers.map((pageNumber) => (
+                  <PdfPageCanvas
+                    key={`${activePdfPath}:${pageNumber}`}
+                    pageNumber={pageNumber}
+                    pdfDocument={pdfDocument as PDFDocumentProxy}
+                    stageWidth={stageWidth}
+                    zoomPercent={zoomPercent}
+                    pageWidth={targetPageWidth}
+                    estimatedHeight={
+                      targetPageWidth *
+                      (pageAspectRatios[pageNumber] ?? fallbackAspectRatio)
+                    }
+                    shouldRender={
+                      pageNumber >= renderWindow.start &&
+                      pageNumber <= renderWindow.end
+                    }
+                    annotations={annotationsByPage.get(pageNumber) ?? []}
+                    onSelectionStart={handleSelectionStart}
+                    onSelectionCapture={handleSelectionCapture}
+                    onAnnotationNoteClick={handleAnnotationNoteClick}
+                    onPageRefChange={handlePageRefChange}
+                    onPageMetricsChange={handlePageMetricsChange}
+                    onRenderError={handlePdfRenderError}
+                  />
+                ))}
+              </div>
             </div>
 
             {pageTranslation.open && (
@@ -4135,8 +4139,7 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
                   <div>
                     <div className="pdf-page-translation-title">当前页译文</div>
                     <div className="pdf-page-translation-meta">
-                      当前显示的是第 {translatedPageNumber ?? currentPage}{" "}
-                      椤佃瘧鏂?
+                      当前显示第 {translatedPageNumber ?? currentPage} 页译文
                     </div>
                   </div>
                   <button
@@ -4153,7 +4156,7 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
                     <LoaderCircle size={16} className="spin" />
                     <span>
                       正在翻译第 {pageTranslation.requestedPage ?? currentPage}{" "}
-                      椤?..
+                      页...
                     </span>
                   </div>
                 )}

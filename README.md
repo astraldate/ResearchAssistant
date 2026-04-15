@@ -6,7 +6,7 @@ ResearchAssistant 是一个本地优先的科研助理工作台，当前同时�
 - 移动端：Expo Router + React Native
 - 共享协议：`packages/contracts`
 
-当前主线已经覆盖资料导入、知识库检索、PDF 阅读与术语卡片、移动端收件箱、局域网配对、复习事件同步，以及 Android release APK 构建。
+当前主线已经覆盖资料导入、知识库检索、Research Memory、PDF 阅读与术语卡片、Notes 草稿、移动端收件箱、局域网配对、复习事件同步，以及桌面端/Android release 构建。
 
 ## 仓库结构
 
@@ -46,6 +46,17 @@ pnpm run tauri dev
 - `mobile_inbox` 和 `review_state` 数据目录
 
 桌面端主界面包含“待处理收件箱”视图，用来处理手机端投递的笔记、链接和图片。
+
+## 本地模型
+
+桌面端默认使用本机 Ollama：
+
+- 聊天模型：`qwen3.5:9b`
+- 候选节点抽取：`qwen3:8b`
+- Pipeline Summary / Pipeline 命名 / Edge 抽取 / Edge 校验：`qwen3.5:9b`
+- Embedding：`nomic-embed-text`
+
+设置页的“模型”面板会优先复用本机已有 Ollama 模型；缺少索引所需模型时，会在 `prepare_models` 阶段按当前配置尝试拉取。侧载 Ollama 二进制的说明见 [scripts/README.md](./scripts/README.md)。
 
 ## 移动端开发与真机测试
 
@@ -108,17 +119,19 @@ Gradle 原始产物路径：
 
 ## GitHub CI/CD
 
-仓库当前包含两条 GitHub Actions 流水线：
+仓库当前包含三条 GitHub Actions 流水线：
 
 - `CI`：在推送到 `main` / `master` 和发起 PR 时运行，负责 Web、Mobile、Rust/Tauri 的常规检查。
-- `Release Desktop`：只在推送 `v*` tag 时运行，负责构建 Windows 桌面版并把产物上传到 GitHub Release。
+- `Release Desktop`：推送 `v*` tag 时运行，负责构建 Windows 桌面版，并在桌面产物完成后附加 Android APK。
+- `Release Android`：手动触发，用于把 Android APK 重新上传到指定已有 release tag。
 
-`Release Desktop` 不重复跑常规检查，它只保留 Windows 发布必需步骤：
+`Release Desktop` 不重复跑常规检查，它只保留发布必需步骤：
 
 - 安装 Node.js、pnpm、Rust
 - 恢复 pnpm 与 Rust 缓存
 - 安装依赖
 - 调用 Tauri Action 构建并发布 Windows 安装包
+- 构建并上传 Android APK
 
 ### 发布桌面版
 
@@ -127,9 +140,9 @@ Gradle 原始产物路径：
 1. 先把要发布的代码合并到 `main` 或 `master`。
 2. 确认 GitHub 上最近一次 `CI` 已通过。
 3. 更新版本号：
-   - 根目录 [package.json](e:\Projects\4C\ResearchAssistant\package.json)
-   - [src-tauri/tauri.conf.json](e:\Projects\4C\ResearchAssistant\src-tauri\tauri.conf.json)
-   - 如果移动端也要同步发版，再更新 [mobile-app/package.json](e:\Projects\4C\ResearchAssistant\mobile-app\package.json)
+   - [package.json](./package.json)
+   - [src-tauri/tauri.conf.json](./src-tauri/tauri.conf.json)
+   - 如果移动端也要同步发版，再更新 [mobile-app/package.json](./mobile-app/package.json)
 4. 创建并推送 tag，例如：
 
 ```bash
@@ -148,7 +161,8 @@ git push origin v0.1.1
 
 ## 相关文档
 
-- [Design Specification](./DesignSpecification.md)
+- [Design Specification](./Design%20Specification.md)
 - [coding_plan.md](./coding_plan.md)
 - [masterplan.md](./masterplan.md)
+- [scripts/README.md](./scripts/README.md)
 - [COPYRIGHT_NOTICE.md](./COPYRIGHT_NOTICE.md)

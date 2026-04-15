@@ -2273,12 +2273,14 @@ textarea:focus {
 .pdf-page-translation-panel {
   flex: 0 0 clamp(320px, 38%, 520px);
   min-width: 0;
+  max-width: min(520px, 42%);
   display: flex;
   flex-direction: column;
   gap: 10px;
   padding: 14px;
   border-left: 1px solid var(--border-color);
   background: rgba(250, 248, 243, 0.94);
+  box-shadow: -18px 0 34px rgba(27, 36, 48, 0.08);
 }
 
 .pdf-page-translation-header {
@@ -2324,13 +2326,25 @@ textarea:focus {
 .pdfjs-stage {
   min-height: 0;
   height: 100%;
-  overflow: auto;
+  overflow: hidden;
   background: linear-gradient(180deg, #efe9dc, #e6dfd1);
-  padding: 10px 10px 18px;
+  padding: 0;
+  display: flex;
+  align-items: stretch;
+  gap: 0;
   transition:
     padding 0.28s ease,
     background 0.28s ease,
     transform 0.32s ease;
+}
+
+.pdfjs-pages-pane {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: auto;
+  padding: 10px 10px 18px;
 }
 
 .pdf-workspace.focus-mode .pdf-viewer-frame {
@@ -3609,6 +3623,110 @@ textarea:focus {
   margin-bottom: 8px;
 }
 
+.support-panel-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.support-panel-title-row .support-panel-title {
+  margin-bottom: 0;
+}
+
+.support-note-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  margin-bottom: 10px;
+  border: 1px solid rgba(103, 117, 141, 0.18);
+  border-radius: 12px;
+  background: rgba(248, 246, 239, 0.78);
+}
+
+.support-note-editor textarea {
+  width: 100%;
+  min-width: 0;
+  resize: vertical;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--text-primary);
+  line-height: 1.55;
+}
+
+.support-note-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.notes-library {
+  padding: 0;
+}
+
+.notes-library-composer {
+  margin: 10px 2px 12px;
+}
+
+.notes-library-composer .action-button {
+  justify-content: center;
+}
+
+.notes-card-grid {
+  grid-template-columns: 1fr;
+}
+
+.notes-card-item {
+  min-height: auto;
+  cursor: default;
+}
+
+.notes-card-item.active {
+  border-color: rgba(48, 95, 151, 0.32);
+  box-shadow: 0 10px 24px rgba(48, 95, 151, 0.12);
+}
+
+.notes-session-section {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed rgba(103, 117, 141, 0.24);
+}
+
+.notes-detail-card {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 10px 26px rgba(27, 36, 48, 0.06);
+}
+
+.notes-detail-card .card-detail-header {
+  padding: 0 0 10px;
+  border-bottom: 1px dashed rgba(103, 117, 141, 0.22);
+}
+
+.notes-detail-card .card-detail-header h2 {
+  font-size: 1rem;
+  overflow-wrap: anywhere;
+}
+
+.notes-detail-card .markdown-content {
+  padding-top: 10px;
+  font-size: 0.9rem;
+  line-height: 1.7;
+}
+
+.notes-edit-textarea {
+  min-height: 320px;
+  margin-top: 10px;
+}
+
 .support-panel-body {
   flex: 1;
   min-height: 0;
@@ -3658,6 +3776,19 @@ textarea:focus {
 .card-library .main-view-header > :first-child {
   min-width: 0;
   flex: 1 1 auto;
+}
+
+.mobile-inbox-panel .main-view-header > :first-child {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.mobile-inbox-panel .main-view-title,
+.mobile-inbox-panel .main-view-subtitle,
+.mobile-inbox-panel .settings-path-box {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .card-library .card-library-header {
@@ -3775,6 +3906,7 @@ textarea:focus {
 
 .mobile-inbox-item {
   gap: 12px;
+  max-width: 100%;
 }
 
 .mobile-inbox-item-header {
@@ -3782,6 +3914,23 @@ textarea:focus {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+  min-width: 0;
+}
+
+.mobile-inbox-item-title-block {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.mobile-inbox-item .card-item-title,
+.mobile-inbox-item .card-item-meta {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.mobile-inbox-item .status-chip {
+  flex: 0 0 auto;
 }
 
 .mobile-inbox-item-note {
@@ -3797,6 +3946,12 @@ textarea:focus {
   gap: 8px 12px;
   font-size: 0.84rem;
   color: var(--text-primary);
+  min-width: 0;
+}
+
+.mobile-inbox-item-meta-grid > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .mobile-inbox-item-label {
@@ -6315,11 +6470,11 @@ textarea:focus {
 
 .research-graph-detail-panel .research-card,
 .research-graph-detail-panel .research-evidence-item {
-  border-color: rgba(142, 173, 226, 0.14);
+  border-color: rgba(170, 201, 255, 0.24);
   background: linear-gradient(
     180deg,
-    rgba(255, 255, 255, 0.065),
-    rgba(255, 255, 255, 0.03)
+    rgba(255, 255, 255, 0.095),
+    rgba(255, 255, 255, 0.045)
   );
   color: #eef4ff;
 }
@@ -6335,7 +6490,32 @@ textarea:focus {
 .research-graph-detail-panel .support-item-text,
 .research-graph-detail-panel .research-meta-row,
 .research-graph-detail-panel .research-section-title {
-  color: #eef4ff;
+  color: #f6f9ff;
+  text-shadow: 0 1px 12px rgba(121, 186, 255, 0.18);
+}
+
+.research-graph-detail-panel .support-item-text {
+  font-weight: 650;
+}
+
+.research-graph-detail-panel .research-meta-row {
+  color: rgba(232, 241, 255, 0.9);
+}
+
+.research-graph-detail-panel .action-button {
+  border-color: rgba(171, 213, 255, 0.46);
+  background: linear-gradient(135deg, #f8fbff, #dcecff);
+  color: #10243f;
+  font-weight: 760;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 10px 22px rgba(3, 10, 25, 0.22);
+}
+
+.research-graph-detail-panel .action-button:hover {
+  border-color: rgba(185, 225, 255, 0.72);
+  background: linear-gradient(135deg, #ffffff, #cfe7ff);
+  color: #071a31;
 }
 
 .research-graph-cytoscape {
@@ -6482,24 +6662,24 @@ textarea:focus {
 .star-scroll-reveal::before {
   content: "";
   position: absolute;
-  top: 0;
-  bottom: 0;
+  top: -8%;
+  bottom: -8%;
   left: 0;
   z-index: 2;
-  width: 7px;
+  width: 9px;
   border-radius: 0;
   background: linear-gradient(
     180deg,
     rgba(255, 248, 190, 0),
-    rgba(176, 244, 255, 0.92) 18%,
-    rgba(255, 232, 150, 0.78) 50%,
-    rgba(127, 226, 255, 0.92) 82%,
+    rgba(176, 244, 255, 0.94) 18%,
+    rgba(255, 232, 150, 0.84) 50%,
+    rgba(127, 226, 255, 0.94) 82%,
     rgba(255, 248, 190, 0)
   );
   box-shadow:
-    0 0 14px rgba(144, 236, 255, 0.72),
-    0 0 34px rgba(88, 205, 255, 0.42),
-    0 0 74px rgba(255, 212, 116, 0.18);
+    0 0 16px rgba(195, 249, 255, 0.88),
+    0 0 42px rgba(97, 213, 255, 0.58),
+    0 0 84px rgba(255, 221, 139, 0.22);
   transform: translateX(-12px) scaleY(0.96);
   opacity: 0;
 }
@@ -6509,19 +6689,16 @@ textarea:focus {
   position: absolute;
   top: 0;
   bottom: 0;
-  left: -180px;
+  left: 0;
   z-index: 1;
-  width: calc(100% + 180px);
-  background:
-    linear-gradient(
-      90deg,
-      transparent 0,
-      rgba(130, 232, 255, 0.18) 70px,
-      rgba(255, 226, 154, 0.1) 112px,
-      rgba(6, 13, 26, 0.96) 180px,
-      rgba(6, 13, 26, 0.98) 100%
-    ),
-    linear-gradient(180deg, rgba(4, 9, 18, 0.94), rgba(5, 11, 23, 0.98));
+  width: 100%;
+  background: linear-gradient(
+    90deg,
+    rgba(5, 10, 22, 0.985) 0,
+    rgba(5, 10, 22, 0.985) calc(100% - 54px),
+    rgba(5, 10, 22, 0.72) calc(100% - 18px),
+    rgba(5, 10, 22, 0) 100%
+  );
   transform: none;
   opacity: 1;
 }
@@ -6962,19 +7139,19 @@ textarea:focus {
 
 @keyframes star-scroll-mask-sweep {
   0% {
-    left: -180px;
+    left: 0%;
     opacity: 1;
   }
   10% {
-    left: calc(5% - 180px);
+    left: 5%;
     opacity: 1;
   }
   78% {
-    left: calc(90% - 180px);
+    left: 90%;
     opacity: 1;
   }
   100% {
-    left: calc(100% - 180px);
+    left: 100%;
     opacity: 0;
   }
 }

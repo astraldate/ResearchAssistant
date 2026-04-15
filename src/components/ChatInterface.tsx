@@ -384,6 +384,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   const [isChatSelectionMode, setIsChatSelectionMode] = useState(false);
   const [selectedMessageIds, setSelectedMessageIds] = useState<string[]>([]);
   const [isSavingChatCard, setIsSavingChatCard] = useState(false);
+  const [noteDraft, setNoteDraft] = useState("");
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
 
   const messagesListRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -1083,6 +1085,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
           "info",
           false,
         );
+        onCardSaved();
         setImagePath(null);
         return;
       }
@@ -1143,30 +1146,6 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       }
       cancelledRequestIdsRef.current.delete(requestId);
     }
-  };
-
-  const handleSaveSession = () => {
-    persistSession();
-    onStatus("已保存当前会话。", "info", false);
-  };
-
-  const handleRestoreSession = () => {
-    const stored = readSession();
-    if (!stored) {
-      onStatus("没有可恢复的会话。", "error", true);
-      return;
-    }
-    setMessages(stored.messages?.length ? stored.messages : DEFAULT_MESSAGES);
-    setInputValue(stored.inputValue || "");
-    setImagePath(stored.imagePath || null);
-    setCitationDraft(stored.citationDraft || "");
-    setCitations(Array.isArray(stored.citations) ? stored.citations : []);
-    setNotes(Array.isArray(stored.notes) ? stored.notes : []);
-    setRestrictToActivePaper(Boolean(stored.restrictToActivePaper));
-    onPdfPageChange?.(
-      stored.pdfPage && stored.pdfPage > 0 ? stored.pdfPage : 1,
-    );
-    onStatus("已恢复会话。", "info", false);
   };
 
   const handleClearSession = () => {
@@ -1303,6 +1282,51 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     );
   };
 
+  const handleStartNewNote = () => {
+    setEditingNoteId(null);
+    setNoteDraft("");
+  };
+
+  const handleStartEditNote = (note: NoteItem) => {
+    setEditingNoteId(note.id);
+    setNoteDraft(note.text);
+  };
+
+  const handleCancelNoteEdit = () => {
+    setEditingNoteId(null);
+    setNoteDraft("");
+  };
+
+  const handleSaveNoteDraft = () => {
+    const text = noteDraft.trim();
+    if (!text) {
+      onStatus("笔记内容不能为空。", "error", false);
+      return;
+    }
+
+    if (editingNoteId) {
+      setNotes((previous) =>
+        previous.map((note) =>
+          note.id === editingNoteId ? { ...note, text } : note,
+        ),
+      );
+      onStatus("笔记已更新。", "info", false);
+    } else {
+      setNotes((previous) => [
+        {
+          id: `${Date.now()}-note`,
+          text,
+          createdAt: Date.now(),
+        },
+        ...previous,
+      ]);
+      onStatus("笔记已创建。", "info", false);
+    }
+
+    setEditingNoteId(null);
+    setNoteDraft("");
+  };
+
   const handleOpenDraftResult = async (draft: PaperDraftResult) => {
     try {
       await invoke("open_file", { path: draft.openTarget });
@@ -1322,6 +1346,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
   const handleDeleteNote = (noteId: string) => {
     setNotes((previous) => previous.filter((note) => note.id !== noteId));
+    if (editingNoteId === noteId) {
+      handleCancelNoteEdit();
+    }
   };
 
   const handleToggleThinking = async () => {
@@ -1542,12 +1569,6 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
           </div>
         </div>
         <div className="chat-toolbar">
-          <button style={TOOL_BUTTON_STYLE} onClick={handleSaveSession}>
-            保存会话
-          </button>
-          <button style={TOOL_BUTTON_STYLE} onClick={handleRestoreSession}>
-            恢复会话
-          </button>
           <button style={TOOL_BUTTON_STYLE} onClick={handleClearSession}>
             清空会话
           </button>
@@ -1817,8 +1838,44 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                     className="support-panel"
                     onContextMenu={handleChatContextMenu}
                   >
-                    <div className="support-panel-title">笔记</div>
+                    <div className="support-panel-title-row">
+                      <div className="support-panel-title">笔记</div>
+                      <button
+                        type="button"
+                        style={TOOL_BUTTON_STYLE}
+                        onClick={handleStartNewNote}
+                      >
+                        新建文本
+                      </button>
+                    </div>
                     <div className="support-panel-body">
+                      <div className="support-note-editor">
+                        <textarea
+                          value={noteDraft}
+                          onChange={(event) => setNoteDraft(event.target.value)}
+                          placeholder="写一条临时笔记，可编辑后插入输入框或导出 Markdown。"
+                          rows={3}
+                        />
+                        <div className="support-note-editor-actions">
+                          <button
+                            type="button"
+                            style={TOOL_BUTTON_STYLE}
+                            onClick={handleSaveNoteDraft}
+                            disabled={!noteDraft.trim()}
+                          >
+                            {editingNoteId ? "保存修改" : "保存笔记"}
+                          </button>
+                          {(editingNoteId || noteDraft.trim()) && (
+                            <button
+                              type="button"
+                              style={TOOL_BUTTON_STYLE}
+                              onClick={handleCancelNoteEdit}
+                            >
+                              取消
+                            </button>
+                          )}
+                        </div>
+                      </div>
                       {notes.length === 0 && (
                         <div className="support-empty">暂无笔记。</div>
                       )}
@@ -1826,6 +1883,12 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                         <div key={note.id} className="support-item">
                           <div className="support-item-text">{note.text}</div>
                           <div className="support-item-actions">
+                            <button
+                              style={TOOL_BUTTON_STYLE}
+                              onClick={() => handleStartEditNote(note)}
+                            >
+                              编辑
+                            </button>
                             <button
                               style={TOOL_BUTTON_STYLE}
                               onClick={() => handleInsertNote(note)}

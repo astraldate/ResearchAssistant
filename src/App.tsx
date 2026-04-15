@@ -11,6 +11,8 @@ import {
   FolderOpen,
   Inbox,
   LayoutGrid,
+  Plus,
+  RefreshCw,
   Search,
   Settings,
   StickyNote,
@@ -372,6 +374,19 @@ interface NoteItem {
 
 interface ChatSessionSnapshot {
   notes?: NoteItem[];
+}
+
+interface PaperNoteDraftSummary {
+  kind: string;
+  title: string;
+  path: string;
+  createdAt: string;
+  sourcePaper?: string | null;
+  previewText: string;
+}
+
+interface PaperNoteDraftDetail extends PaperNoteDraftSummary {
+  content: string;
 }
 
 interface FocusRestoreLayout {
@@ -837,6 +852,17 @@ function App() {
     useState(false);
   const [isStatusBannerExpanded, setIsStatusBannerExpanded] = useState(false);
   const [sidebarNotes, setSidebarNotes] = useState<NoteItem[]>([]);
+  const [paperNoteDrafts, setPaperNoteDrafts] = useState<
+    PaperNoteDraftSummary[]
+  >([]);
+  const [selectedPaperNoteDraft, setSelectedPaperNoteDraft] =
+    useState<PaperNoteDraftDetail | null>(null);
+  const [paperNoteQuery, setPaperNoteQuery] = useState("");
+  const [paperNoteEditContent, setPaperNoteEditContent] = useState("");
+  const [isEditingPaperNote, setIsEditingPaperNote] = useState(false);
+  const [isCreatingPaperNote, setIsCreatingPaperNote] = useState(false);
+  const [isPaperNotesLoading, setIsPaperNotesLoading] = useState(false);
+  const [newPaperNoteTitle, setNewPaperNoteTitle] = useState("");
 
   const statusTimerRef = useRef<number | null>(null);
   const previousPdfPathRef = useRef<string | null>(null);
@@ -2609,6 +2635,153 @@ function App() {
     }
   };
 
+  const loadPaperNoteDrafts = useCallback(async () => {
+    setIsPaperNotesLoading(true);
+    try {
+      const drafts = await invoke<PaperNoteDraftSummary[]>(
+        "list_paper_note_drafts",
+      );
+      setPaperNoteDrafts(drafts);
+      if (
+        selectedPaperNoteDraft &&
+        !drafts.some((draft) => draft.path === selectedPaperNoteDraft.path)
+      ) {
+        setSelectedPaperNoteDraft(null);
+        setIsEditingPaperNote(false);
+      }
+    } catch (error) {
+      showTemporaryStatus(`加载 Notes 失败：${String(error)}`, "error");
+    } finally {
+      setIsPaperNotesLoading(false);
+    }
+  }, [selectedPaperNoteDraft]);
+
+  useEffect(() => {
+    if (activeSidebarTool !== "notes") return;
+    void loadPaperNoteDrafts();
+  }, [activeSidebarTool, cardsRefreshToken, loadPaperNoteDrafts]);
+
+  const filteredPaperNoteDrafts = useMemo(() => {
+    const query = paperNoteQuery.trim().toLowerCase();
+    if (!query) return paperNoteDrafts;
+    return paperNoteDrafts.filter((draft) =>
+      [
+        draft.title,
+        draft.previewText,
+        draft.sourcePaper ?? "",
+        draft.createdAt,
+        draft.path.split(/[\\/]/).pop() ?? "",
+      ]
+        .join("\n")
+        .toLowerCase()
+        .includes(query),
+    );
+  }, [paperNoteDrafts, paperNoteQuery]);
+
+  const handleOpenPaperNoteDraft = async (draft: PaperNoteDraftSummary) => {
+    try {
+      const detail = await invoke<PaperNoteDraftDetail>(
+        "read_paper_note_draft",
+        {
+          path: draft.path,
+        },
+      );
+      setSelectedPaperNoteDraft(detail);
+      setNewPaperNoteTitle("");
+      setPaperNoteEditContent(detail.content);
+      setIsCreatingPaperNote(false);
+      setIsEditingPaperNote(false);
+    } catch (error) {
+      showTemporaryStatus(`打开 Note 失败：${String(error)}`, "error");
+    }
+  };
+
+  const beginCreatePaperNoteDraft = () => {
+    const title = "新建 Note";
+    setSelectedPaperNoteDraft(null);
+    setNewPaperNoteTitle(title);
+    setPaperNoteEditContent(`# ${title}\n\n`);
+    setIsCreatingPaperNote(true);
+    setIsEditingPaperNote(true);
+  };
+
+  const handleCreatePaperNoteDraft = async () => {
+    const title = newPaperNoteTitle.trim() || "新建笔记";
+    const content = paperNoteEditContent.trim();
+    if (!content) {
+      showTemporaryStatus("Note 内容不能为空。", "error");
+      return;
+    }
+    try {
+      const detail = await invoke<PaperNoteDraftDetail>(
+        "create_manual_paper_note_draft",
+        {
+          request: { title, content },
+        },
+      );
+      setNewPaperNoteTitle("");
+      setSelectedPaperNoteDraft(detail);
+      setPaperNoteEditContent(detail.content);
+      setIsCreatingPaperNote(false);
+      setIsEditingPaperNote(false);
+      await loadPaperNoteDrafts();
+      showTemporaryStatus("Note 已创建。");
+    } catch (error) {
+      showTemporaryStatus(`创建 Note 失败：${String(error)}`, "error");
+    }
+  };
+
+  const handleSavePaperNoteDraft = async () => {
+    if (isCreatingPaperNote) {
+      await handleCreatePaperNoteDraft();
+      return;
+    }
+    if (!selectedPaperNoteDraft) return;
+    try {
+      const detail = await invoke<PaperNoteDraftDetail>(
+        "update_paper_note_draft",
+        {
+          request: {
+            path: selectedPaperNoteDraft.path,
+            content: paperNoteEditContent,
+          },
+        },
+      );
+      setSelectedPaperNoteDraft(detail);
+      setPaperNoteEditContent(detail.content);
+      setIsEditingPaperNote(false);
+      await loadPaperNoteDrafts();
+      showTemporaryStatus("Note 已保存。");
+    } catch (error) {
+      showTemporaryStatus(`保存 Note 失败：${String(error)}`, "error");
+    }
+  };
+
+  const handleDeletePaperNoteDraft = async () => {
+    if (!selectedPaperNoteDraft) return;
+    try {
+      await invoke("delete_paper_note_draft", {
+        path: selectedPaperNoteDraft.path,
+      });
+      setSelectedPaperNoteDraft(null);
+      setNewPaperNoteTitle("");
+      setIsEditingPaperNote(false);
+      setIsCreatingPaperNote(false);
+      await loadPaperNoteDrafts();
+      showTemporaryStatus("Note 已删除。");
+    } catch (error) {
+      showTemporaryStatus(`删除 Note 失败：${String(error)}`, "error");
+    }
+  };
+
+  const handleRevealPaperNoteDraft = async (path: string) => {
+    try {
+      await invoke("reveal_in_explorer", { path });
+    } catch (error) {
+      showTemporaryStatus(`定位 Note 失败：${String(error)}`, "error");
+    }
+  };
+
   const handleCardSaved = () => {
     setCardsRefreshToken((value) => value + 1);
   };
@@ -2799,16 +2972,110 @@ function App() {
       </div>
     ) : activeSidebarTool === "notes" ? (
       <div className="sidebar-tool-scroll">
-        <div className="sidebar-tool-title">Notes</div>
-        <div className="support-panel-body">
-          {sidebarNotes.length === 0 && (
-            <div className="support-empty">No notes yet.</div>
-          )}
-          {sidebarNotes.slice(0, 32).map((note) => (
-            <div key={note.id} className="support-item">
-              <div className="support-item-text">{note.text}</div>
+        <div className="card-library notes-library">
+          <div className="main-view-header card-library-header">
+            <div className="main-view-meta">
+              <div className="main-view-title">Notes</div>
+              <div
+                className="main-view-subtitle"
+                title={cardSettings?.active_root || "未设置"}
+              >
+                /note 草稿目录：paper_drafts/notes
+              </div>
             </div>
-          ))}
+            <div className="card-library-actions">
+              <button
+                className="icon-button card-library-header-icon"
+                onClick={beginCreatePaperNoteDraft}
+                title="新建 Note"
+                aria-label="新建 Note"
+              >
+                <Plus size={16} />
+              </button>
+              <button
+                className="icon-button card-library-header-icon"
+                onClick={() => void loadPaperNoteDrafts()}
+                disabled={isPaperNotesLoading}
+                title="刷新 Notes"
+                aria-label="刷新 Notes"
+              >
+                <RefreshCw
+                  size={16}
+                  className={isPaperNotesLoading ? "spin" : undefined}
+                />
+              </button>
+            </div>
+          </div>
+
+          <div className="card-library-search-row">
+            <input
+              className="card-library-search-input"
+              value={paperNoteQuery}
+              onChange={(event) => setPaperNoteQuery(event.target.value)}
+              placeholder="搜索标题、正文预览、来源论文或文件名"
+            />
+            {paperNoteQuery.trim() && (
+              <button
+                className="action-button"
+                onClick={() => setPaperNoteQuery("")}
+              >
+                <X size={14} />
+                清空
+              </button>
+            )}
+          </div>
+
+          {paperNoteDrafts.length === 0 &&
+            !isPaperNotesLoading &&
+            sidebarNotes.length === 0 && (
+              <div className="empty-placeholder">
+                还没有 Note。运行 /note 后会出现在这里，也可以点 + 新建 Markdown
+                Note。
+              </div>
+            )}
+
+          <div className="card-grid notes-card-grid">
+            {filteredPaperNoteDrafts.map((draft) => (
+              <article
+                key={draft.path}
+                className={`card-item notes-card-item ${selectedPaperNoteDraft?.path === draft.path ? "active" : ""}`}
+              >
+                <button
+                  type="button"
+                  className="card-item-title card-item-title-button"
+                  onClick={() => void handleOpenPaperNoteDraft(draft)}
+                  title="打开 Note"
+                >
+                  {draft.title}
+                </button>
+                <div className="card-item-preview">
+                  {draft.previewText || "暂无预览。"}
+                </div>
+                <div className="card-item-footnote">
+                  <span
+                    className="card-item-source"
+                    title={draft.sourcePaper || draft.path}
+                  >
+                    {draft.sourcePaper
+                      ? draft.sourcePaper.split(/[\\/]/).pop()
+                      : draft.path.split(/[\\/]/).pop()}
+                  </span>
+                  <span className="card-item-date">{draft.createdAt}</span>
+                </div>
+              </article>
+            ))}
+          </div>
+
+          {sidebarNotes.length > 0 && (
+            <div className="notes-session-section">
+              <div className="sidebar-tool-title">Chat Session Notes</div>
+              {sidebarNotes.slice(0, 16).map((note) => (
+                <div key={note.id} className="support-item">
+                  <div className="support-item-text">{note.text}</div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     ) : activeSidebarTool === "inbox" ? (
@@ -3090,35 +3357,76 @@ function App() {
     </>
   );
 
-  const modelSettingsSection = (
-    <div className="settings-model-grid">
-      <div className="settings-section">
-        <label>模型运行时</label>
-        <div className="settings-runtime-summary">
-          <div className="settings-runtime-row">
-            <span>下载优先级</span>
-            <strong>HF Mirror / ModelScope，可用时不直连官方</strong>
+  const extractionProviderSettingsSection = (
+    <div className="settings-section">
+      <label>抽取实验外部 API</label>
+      <p className="settings-help-text">
+        默认关闭，Research Memory 抽取会使用本地
+        Ollama。开启后仅抽取测试与实验索引会把论文片段发送到外部
+        API，用于对比模型能力。
+      </p>
+      <div className="settings-model-stack">
+        <div className="settings-model-card">
+          <div className="settings-model-card-head">
+            <strong>测试模式</strong>
+            <span>
+              {usesExtractionApiProvider
+                ? "已开启外部 API 抽取测试"
+                : "关闭，保持本地隐私优先"}
+            </span>
           </div>
-          <div className="settings-runtime-row">
-            <span>索引策略</span>
-            <strong>优先准备快速抽取模型；回退模型仅在已安装时启用</strong>
-          </div>
-        </div>
-      </div>
-
-      <div className="settings-section">
-        <label>Research Memory Extraction Provider</label>
-        <p className="settings-help-text">
-          实验抽取默认使用 DeepSeek API。切换到外部 API
-          后，抽取测试与实验索引会把论文片段发送到外部服务；如需全本地运行请改回
-          Ollama。
-        </p>
-        <div className="settings-model-stack">
-          <div className="settings-model-card">
-            <div className="settings-model-card-head">
-              <strong>实验 Provider</strong>
-              <span>仅作用于 Research Memory 抽取评测与实验索引</span>
-            </div>
+          <label className="settings-provider-toggle">
+            <input
+              type="checkbox"
+              checked={usesExtractionApiProvider}
+              onChange={(event) =>
+                setExtractionProviderSettings((current) =>
+                  normalizeExtractionProviderSettings(
+                    event.target.checked
+                      ? {
+                          ...DEFAULT_EXTRACTION_PROVIDER,
+                          ...current,
+                          provider: "open_ai_compatible",
+                          baseUrl:
+                            current.baseUrl ||
+                            DEFAULT_EXTRACTION_PROVIDER.baseUrl,
+                          extractFastModel:
+                            current.extractFastModel ||
+                            DEFAULT_EXTRACTION_PROVIDER.extractFastModel,
+                          extractFallbackModel:
+                            current.extractFallbackModel ||
+                            DEFAULT_EXTRACTION_PROVIDER.extractFallbackModel,
+                          extractPipelineSummaryModel:
+                            current.extractPipelineSummaryModel ||
+                            DEFAULT_EXTRACTION_PROVIDER.extractPipelineSummaryModel,
+                          extractPipelineNameModel:
+                            current.extractPipelineNameModel ||
+                            DEFAULT_EXTRACTION_PROVIDER.extractPipelineNameModel,
+                          extractEdgeModel:
+                            current.extractEdgeModel ||
+                            DEFAULT_EXTRACTION_PROVIDER.extractEdgeModel,
+                          extractEdgeValidateModel:
+                            current.extractEdgeValidateModel ||
+                            DEFAULT_EXTRACTION_PROVIDER.extractEdgeValidateModel,
+                        }
+                      : {
+                          ...current,
+                          provider: "ollama",
+                        },
+                  ),
+                )
+              }
+            />
+            <span className="settings-provider-toggle-track">
+              <span className="settings-provider-toggle-thumb" />
+            </span>
+            <span>
+              {usesExtractionApiProvider
+                ? "使用外部 API 做抽取测试"
+                : "不使用外部 API"}
+            </span>
+          </label>
+          {usesExtractionApiProvider ? (
             <div className="settings-provider-grid">
               <label className="settings-provider-field">
                 <span>Provider</span>
@@ -3258,18 +3566,41 @@ function App() {
                 />
               </label>
             </div>
-            <div className="settings-button-row">
-              <button
-                className="action-button"
-                onClick={() => void handleSaveExtractionProviderSettings()}
-                disabled={isSavingExtractionProvider}
-              >
-                {isSavingExtractionProvider ? "保存中..." : "保存抽取实验设置"}
-              </button>
+          ) : (
+            <div className="settings-provider-disabled-note">
+              外部 API 测试已关闭。当前索引、评测和 DAG 抽取会走本地 Ollama
+              模型设置。
             </div>
-            {extractionProviderError && (
-              <p className="settings-error-text">{extractionProviderError}</p>
-            )}
+          )}
+          <div className="settings-button-row">
+            <button
+              className="action-button"
+              onClick={() => void handleSaveExtractionProviderSettings()}
+              disabled={isSavingExtractionProvider}
+            >
+              {isSavingExtractionProvider ? "保存中..." : "保存抽取实验设置"}
+            </button>
+          </div>
+          {extractionProviderError && (
+            <p className="settings-error-text">{extractionProviderError}</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
+  const modelSettingsSection = (
+    <div className="settings-model-grid">
+      <div className="settings-section">
+        <label>模型运行时</label>
+        <div className="settings-runtime-summary">
+          <div className="settings-runtime-row">
+            <span>下载优先级</span>
+            <strong>HF Mirror / ModelScope，可用时不直连官方</strong>
+          </div>
+          <div className="settings-runtime-row">
+            <span>索引策略</span>
+            <strong>优先准备快速抽取模型；回退模型仅在已安装时启用</strong>
           </div>
         </div>
       </div>
@@ -3391,6 +3722,7 @@ function App() {
           variant="compact"
         />
       </div>
+      {extractionProviderSettingsSection}
     </div>
   );
 
@@ -3601,7 +3933,120 @@ function App() {
             className="main-panel pdf-center-panel"
           >
             <div className="pdf-center-shell">
-              {activeSidebarTool === "cards" && selectedCard ? (
+              {activeSidebarTool === "notes" &&
+              (selectedPaperNoteDraft || isCreatingPaperNote) ? (
+                <div className="card-detail-view notes-detail-view">
+                  <div className="card-detail-header">
+                    {isCreatingPaperNote ? (
+                      <input
+                        className="card-edit-title"
+                        value={newPaperNoteTitle}
+                        onChange={(event) =>
+                          setNewPaperNoteTitle(event.target.value)
+                        }
+                        placeholder="请输入 Note 标题"
+                      />
+                    ) : (
+                      <div>
+                        <h2>{selectedPaperNoteDraft?.title || "Note"}</h2>
+                        <div
+                          className="card-detail-meta"
+                          title={selectedPaperNoteDraft?.path}
+                        >
+                          {selectedPaperNoteDraft?.path}
+                        </div>
+                      </div>
+                    )}
+                    <div className="card-detail-actions">
+                      {isEditingPaperNote ? (
+                        <>
+                          <button
+                            className="action-button"
+                            onClick={() => void handleSavePaperNoteDraft()}
+                            disabled={!paperNoteEditContent.trim()}
+                          >
+                            保存
+                          </button>
+                          <button
+                            className="ghost-button"
+                            onClick={() => {
+                              if (isCreatingPaperNote) {
+                                setIsCreatingPaperNote(false);
+                                setNewPaperNoteTitle("");
+                                setPaperNoteEditContent("");
+                              } else if (selectedPaperNoteDraft) {
+                                setPaperNoteEditContent(
+                                  selectedPaperNoteDraft.content,
+                                );
+                                setIsEditingPaperNote(false);
+                              }
+                            }}
+                          >
+                            取消
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          className="ghost-button"
+                          onClick={() => setIsEditingPaperNote(true)}
+                        >
+                          编辑
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <div className="card-detail-body">
+                    {isEditingPaperNote ? (
+                      <div className="card-edit-body">
+                        <textarea
+                          className="card-edit-textarea notes-edit-textarea"
+                          value={paperNoteEditContent}
+                          onChange={(event) =>
+                            setPaperNoteEditContent(event.target.value)
+                          }
+                          placeholder="请输入 Markdown Note 内容"
+                        />
+                      </div>
+                    ) : (
+                      <Suspense
+                        fallback={
+                          <div className="support-empty">Loading note...</div>
+                        }
+                      >
+                        <MarkdownRenderer
+                          content={selectedPaperNoteDraft?.content || ""}
+                        />
+                      </Suspense>
+                    )}
+                    {!isCreatingPaperNote && selectedPaperNoteDraft && (
+                      <div className="card-item-actions">
+                        <button
+                          className="action-button"
+                          onClick={() =>
+                            void handleRevealPaperNoteDraft(
+                              selectedPaperNoteDraft.path,
+                            )
+                          }
+                        >
+                          <FolderOpen size={14} />
+                          定位文件
+                        </button>
+                        <button
+                          className="action-button danger"
+                          onClick={() => void handleDeletePaperNoteDraft()}
+                        >
+                          删除
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : activeSidebarTool === "notes" ? (
+                <div className="pdf-empty-state">
+                  <h2>Notes</h2>
+                  <p>从左侧选择一个 Note，或点击 + 新建 Markdown Note。</p>
+                </div>
+              ) : activeSidebarTool === "cards" && selectedCard ? (
                 <div className="card-detail-view">
                   <div className="card-detail-header">
                     {isEditingCard ? (

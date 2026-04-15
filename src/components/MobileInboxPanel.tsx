@@ -1,6 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Check, Copy, ExternalLink, FolderOpen, RefreshCw, RotateCcw } from "lucide-react";
+import {
+  Check,
+  Copy,
+  ExternalLink,
+  FolderOpen,
+  RefreshCw,
+  RotateCcw,
+} from "lucide-react";
 
 type StatusTone = "info" | "error";
 type InboxFilter = "pending" | "all";
@@ -53,7 +60,10 @@ const buildSubtitle = (item: MobileInboxItem) => {
   return parts.join(" · ");
 };
 
-export const MobileInboxPanel: React.FC<MobileInboxPanelProps> = ({ isActive, onStatus }) => {
+export const MobileInboxPanel: React.FC<MobileInboxPanelProps> = ({
+  isActive,
+  onStatus,
+}) => {
   const [items, setItems] = useState<MobileInboxItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [updatingItemId, setUpdatingItemId] = useState<string | null>(null);
@@ -62,7 +72,9 @@ export const MobileInboxPanel: React.FC<MobileInboxPanelProps> = ({ isActive, on
   const loadItems = useCallback(async () => {
     setIsLoading(true);
     try {
-      const nextItems = await invoke<MobileInboxItem[]>("list_mobile_inbox_items");
+      const nextItems = await invoke<MobileInboxItem[]>(
+        "list_mobile_inbox_items",
+      );
       setItems(nextItems);
     } catch (error) {
       onStatus(`加载移动端收件箱失败：${String(error)}`, "error", true);
@@ -86,13 +98,19 @@ export const MobileInboxPanel: React.FC<MobileInboxPanelProps> = ({ isActive, on
     return items.filter((item) => item.status === "received");
   }, [filter, items]);
 
-  const handleToggleProcessed = async (item: MobileInboxItem, processed: boolean) => {
+  const handleToggleProcessed = async (
+    item: MobileInboxItem,
+    processed: boolean,
+  ) => {
     setUpdatingItemId(item.id);
     try {
-      const updated = await invoke<MobileInboxItem>("set_mobile_inbox_item_status", {
-        itemId: item.id,
-        processed,
-      });
+      const updated = await invoke<MobileInboxItem>(
+        "set_mobile_inbox_item_status",
+        {
+          itemId: item.id,
+          processed,
+        },
+      );
       setItems((current) =>
         current
           .map((entry) => (entry.id === updated.id ? updated : entry))
@@ -103,7 +121,9 @@ export const MobileInboxPanel: React.FC<MobileInboxPanelProps> = ({ isActive, on
             return right.createdAt.localeCompare(left.createdAt);
           }),
       );
-      onStatus(processed ? "收件箱条目已标记为已处理。" : "收件箱条目已恢复为待处理。");
+      onStatus(
+        processed ? "收件箱条目已标记为已处理。" : "收件箱条目已恢复为待处理。",
+      );
     } catch (error) {
       onStatus(`更新收件箱条目失败：${String(error)}`, "error", true);
     } finally {
@@ -148,7 +168,11 @@ export const MobileInboxPanel: React.FC<MobileInboxPanelProps> = ({ isActive, on
           </div>
         </div>
         <div className="card-library-actions">
-          <button className="action-button" onClick={() => void loadItems()} disabled={isLoading}>
+          <button
+            className="action-button"
+            onClick={() => void loadItems()}
+            disabled={isLoading}
+          >
             <RefreshCw size={14} className={isLoading ? "spin" : undefined} />
             刷新
           </button>
@@ -157,11 +181,17 @@ export const MobileInboxPanel: React.FC<MobileInboxPanelProps> = ({ isActive, on
 
       <div className="mobile-inbox-toolbar">
         <div className="mobile-inbox-filter-group">
-          <button className={`tab-button ${filter === "pending" ? "active" : ""}`} onClick={() => setFilter("pending")}>
+          <button
+            className={`tab-button ${filter === "pending" ? "active" : ""}`}
+            onClick={() => setFilter("pending")}
+          >
             待处理
             <span>{pendingCount}</span>
           </button>
-          <button className={`tab-button ${filter === "all" ? "active" : ""}`} onClick={() => setFilter("all")}>
+          <button
+            className={`tab-button ${filter === "all" ? "active" : ""}`}
+            onClick={() => setFilter("all")}
+          >
             全部
             <span>{items.length}</span>
           </button>
@@ -169,27 +199,41 @@ export const MobileInboxPanel: React.FC<MobileInboxPanelProps> = ({ isActive, on
       </div>
 
       {!isLoading && items.length === 0 && (
-        <div className="empty-placeholder">移动端收件箱还是空的。可在手机端的 Capture 页发送图片、链接或笔记。</div>
+        <div className="empty-placeholder">
+          移动端收件箱还是空的。可在手机端的 Capture 页发送图片、链接或笔记。
+        </div>
       )}
 
       {!isLoading && items.length > 0 && visibleItems.length === 0 && (
-        <div className="empty-placeholder">当前没有待处理条目。切到“全部”可查看已处理记录。</div>
+        <div className="empty-placeholder">
+          当前没有待处理条目。切到“全部”可查看已处理记录。
+        </div>
       )}
 
       <div className="mobile-inbox-list">
         {visibleItems.map((item) => (
           <article key={item.id} className="card-item mobile-inbox-item">
             <div className="mobile-inbox-item-header">
-              <div>
-                <div className="card-item-title">{item.title?.trim() || buildFallbackTitle(item)}</div>
+              <div className="mobile-inbox-item-title-block">
+                <div className="card-item-title">
+                  {item.title?.trim() || buildFallbackTitle(item)}
+                </div>
                 <div className="card-item-meta">{buildSubtitle(item)}</div>
               </div>
-              <div className={`status-chip ${item.status === "processed" ? "muted" : ""}`}>{STATUS_LABELS[item.status]}</div>
+              <div
+                className={`status-chip ${item.status === "processed" ? "muted" : ""}`}
+              >
+                {STATUS_LABELS[item.status]}
+              </div>
             </div>
 
-            {item.note?.trim() && <div className="mobile-inbox-item-note">{item.note.trim()}</div>}
+            {item.note?.trim() && (
+              <div className="mobile-inbox-item-note">{item.note.trim()}</div>
+            )}
 
-            {item.url?.trim() && <div className="settings-path-box">{item.url.trim()}</div>}
+            {item.url?.trim() && (
+              <div className="settings-path-box">{item.url.trim()}</div>
+            )}
 
             <div className="mobile-inbox-item-meta-grid">
               <div className="mobile-inbox-item-label">文件名</div>
@@ -203,25 +247,40 @@ export const MobileInboxPanel: React.FC<MobileInboxPanelProps> = ({ isActive, on
             <div className="card-item-actions">
               <button
                 className="action-button"
-                onClick={() => void handleToggleProcessed(item, item.status !== "processed")}
+                onClick={() =>
+                  void handleToggleProcessed(item, item.status !== "processed")
+                }
                 disabled={updatingItemId === item.id}
               >
-                {item.status === "processed" ? <RotateCcw size={14} /> : <Check size={14} />}
+                {item.status === "processed" ? (
+                  <RotateCcw size={14} />
+                ) : (
+                  <Check size={14} />
+                )}
                 {item.status === "processed" ? "恢复待处理" : "标记已处理"}
               </button>
               {item.storedAssetPath && (
-                <button className="action-button" onClick={() => void handleOpenAsset(item.storedAssetPath!)}>
+                <button
+                  className="action-button"
+                  onClick={() => void handleOpenAsset(item.storedAssetPath!)}
+                >
                   <ExternalLink size={14} />
                   打开附件
                 </button>
               )}
               {item.url && (
-                <button className="action-button" onClick={() => void handleCopyUrl(item.url!)}>
+                <button
+                  className="action-button"
+                  onClick={() => void handleCopyUrl(item.url!)}
+                >
                   <Copy size={14} />
                   复制链接
                 </button>
               )}
-              <button className="action-button" onClick={() => void handleRevealPath(item.recordPath)}>
+              <button
+                className="action-button"
+                onClick={() => void handleRevealPath(item.recordPath)}
+              >
                 <FolderOpen size={14} />
                 显示记录
               </button>

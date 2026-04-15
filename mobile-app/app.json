@@ -3,7 +3,7 @@
     "name": "Research Assistant Mobile",
     "slug": "researchassistant-mobile",
     "scheme": "researchassistant-mobile",
-    "version": "1.0.4",
+    "version": "1.0.5",
     "icon": "./assets/icon.png",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
@@ -18,7 +18,7 @@
     },
     "android": {
       "package": "com.researchassistant.mobile",
-      "versionCode": 8,
+      "versionCode": 9,
       "usesCleartextTraffic": true,
       "permissions": ["CAMERA"],
       "adaptiveIcon": {

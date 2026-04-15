@@ -1,6 +1,6 @@
 # Design Specification
 
-更新日期：2026-04-14
+更新日期：2026-04-15
 
 ## 1. 目标
 
@@ -122,7 +122,7 @@ Windows + monorepo + Expo / React Native 原生构建链，主要风险来自：
   - `mobile-app/assets/adaptive-icon.png`
   - `mobile-app/assets/splash-icon.png`
   - `mobile-app/android/app/src/main/res/mipmap-*`
-- 桌面端图标同样以 `dist/icon.svg` 为源，派生到 `src-tauri/icons/*` 中 Tauri 实际引用的 PNG / ICO / ICNS。
+- 桌面端图标同样以 `dist/icon.svg` 为源，派生到 `src-tauri/icons/*` 中 Tauri 配置实际引用的 `32x32.png`、`128x128.png`、`128x128@2x.png`、`icon.ico` 和 `icon.icns`。
 
 ## 6. Research Memory 设计
 
