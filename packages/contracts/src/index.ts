@@ -1,6 +1,8 @@
 export const MOBILE_API_VERSION = "2026-03-13.v1";
 export const MOBILE_API_PREFIX = "/api/mobile/v1";
-export const MOBILE_DEFAULT_PORT_CANDIDATES = [38465, 38466, 38467, 38468, 38469] as const;
+export const MOBILE_DEFAULT_PORT_CANDIDATES = [
+  38465, 38466, 38467, 38468, 38469,
+] as const;
 export const MOBILE_SESSION_KEY = "researchassistant.mobile.session.v1";
 export const MOBILE_DB_NAME = "researchassistant-mobile.db";
 
@@ -141,3 +143,54 @@ export interface MobileBootstrapResponse {
   cards: MobileCardRecord[];
   reviewRecords: ReviewRecord[];
 }
+
+export type MobileChatRole = "user" | "assistant";
+export type MobileChatStatus = "idle" | "streaming" | "error";
+export type MobileChatMessageStatus =
+  | "complete"
+  | "streaming"
+  | "error"
+  | "interrupted";
+
+export interface MobileChatMessage {
+  messageId: string;
+  role: MobileChatRole;
+  content: string;
+  createdAt: string;
+  source: "mobile" | "desktop";
+  status: MobileChatMessageStatus;
+}
+
+export interface MobileChatThread {
+  threadId: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  model: string;
+  status: MobileChatStatus;
+  messages: MobileChatMessage[];
+  lastError?: string | null;
+}
+
+export interface MobileChatThreadSummary {
+  threadId: string;
+  title: string;
+  updatedAt: string;
+  model: string;
+  status: MobileChatStatus;
+  lastMessagePreview: string;
+  messageCount: number;
+  lastError?: string | null;
+}
+
+export interface MobileChatSendRequest {
+  message: string;
+  useRetrieval?: boolean | null;
+}
+
+export type MobileChatStreamEvent =
+  | { type: "thread"; thread: MobileChatThread; useRetrieval?: boolean }
+  | { type: "queued" }
+  | { type: "delta"; delta: string }
+  | { type: "done" }
+  | { type: "error"; error: string };

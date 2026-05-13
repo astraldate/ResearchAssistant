@@ -138,6 +138,31 @@ interface PaperDraftResult {
   content: string;
 }
 
+interface MobileChatThreadSummary {
+  threadId: string;
+  title: string;
+  updatedAt: string;
+  model: string;
+  status: "idle" | "streaming" | "error";
+  lastMessagePreview: string;
+  messageCount: number;
+  lastError?: string | null;
+}
+
+interface MobileChatThread {
+  threadId: string;
+  title: string;
+  updatedAt: string;
+  model: string;
+  status: "idle" | "streaming" | "error";
+  messages: Array<{
+    messageId: string;
+    role: "user" | "assistant";
+    content: string;
+    createdAt: string;
+  }>;
+}
+
 interface ChatInterfaceProps {
   currentModel?: string;
   ensureAiReady?: () => Promise<string>;
@@ -386,6 +411,13 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   const [isSavingChatCard, setIsSavingChatCard] = useState(false);
   const [noteDraft, setNoteDraft] = useState("");
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [mobileThreadSummaries, setMobileThreadSummaries] = useState<
+    MobileChatThreadSummary[]
+  >([]);
+  const [activeMobileThreadId, setActiveMobileThreadId] = useState<
+    string | null
+  >(null);
+  const [isMobileThreadListOpen, setIsMobileThreadListOpen] = useState(false);
 
   const messagesListRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -428,6 +460,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
   const persistSession = useCallback(
     (payload?: SessionPayload) => {
+      if (activeMobileThreadId) return;
       const nextPayload: SessionPayload = payload ?? {
         messages,
         inputValue,
@@ -441,6 +474,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       localStorage.setItem(SESSION_KEY, JSON.stringify(nextPayload));
     },
     [
+      activeMobileThreadId,
       citationDraft,
       citations,
       imagePath,
@@ -652,6 +686,64 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       }
     };
   }, []);
+
+  const loadMobileThreads = useCallback(async () => {
+    try {
+      const threads = await invoke<MobileChatThreadSummary[]>(
+        "list_mobile_chat_threads",
+      );
+      setMobileThreadSummaries(threads);
+    } catch {
+      setMobileThreadSummaries([]);
+    }
+  }, []);
+
+  const openMobileThread = useCallback(
+    async (threadId: string) => {
+      try {
+        const thread = await invoke<MobileChatThread>(
+          "read_mobile_chat_thread",
+          { threadId },
+        );
+        setActiveMobileThreadId(thread.threadId);
+        setMessages(
+          thread.messages.length
+            ? thread.messages.map((message) => ({
+                id: message.messageId,
+                role: message.role === "assistant" ? "ai" : "user",
+                content: message.content,
+                timestamp: Date.parse(message.createdAt) || Date.now(),
+              }))
+            : DEFAULT_MESSAGES,
+        );
+        setInputValue("");
+        setIsMobileThreadListOpen(false);
+      } catch (error) {
+        onStatus(`打开移动端会话失败：${String(error)}`, "error", true);
+      }
+    },
+    [onStatus],
+  );
+
+  useEffect(() => {
+    void loadMobileThreads();
+  }, [loadMobileThreads]);
+
+  useEffect(() => {
+    let unlistenFn: (() => void) | null = null;
+    listen<MobileChatThreadSummary>("mobile-chat-thread-updated", (event) => {
+      void loadMobileThreads();
+      const activeId = activeMobileThreadId;
+      if (activeId && event.payload.threadId === activeId) {
+        void openMobileThread(activeId);
+      }
+    }).then((unlisten) => {
+      unlistenFn = unlisten;
+    });
+    return () => {
+      unlistenFn?.();
+    };
+  }, [activeMobileThreadId, loadMobileThreads, openMobileThread]);
 
   const handlePickImage = async () => {
     try {
@@ -1090,15 +1182,17 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         return;
       }
       let context = "";
-      try {
-        const docs = await invoke<DocumentResult[]>("query_knowledge_base", {
-          query: effectiveQuestion,
-          scopePath,
-          scopePaper: effectiveScopePaper ?? undefined,
-        });
-        context = docs.map((doc) => doc.content).join("\n\n");
-      } catch {
-        context = "";
+      if (!activeMobileThreadId) {
+        try {
+          const docs = await invoke<DocumentResult[]>("query_knowledge_base", {
+            query: effectiveQuestion,
+            scopePath,
+            scopePaper: effectiveScopePaper ?? undefined,
+          });
+          context = docs.map((doc) => doc.content).join("\n\n");
+        } catch {
+          context = "";
+        }
       }
 
       const response = await invoke<string>("chat_with_llm", {
@@ -1119,6 +1213,14 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
             : message,
         ),
       ]);
+      if (activeMobileThreadId) {
+        void invoke("append_mobile_chat_thread_turn", {
+          threadId: activeMobileThreadId,
+          userContent: effectiveQuestion,
+          assistantContent: response,
+          model: activeModel,
+        }).then(() => loadMobileThreads());
+      }
       setImagePath(null);
     } catch (error) {
       if (cancelledRequestIdsRef.current.has(requestId)) {
@@ -1150,6 +1252,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
   const handleClearSession = () => {
     setMessages(DEFAULT_MESSAGES);
+    setActiveMobileThreadId(null);
     setInputValue("");
     setImagePath(null);
     setCitationDraft("");
@@ -1565,10 +1668,21 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         <div className="main-view-meta">
           <div className="main-view-title">科研助手</div>
           <div className="main-view-subtitle" title={activeFileLabel}>
-            当前文件：{activeFileLabel}
+            {activeMobileThreadId
+              ? "移动端会话 · 后续轮次默认仅使用历史上下文"
+              : `当前文件：${activeFileLabel}`}
           </div>
         </div>
         <div className="chat-toolbar">
+          <button
+            style={TOOL_BUTTON_STYLE}
+            onClick={() => {
+              setIsMobileThreadListOpen((previous) => !previous);
+              void loadMobileThreads();
+            }}
+          >
+            移动线程
+          </button>
           <button style={TOOL_BUTTON_STYLE} onClick={handleClearSession}>
             清空会话
           </button>
@@ -1591,6 +1705,38 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
             )}
         </div>
       </div>
+      {isMobileThreadListOpen && (
+        <div
+          style={{
+            borderBottom: "1px solid var(--border-color)",
+            padding: 8,
+            display: "grid",
+            gap: 6,
+            background: "var(--bg-secondary)",
+          }}
+        >
+          {mobileThreadSummaries.length ? (
+            mobileThreadSummaries.slice(0, 8).map((thread) => (
+              <button
+                key={thread.threadId}
+                style={{
+                  ...TOOL_BUTTON_STYLE,
+                  textAlign: "left",
+                  background:
+                    activeMobileThreadId === thread.threadId
+                      ? "var(--accent-soft)"
+                      : "var(--bg-primary)",
+                }}
+                onClick={() => void openMobileThread(thread.threadId)}
+              >
+                {thread.title || "移动端会话"} · {thread.messageCount} 条
+              </button>
+            ))
+          ) : (
+            <div className="main-view-subtitle">暂无移动端会话。</div>
+          )}
+        </div>
+      )}
 
       <div className="chat-body" onContextMenu={handleChatContextMenu}>
         <div className="chat-content-panels">

@@ -8,6 +8,7 @@ use std::time::{Instant, UNIX_EPOCH};
 use tauri::{Emitter, State, Window};
 
 mod cards;
+mod chat_queue;
 mod encyclopedia;
 mod mobile;
 pub mod research_memory;
@@ -16,6 +17,7 @@ use cards::{
     CardSettings, KnowledgeCardDetail, KnowledgeCardSummary, SaveKnowledgeCardRequest,
     UpdateKnowledgeCardRequest,
 };
+use chat_queue::{ChatPriority, LlmChatQueueState};
 use encyclopedia::TermLookupMode;
 use research_memory::{
     ApplyReviewRequest, ComparePapersResult, DocumentResult, ExtractionProviderSettings,
@@ -233,6 +235,7 @@ pub struct TranslatePdfSelectionResult {
     pub page: u32,
     pub generated_at: String,
     pub model_used: String,
+    pub prompt_version_used: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -1689,10 +1692,12 @@ async fn write_text_file(path: String, content: String) -> Result<(), String> {
 }
 
 const MAX_PDF_SELECTION_TRANSLATE_CHARS: usize = 2400;
-const PDF_SELECTION_CONTEXT_LIMIT_SHORT: usize = 2200;
-const PDF_SELECTION_CONTEXT_LIMIT_LONG: usize = 4200;
 const LONG_SELECTION_THRESHOLD_CHARS: usize = 220;
 const TRANSLATION_OUTPUT_SENTINEL: &str = "[[[TRANSLATION]]]";
+const TRANSLATION_PROMPT_V3_WITH_HINTS_JSON: &str = "v3_with_hints_json";
+const TRANSLATION_PROMPT_V3_PURE_TEXT_JSON: &str = "v3_pure_text_json";
+const TRANSLATION_PROMPT_V3_GENERATE_DIRECT: &str = "v3_generate_direct";
+const TRANSLATION_HINT_CONTEXT_LIMIT: usize = 900;
 
 fn normalize_extracted_pdf_text(text: &str) -> String {
     text.lines()
@@ -2917,6 +2922,12 @@ async fn ingest_research_corpus(
 }
 
 #[tauri::command]
+async fn cancel_research_ingest() -> Result<(), String> {
+    research_memory::request_ingest_cancel();
+    Ok(())
+}
+
+#[tauri::command]
 async fn unindex_research_path(app: AppHandle, path: String) -> Result<usize, String> {
     research_memory::unindex_research_path(&app, &path, None)
         .await
@@ -3381,6 +3392,235 @@ fn build_selection_context_window(
     truncate_chars(&joined, context_limit)
 }
 
+#[derive(Clone, Debug, Default)]
+struct TranslationHints {
+    subject: Option<String>,
+    acronyms: Vec<String>,
+    key_terms: Vec<String>,
+}
+
+fn is_word_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '/'
+}
+
+fn split_words(input: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    for ch in input.chars() {
+        if is_word_char(ch) {
+            current.push(ch);
+        } else if !current.is_empty() {
+            words.push(current.clone());
+            current.clear();
+        }
+    }
+    if !current.is_empty() {
+        words.push(current);
+    }
+    words
+}
+
+fn is_acronym_token(token: &str) -> bool {
+    let trimmed = token.trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != '-');
+    let mut has_alpha = false;
+    let mut has_upper = false;
+    for ch in trimmed.chars() {
+        if ch.is_ascii_alphabetic() {
+            has_alpha = true;
+            if ch.is_ascii_uppercase() {
+                has_upper = true;
+            } else {
+                return false;
+            }
+        } else if !ch.is_ascii_digit() && ch != '-' {
+            return false;
+        }
+    }
+    has_alpha && has_upper && trimmed.chars().count() >= 2 && trimmed.chars().count() <= 16
+}
+
+fn is_title_case_token(token: &str) -> bool {
+    let mut chars = token.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    first.is_ascii_uppercase()
+        && chars.any(|ch| ch.is_ascii_lowercase())
+        && token.chars().count() >= 3
+}
+
+fn push_unique_limited(values: &mut Vec<String>, value: String, limit: usize) {
+    let normalized = value.trim().trim_matches(|ch: char| {
+        ch.is_whitespace() || matches!(ch, ',' | '.' | ';' | ':' | '(' | ')' | '[' | ']')
+    });
+    if normalized.is_empty() || normalized.chars().count() > 80 {
+        return;
+    }
+    if values
+        .iter()
+        .any(|item| item.eq_ignore_ascii_case(normalized))
+    {
+        return;
+    }
+    values.push(normalized.to_string());
+    if values.len() > limit {
+        values.truncate(limit);
+    }
+}
+
+fn extract_acronyms(text: &str, limit: usize) -> Vec<String> {
+    let mut acronyms = Vec::new();
+    for word in split_words(text) {
+        if is_acronym_token(&word) {
+            push_unique_limited(&mut acronyms, word, limit);
+        }
+    }
+    acronyms
+}
+
+fn extract_title_case_terms(text: &str, limit: usize) -> Vec<String> {
+    let words = split_words(text);
+    let mut terms = Vec::new();
+    let mut index = 0;
+    while index < words.len() {
+        if !is_title_case_token(&words[index]) {
+            index += 1;
+            continue;
+        }
+
+        let start = index;
+        index += 1;
+        while index < words.len() && is_title_case_token(&words[index]) {
+            index += 1;
+        }
+        let phrase = words[start..index].join(" ");
+        push_unique_limited(&mut terms, phrase, limit);
+    }
+    terms
+}
+
+fn extract_technical_terms(text: &str, selected_text: &str, limit: usize) -> Vec<String> {
+    let mut terms = Vec::new();
+    let selected_tokens = split_words(selected_text)
+        .into_iter()
+        .map(|word| word.to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+
+    for acronym in extract_acronyms(text, limit) {
+        push_unique_limited(&mut terms, acronym, limit);
+    }
+    for term in extract_title_case_terms(text, limit) {
+        push_unique_limited(&mut terms, term, limit);
+    }
+    for word in split_words(text) {
+        let lower = word.to_ascii_lowercase();
+        let looks_technical = word.contains('-')
+            || word.contains('/')
+            || word.ends_with("Net")
+            || word.ends_with("Former")
+            || word.ends_with("BERT")
+            || word.ends_with("GPT")
+            || word.ends_with("LM");
+        if looks_technical || selected_tokens.contains(&lower) {
+            push_unique_limited(&mut terms, word, limit);
+        }
+    }
+
+    terms
+}
+
+fn extract_subject_hint(text: &str) -> Option<String> {
+    let verbs = [
+        "is",
+        "are",
+        "was",
+        "were",
+        "can",
+        "could",
+        "may",
+        "might",
+        "will",
+        "would",
+        "has",
+        "have",
+        "had",
+        "uses",
+        "use",
+        "used",
+        "proposes",
+        "propose",
+        "shows",
+        "show",
+        "demonstrates",
+        "demonstrate",
+        "learns",
+        "learn",
+        "requires",
+        "require",
+    ];
+    let words = split_words(text);
+    if words.len() < 3 {
+        return None;
+    }
+
+    let verb_index = words
+        .iter()
+        .position(|word| verbs.iter().any(|verb| word.eq_ignore_ascii_case(verb)))?;
+    if verb_index == 0 {
+        return None;
+    }
+    let start = verb_index.saturating_sub(8);
+    let subject = words[start..verb_index].join(" ");
+    let subject = subject.trim();
+    if subject.chars().count() < 3 {
+        None
+    } else {
+        Some(subject.to_string())
+    }
+}
+
+fn build_translation_hints(page_text: Option<&str>, selected_text: &str) -> TranslationHints {
+    let Some(page_text) = page_text else {
+        return TranslationHints::default();
+    };
+    let context_window =
+        build_selection_context_window(page_text, selected_text, TRANSLATION_HINT_CONTEXT_LIMIT);
+    let segments = split_page_text_into_segments(&context_window);
+    let subject = segments
+        .iter()
+        .rev()
+        .find_map(|segment| extract_subject_hint(segment));
+    let acronyms = extract_acronyms(&context_window, 8);
+    let key_terms = extract_technical_terms(&context_window, selected_text, 12);
+
+    TranslationHints {
+        subject,
+        acronyms,
+        key_terms,
+    }
+}
+
+fn render_translation_hints(hints: &TranslationHints, key_terms_only: bool) -> String {
+    let mut lines = Vec::new();
+    if !key_terms_only {
+        if let Some(subject) = hints.subject.as_deref().filter(|value| !value.is_empty()) {
+            lines.push(format!("- subject: {subject}"));
+        }
+        if !hints.acronyms.is_empty() {
+            lines.push(format!("- acronyms: {}", hints.acronyms.join(", ")));
+        }
+    }
+    if !hints.key_terms.is_empty() {
+        lines.push(format!("- key_terms: {}", hints.key_terms.join(", ")));
+    }
+
+    if lines.is_empty() {
+        "- none".to_string()
+    } else {
+        lines.join("\n")
+    }
+}
+
 fn trim_non_empty_model_output(text: String, empty_message: &str) -> Result<String, String> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -3422,6 +3662,10 @@ fn contains_cjk(text: &str) -> bool {
     text.chars().any(is_cjk_char)
 }
 
+fn latin_letter_count(text: &str) -> usize {
+    text.chars().filter(|ch| ch.is_ascii_alphabetic()).count()
+}
+
 fn normalize_translation_compare_text(text: &str) -> String {
     text.chars()
         .filter(|ch| ch.is_ascii_alphanumeric() || is_cjk_char(*ch))
@@ -3441,6 +3685,10 @@ fn looks_like_untranslated_output(original_text: &str, translated_text: &str) ->
     }
 
     if !contains_cjk(translated_text) {
+        if latin_letter_count(original_text) >= 12 {
+            return true;
+        }
+
         let original_len = original_norm.chars().count();
         let translated_len = translated_norm.chars().count();
         let min_len = original_len.min(translated_len);
@@ -3474,31 +3722,151 @@ fn validate_translation_output(
     Ok(trimmed)
 }
 
+#[derive(Clone, Debug)]
+enum SelectionTranslationFailureKind {
+    Retryable,
+    Fatal,
+}
+
+#[derive(Clone, Debug)]
+struct SelectionTranslationFailure {
+    kind: SelectionTranslationFailureKind,
+    message: String,
+}
+
+impl SelectionTranslationFailure {
+    fn retryable(message: impl Into<String>) -> Self {
+        Self {
+            kind: SelectionTranslationFailureKind::Retryable,
+            message: message.into(),
+        }
+    }
+
+    fn fatal(message: impl Into<String>) -> Self {
+        Self {
+            kind: SelectionTranslationFailureKind::Fatal,
+            message: message.into(),
+        }
+    }
+
+    fn into_message(self) -> String {
+        self.message
+    }
+}
+
 fn validate_selection_translation_output(
     original_text: &str,
     translated_text: String,
-) -> Result<String, String> {
-    let trimmed = validate_translation_output(original_text, translated_text)?;
+    hints: Option<&TranslationHints>,
+) -> Result<String, SelectionTranslationFailure> {
+    let trimmed = validate_translation_output(original_text, translated_text)
+        .map_err(SelectionTranslationFailure::fatal)?;
     let original_len = original_text.trim().chars().count();
     let translated_len = trimmed.chars().count();
 
     if original_len <= 24 && translated_len > 80 {
-        return Err("模型输出超出选中文本范围，疑似混入了上下文内容。".to_string());
+        return Err(SelectionTranslationFailure::retryable(
+            "模型输出超出选中文本范围，疑似混入了上下文内容。",
+        ));
     }
 
     if original_len <= 120 && translated_len > original_len * 6 {
-        return Err("模型输出明显长于原文，疑似把上下文一起翻译了。".to_string());
+        return Err(SelectionTranslationFailure::retryable(
+            "模型输出明显长于原文，疑似把上下文一起翻译了。",
+        ));
     }
 
     if original_len <= 400 && translated_len > original_len * 9 {
-        return Err("模型输出明显长于原文，疑似把上下文一起翻译了。".to_string());
+        return Err(SelectionTranslationFailure::retryable(
+            "模型输出明显长于原文，疑似把上下文一起翻译了。",
+        ));
     }
 
     if original_len > 400 && translated_len > original_len * 12 {
-        return Err("模型输出明显长于原文，疑似把上下文一起翻译了。".to_string());
+        return Err(SelectionTranslationFailure::retryable(
+            "模型输出明显长于原文，疑似把上下文一起翻译了。",
+        ));
+    }
+
+    let leak_markers = [
+        "SOURCE",
+        "</SOURCE>",
+        "<SOURCE",
+        "Hints:",
+        "Return ONLY",
+        "JSON object",
+        "confidence",
+        "detected_language",
+        "Page context",
+        "reference only",
+    ];
+    if leak_markers.iter().any(|marker| trimmed.contains(marker)) {
+        return Err(SelectionTranslationFailure::retryable(
+            "模型输出包含提示词标记，疑似未按翻译格式返回。",
+        ));
+    }
+
+    if let Some(hints) = hints {
+        let original_lower = original_text.to_ascii_lowercase();
+        let translated_lower = trimmed.to_ascii_lowercase();
+        let hint_leak_count = hints
+            .key_terms
+            .iter()
+            .chain(hints.acronyms.iter())
+            .filter(|term| {
+                let term = term.trim();
+                term.chars().count() >= 4
+                    && !original_lower.contains(&term.to_ascii_lowercase())
+                    && translated_lower.contains(&term.to_ascii_lowercase())
+            })
+            .count();
+        if hint_leak_count >= 2 {
+            return Err(SelectionTranslationFailure::retryable(
+                "模型输出疑似混入了非选中文本的术语提示。",
+            ));
+        }
     }
 
     Ok(trimmed)
+}
+
+#[derive(Deserialize)]
+struct TranslationJsonOutput {
+    translation: Option<String>,
+    #[allow(dead_code)]
+    confidence: Option<f32>,
+    #[allow(dead_code)]
+    detected_language: Option<String>,
+}
+
+fn extract_outer_json_object(text: &str) -> Option<&str> {
+    let start = text.find('{')?;
+    let end = text.rfind('}')?;
+    if end <= start {
+        return None;
+    }
+    Some(&text[start..=end])
+}
+
+fn parse_translation_model_output(
+    original_text: &str,
+    raw: String,
+) -> Result<String, SelectionTranslationFailure> {
+    let cleaned = raw.replace("\r\n", "\n");
+    if let Some(candidate) = extract_outer_json_object(&cleaned) {
+        if let Ok(parsed) = serde_json::from_str::<TranslationJsonOutput>(candidate) {
+            if let Some(translation) = parsed
+                .translation
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+            {
+                return Ok(translation);
+            }
+        }
+    }
+
+    sanitize_translation_output(original_text, &cleaned)
+        .ok_or_else(|| SelectionTranslationFailure::retryable("模型返回了空翻译。"))
 }
 
 fn sanitize_translation_output(original_text: &str, translated_text: &str) -> Option<String> {
@@ -3524,6 +3892,9 @@ fn sanitize_translation_output(original_text: &str, translated_text: &str) -> Op
         "\nSource passage:",
         "\n待翻译原文：",
         "\nPage text:",
+        "\nHints:",
+        "\n<SOURCE",
+        "\n</SOURCE>",
     ];
     for marker in leak_markers {
         if let Some(index) = cleaned.find(marker) {
@@ -3564,6 +3935,11 @@ fn sanitize_translation_output(original_text: &str, translated_text: &str) -> Op
         "Page context:",
         "Source passage:",
         "Source text:",
+        "<SOURCE",
+        "</SOURCE>",
+        "Hints:",
+        "Return ONLY",
+        "JSON object",
         "Strict rules:",
         "Rules:",
         "页面上下文（仅供参考",
@@ -4018,64 +4394,104 @@ async fn translate_pdf_selection_text_v2(
     selected_text: &str,
     page_context: Option<&str>,
     model: &str,
-) -> Result<String, String> {
+) -> Result<(String, String), String> {
     let selection_len = selected_text.trim().chars().count();
-    let context_limit = if selection_len > LONG_SELECTION_THRESHOLD_CHARS {
-        PDF_SELECTION_CONTEXT_LIMIT_LONG
+    if is_translation_generate_model(model) {
+        let direct_prompt = format!("请将下面的英文翻译为简体中文，只输出译文，不要解释，不要改写英文原文：\n\n{selected_text}");
+        let direct_result = run_ollama_generate(model, &direct_prompt)
+            .await
+            .map_err(|error| format!("划词翻译失败：{error}"))
+            .and_then(|text| {
+                parse_translation_model_output(selected_text, text)
+                    .map_err(SelectionTranslationFailure::into_message)
+            })
+            .and_then(|text| {
+                validate_selection_translation_output(selected_text, text, None)
+                    .map_err(SelectionTranslationFailure::into_message)
+            });
+        let translated = match direct_result {
+            Ok(text) => text,
+            Err(_) => {
+                let retry_prompt =
+                    format!("翻译成中文。只输出中文译文。\n<<<\n{selected_text}\n>>>");
+                run_ollama_generate(model, &retry_prompt)
+                    .await
+                    .map_err(|error| format!("划词翻译失败：{error}"))
+                    .and_then(|text| {
+                        parse_translation_model_output(selected_text, text)
+                            .map_err(SelectionTranslationFailure::into_message)
+                    })
+                    .and_then(|text| {
+                        validate_selection_translation_output(selected_text, text, None)
+                            .map_err(SelectionTranslationFailure::into_message)
+                    })?
+            }
+        };
+        return Ok((
+            translated,
+            TRANSLATION_PROMPT_V3_GENERATE_DIRECT.to_string(),
+        ));
+    }
+
+    let hints = build_translation_hints(page_context, selected_text);
+    let hints_block = render_translation_hints(&hints, false);
+    let source_label = if selection_len > LONG_SELECTION_THRESHOLD_CHARS {
+        "selected source passage"
     } else {
-        PDF_SELECTION_CONTEXT_LIMIT_SHORT
+        "selected source text"
     };
-    let context_block = page_context
-        .map(|text| build_selection_context_window(text, selected_text, context_limit))
-        .filter(|text| !text.trim().is_empty())
-        .unwrap_or_else(|| "No page context is available.".to_string());
-    let primary_prompt = if selection_len > LONG_SELECTION_THRESHOLD_CHARS {
-        format!(
-            "Translate only the selected source passage below into Simplified Chinese.\n\nRules:\n1. Translate the entire source passage faithfully into Chinese.\n2. Output only the translation of the source passage.\n3. Do not translate, repeat, or summarize the page context.\n4. Use the page context only to disambiguate terminology, pronouns, and sentence relations.\n5. Keep formulas, variable names, URLs, DOI, and code fragments unchanged.\n6. Preserve paragraph boundaries when the source passage spans multiple sentences or lines.\n7. No explanation, no notes, no preface.\n\nPage context (reference only, never translate it):\n{context_block}\n\nSource passage (translate this part only):\n{selected_text}"
-        )
-    } else {
-        format!(
-            "Translate only the source text below into Simplified Chinese.\n\nRules:\n1. Output only the translation of the source text.\n2. Do not translate, repeat, or summarize the page context.\n3. Use the page context only to disambiguate terms.\n4. Do not copy the English source unless it is a formula, variable name, URL, DOI, or code fragment.\n5. No explanation, no notes, no preface.\n6. The output must stay proportional to the source text length.\n\nPage context (reference only, never translate it):\n{context_block}\n\nSource text (translate this part only):\n{selected_text}"
-        )
-    };
+    let primary_prompt = format!(
+        "Return ONLY a JSON object matching this schema example:\n{{\"translation\":\"简体中文译文\",\"confidence\":0.0,\"detected_language\":\"en\"}}\n\nTask:\nTranslate only the {source_label} inside <SOURCE id=\"selected\"> into Simplified Chinese.\n\nStrict rules:\n1. The JSON object must contain only translation, confidence, and detected_language.\n2. Do not translate, repeat, summarize, or mention Hints.\n3. Hints are fragmented reference clues for terminology only; they are not source text.\n4. Keep formulas, variable names, URLs, DOI, and code fragments unchanged.\n5. Preserve paragraph boundaries when the selected source spans multiple sentences or lines.\n6. No Markdown outside JSON. No explanation. No preface.\n\nHints:\n{hints_block}\n\n<SOURCE id=\"selected\">\n{selected_text}\n</SOURCE>"
+    );
 
     let primary_result = run_translation_model(
         model,
         if selection_len > LONG_SELECTION_THRESHOLD_CHARS {
-            "You are a precise academic translator. Translate the full user-selected source passage into Simplified Chinese. Never translate the page context. Never add explanations or summaries."
+            "You are a precise academic translator. Return only JSON. Translate the full selected source passage into Simplified Chinese. Hints are reference clues only, never source text."
         } else {
-            "You are a precise academic translator. Translate only the user-selected source text into Simplified Chinese. Never translate the page context. Never return the original English sentence unchanged."
+            "You are a precise academic translator. Return only JSON. Translate only the selected source text into Simplified Chinese. Hints are reference clues only, never source text."
         },
         &primary_prompt,
     )
     .await
-    .and_then(|text| validate_selection_translation_output(selected_text, text));
+    .map_err(SelectionTranslationFailure::fatal)
+    .and_then(|text| parse_translation_model_output(selected_text, text))
+    .and_then(|text| validate_selection_translation_output(selected_text, text, Some(&hints)));
 
-    if let Ok(validated) = primary_result {
-        return Ok(validated);
+    let first_error = match primary_result {
+        Ok(validated) => {
+            return Ok((validated, TRANSLATION_PROMPT_V3_WITH_HINTS_JSON.to_string()));
+        }
+        Err(error) => error,
+    };
+    if matches!(first_error.kind, SelectionTranslationFailureKind::Fatal) {
+        return Err(first_error.into_message());
     }
 
-    let retry_prompt = if selection_len > LONG_SELECTION_THRESHOLD_CHARS {
-        format!(
-            "The previous attempt failed because it included too much non-source content.\n\nRetry and translate only the selected source passage into natural Simplified Chinese.\n\nStrict rules:\n1. Translate the entire selected source passage and nothing else.\n2. Do not translate or paraphrase the page context.\n3. Keep formulas, tensor names, URLs, DOI, and code identifiers as-is.\n4. Preserve paragraph and sentence structure as much as possible.\n5. No explanation. No bullet points. No preface.\n\nPage context (reference only):\n{context_block}\n\nSource passage:\n{selected_text}"
-        )
-    } else {
-        format!(
-            "The previous attempt failed because it included too much non-source content.\n\nTry again and translate only the selected source text into natural Simplified Chinese.\n\nStrict rules:\n1. Translate only the source text.\n2. Do not translate or paraphrase the page context.\n3. Keep formulas, tensor names, URLs, DOI, and code identifiers as-is.\n4. If a proper noun must stay in English, keep a short Chinese translation and put the English in parentheses.\n5. No explanation. No bullet points. No preface.\n6. Keep the output length close to the source text length.\n\nPage context (reference only):\n{context_block}\n\nSource text:\n{selected_text}"
-        )
-    };
+    let retry_prompt = format!(
+        "Return ONLY a JSON object matching this schema example:\n{{\"translation\":\"简体中文译文\",\"confidence\":0.0,\"detected_language\":\"en\"}}\n\nThe previous attempt was rejected because it may have included non-source content.\n\nTranslate only the {source_label} inside <SOURCE id=\"selected\"> into natural Simplified Chinese.\n\nStrict rules:\n1. Translate the selected source and nothing else.\n2. Do not add explanations, labels, bullet points, Markdown, or surrounding prose.\n3. Keep formulas, tensor names, URLs, DOI, and code identifiers as-is.\n4. The output must stay proportional to the selected source length.\n\n<SOURCE id=\"selected\">\n{selected_text}\n</SOURCE>"
+    );
 
     run_translation_model(
         model,
         if selection_len > LONG_SELECTION_THRESHOLD_CHARS {
-            "You are an academic English-to-Chinese translator. You must return a valid Simplified Chinese translation of only the selected source passage, not the page context."
+            "You are an academic English-to-Chinese translator. Return only JSON. Translate only the selected source passage."
         } else {
-            "You are an academic English-to-Chinese translator. You must return a valid Simplified Chinese translation of only the selected source text, not the page context."
+            "You are an academic English-to-Chinese translator. Return only JSON. Translate only the selected source text."
         },
         &retry_prompt,
     )
     .await
-    .and_then(|text| validate_selection_translation_output(selected_text, text))
+    .map_err(|error| format!("划词翻译失败：{error}"))
+    .and_then(|text| {
+        parse_translation_model_output(selected_text, text)
+            .map_err(SelectionTranslationFailure::into_message)
+    })
+    .and_then(|text| {
+        validate_selection_translation_output(selected_text, text, None)
+            .map_err(SelectionTranslationFailure::into_message)
+    })
+    .map(|validated| (validated, TRANSLATION_PROMPT_V3_PURE_TEXT_JSON.to_string()))
 }
 
 async fn translate_pdf_page_markdown_v2(page_text: &str, model: &str) -> Result<String, String> {
@@ -4346,7 +4762,7 @@ async fn translate_pdf_selection(
     }
 
     let page_context = extract_pdf_page_text_cached(&request.pdf_path, request.page, &cache).ok();
-    let translated_text =
+    let (translated_text, prompt_version_used) =
         translate_pdf_selection_text_v2(&original_text, page_context.as_deref(), &request.model)
             .await?;
 
@@ -4356,6 +4772,7 @@ async fn translate_pdf_selection(
         page: request.page,
         generated_at: cards::current_timestamp_iso_utc(),
         model_used: request.model,
+        prompt_version_used,
     })
 }
 
@@ -4837,7 +5254,11 @@ fn draft_title_from_content(content: &str, path: &Path) -> String {
         .or_else(|| {
             strip_markdown_frontmatter(content)
                 .lines()
-                .find_map(|line| line.trim().strip_prefix("# ").map(|title| title.trim().to_string()))
+                .find_map(|line| {
+                    line.trim()
+                        .strip_prefix("# ")
+                        .map(|title| title.trim().to_string())
+                })
         })
         .filter(|title| !title.trim().is_empty())
         .unwrap_or_else(|| {
@@ -5280,10 +5701,12 @@ async fn chat_with_llm(
     image_path: Option<String>,
     request_id: String,
     settings_state: State<'_, InferenceSettingsState>,
+    queue_state: State<'_, LlmChatQueueState>,
 ) -> Result<String, String> {
     let settings = settings_state.get()?;
     let normalized_image_path = normalize_optional_path(image_path);
-    route_chat_completion(
+    let permit = queue_state.acquire(ChatPriority::Desktop).await;
+    let result = route_chat_completion(
         &window,
         &request_id,
         &query,
@@ -5293,7 +5716,9 @@ async fn chat_with_llm(
         settings.mode,
         settings.thinking_enabled,
     )
-    .await
+    .await;
+    permit.release().await;
+    result
 }
 
 #[tauri::command]
@@ -5328,11 +5753,49 @@ async fn set_mobile_inbox_item_status(
     mobile::set_mobile_inbox_item_status(&app, &item_id, processed)
 }
 
+#[tauri::command]
+async fn set_mobile_chat_model(app: AppHandle, model: String) -> Result<(), String> {
+    mobile::set_mobile_chat_model(&app, &model)
+}
+
+#[tauri::command]
+async fn list_mobile_chat_threads(
+    app: AppHandle,
+) -> Result<Vec<mobile::MobileChatThreadSummary>, String> {
+    mobile::list_mobile_chat_threads(&app)
+}
+
+#[tauri::command]
+async fn read_mobile_chat_thread(
+    app: AppHandle,
+    thread_id: String,
+) -> Result<mobile::MobileChatThread, String> {
+    mobile::read_mobile_chat_thread(&app, &thread_id)
+}
+
+#[tauri::command]
+async fn append_mobile_chat_thread_turn(
+    app: AppHandle,
+    thread_id: String,
+    user_content: String,
+    assistant_content: String,
+    model: String,
+) -> Result<mobile::MobileChatThread, String> {
+    mobile::append_mobile_chat_thread_turn(
+        &app,
+        &thread_id,
+        &user_content,
+        &assistant_content,
+        &model,
+    )
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let inference_settings_state = InferenceSettingsState::new();
     let mobile_companion_state = mobile::MobileCompanionState::new();
     let pdf_page_text_cache_state = PdfPageTextCacheState::new();
+    let llm_chat_queue_state = LlmChatQueueState::new();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -5342,6 +5805,7 @@ pub fn run() {
         .manage(inference_settings_state)
         .manage(mobile_companion_state)
         .manage(pdf_page_text_cache_state)
+        .manage(llm_chat_queue_state)
         .setup(|app| {
             let started = Instant::now();
             let handle = app.handle().clone();
@@ -5401,6 +5865,7 @@ pub fn run() {
             detect_zotero_storage,
             ingest_knowledge_base,
             ingest_research_corpus,
+            cancel_research_ingest,
             unindex_research_path,
             query_knowledge_base,
             search_research_memory,
@@ -5462,7 +5927,11 @@ pub fn run() {
             get_mobile_companion_status,
             refresh_mobile_pair_code,
             list_mobile_inbox_items,
-            set_mobile_inbox_item_status
+            set_mobile_inbox_item_status,
+            set_mobile_chat_model,
+            list_mobile_chat_threads,
+            read_mobile_chat_thread,
+            append_mobile_chat_thread_turn
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

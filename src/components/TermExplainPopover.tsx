@@ -82,6 +82,8 @@ const buildCacheKey = (
   `ra_term_explain_cache_v2:${lookupMode}:${pdfPath}:${page}:${selectedText}`;
 
 const normalizeSelection = (value: string) => value.replace(/\s+/g, " ").trim();
+const truncateLabel = (value: string, limit = 72) =>
+  value.length > limit ? `${value.slice(0, limit).trimEnd()}...` : value;
 const clamp = (value: number, min: number, max: number) =>
   Math.min(Math.max(value, min), max);
 
@@ -185,6 +187,10 @@ export const TermExplainPopover: React.FC<TermExplainPopoverProps> = ({
   const normalizedText = useMemo(
     () => normalizeSelection(selectedText),
     [selectedText],
+  );
+  const titleText = useMemo(
+    () => truncateLabel(normalizedText || "术语解释"),
+    [normalizedText],
   );
   const validationError = useMemo(() => {
     if (!normalizedText) return "请选择术语或短语。";
@@ -424,8 +430,8 @@ export const TermExplainPopover: React.FC<TermExplainPopoverProps> = ({
     >
       <div className="term-popover-header" onMouseDown={handleHeaderMouseDown}>
         <div>
-          <div className="term-popover-title">
-            {normalizedText || "术语解释"}
+          <div className="term-popover-title" title={normalizedText}>
+            {titleText}
           </div>
           <div className="term-popover-subtitle">
             模式：{lookupModeLabel} · 可拖动

@@ -12,6 +12,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   FileText,
+  Languages,
   List,
   LoaderCircle,
   X,
@@ -239,6 +240,8 @@ const FLOATING_BUTTON_WIDTH = 84;
 const FLOATING_BUTTON_HEIGHT = 36;
 const POPOVER_ANCHOR_GAP = 14;
 const MAX_TRANSLATE_SELECTION_CHARS = 2400;
+const MAX_EXPLAIN_SELECTION_CHARS = 120;
+const PDF_SELECTION_MODE_KEY = "ra_pdf_selection_mode_v1";
 const TRANSLATION_TOAST_EXIT_MS = 240;
 const TRANSLATION_INFO_TOAST_MS = 1800;
 const TRANSLATION_SUCCESS_TOAST_MS = 2400;
@@ -1113,6 +1116,14 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
   const [viewerMode, setViewerMode] = useState<ViewerMode>("pdfjs");
   const [viewerError, setViewerError] = useState<string | null>(null);
   const [selection, setSelection] = useState<PdfSelectionState | null>(null);
+  const [isSelectionTranslateMode, setIsSelectionTranslateMode] = useState(
+    () => {
+      if (typeof window === "undefined") return false;
+      return (
+        window.localStorage.getItem(PDF_SELECTION_MODE_KEY) === "translate"
+      );
+    },
+  );
   const [annotations, setAnnotations] = useState<PdfHighlightAnnotation[]>([]);
   const [annotationEditor, setAnnotationEditor] =
     useState<AnnotationEditorState | null>(null);
@@ -1150,6 +1161,14 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
     onStatusRef.current = onStatus;
     onPageChangeRef.current = onPageChange;
   }, [onPageChange, onStatus]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(
+      PDF_SELECTION_MODE_KEY,
+      isSelectionTranslateMode ? "translate" : "normal",
+    );
+  }, [isSelectionTranslateMode]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -2845,6 +2864,15 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
     if (!selection) {
       return;
     }
+    if (selection.text.length > MAX_EXPLAIN_SELECTION_CHARS) {
+      onStatusRef.current(
+        "解释功能适合术语或短语；长段内容请使用“翻译”。",
+        "info",
+        false,
+      );
+      setContextMenu(null);
+      return;
+    }
     setSelection((previous) =>
       previous ? { ...previous, overlay: "explain" } : previous,
     );
@@ -3008,6 +3036,10 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
 
   const handleSelectionStart = useCallback(
     (event: React.MouseEvent<HTMLDivElement>) => {
+      if (event.button !== 0) {
+        return;
+      }
+
       if (!resolveSelectionTargetElement(event.target)) {
         event.preventDefault();
         isSelectionDraggingRef.current = false;
@@ -3054,6 +3086,7 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
 
   const handleSelectionCapture = useCallback(
     (event?: React.MouseEvent<HTMLDivElement> | MouseEvent) => {
+      if (event && "button" in event && event.button !== 0) return;
       if (viewerMode !== "pdfjs" || !isSelectionDraggingRef.current) return;
       const capturedRanges = clampSelectionRangesToBlankLine(
         cloneCurrentSelectionRanges(),
@@ -3068,8 +3101,11 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
           capturedRanges.length > 0
             ? capturedRanges
             : selectionRangeRef.current;
+        const overlayMode: SelectionOverlayMode = isSelectionTranslateMode
+          ? "translate"
+          : "button";
         const nextSelection = buildSelectionState(
-          "button",
+          overlayMode,
           false,
           fallbackRanges,
         );
@@ -3084,6 +3120,7 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
       clampSelectionRangesToBlankLine,
       clearActiveTextLayerSelections,
       cloneCurrentSelectionRanges,
+      isSelectionTranslateMode,
       viewerMode,
     ],
   );
@@ -3092,8 +3129,16 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
     if (viewerMode !== "pdfjs") return;
 
     const browserSelection = window.getSelection();
-    const text = normalizeSelectedText(browserSelection?.toString() ?? "");
+    const nativeText = normalizeSelectedText(
+      browserSelection?.toString() ?? "",
+    );
     event.preventDefault();
+
+    const stableSelection =
+      selection ??
+      buildSelectionState("button", true, selectionRangeRef.current) ??
+      (nativeText ? buildSelectionState("button", true) : null);
+    const text = stableSelection?.text ?? nativeText;
 
     const overlayRect = selectionOverlayRef.current?.getBoundingClientRect();
     const baseLeft = overlayRect?.left ?? 0;
@@ -3138,8 +3183,11 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
       return;
     }
 
-    if (!selection || selection.text !== text) {
-      handleSelectionCapture();
+    if (stableSelection) {
+      if (selectionRangeRef.current.length === 0) {
+        selectionRangeRef.current = cloneCurrentSelectionRanges();
+      }
+      setSelection(stableSelection);
     }
 
     const menuWidth = 188;
@@ -3159,6 +3207,15 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
 
   const handleContextExplain = () => {
     if (!selection) return;
+    if (selection.text.length > MAX_EXPLAIN_SELECTION_CHARS) {
+      onStatusRef.current(
+        "解释功能适合术语或短语；长段内容请使用“翻译”。",
+        "info",
+        false,
+      );
+      setContextMenu(null);
+      return;
+    }
     setSelection((previous) =>
       previous ? { ...previous, overlay: "explain" } : previous,
     );
@@ -3965,6 +4022,30 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
                 </div>
 
                 <div className="pdf-toolbar-section pdf-toolbar-section-end">
+                  <button
+                    type="button"
+                    className={`action-button pdf-toolbar-icon-button pdf-selection-mode-button ${isSelectionTranslateMode ? "primary" : ""}`}
+                    onClick={() =>
+                      setIsSelectionTranslateMode((previous) => !previous)
+                    }
+                    disabled={viewerMode !== "pdfjs"}
+                    aria-pressed={isSelectionTranslateMode}
+                    aria-label={
+                      isSelectionTranslateMode
+                        ? "关闭划词翻译模式"
+                        : "开启划词翻译模式"
+                    }
+                    title={
+                      isSelectionTranslateMode
+                        ? "划词翻译模式已开启：选中文本后直接翻译"
+                        : "开启划词翻译模式"
+                    }
+                  >
+                    <Languages size={14} />
+                  </button>
+
+                  <span className="pdf-toolbar-divider" aria-hidden="true" />
+
                   <label className="pdf-mode-control pdf-lookup-control">
                     <select
                       value={lookupMode}

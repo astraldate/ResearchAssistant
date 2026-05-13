@@ -778,6 +778,7 @@ function App() {
     Record<string, IngestStageSnapshot>
   >({});
   const [isIngesting, setIsIngesting] = useState(false);
+  const [isCancellingIngest, setIsCancellingIngest] = useState(false);
   const [statusBanner, setStatusBanner] = useState<StatusBanner | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [activeSettingsTab, setActiveSettingsTab] =
@@ -1701,6 +1702,9 @@ function App() {
   useEffect(() => {
     if (currentModel.trim()) {
       localStorage.setItem(CHAT_MODEL_KEY, currentModel.trim());
+      void invoke("set_mobile_chat_model", {
+        model: currentModel.trim(),
+      }).catch(() => undefined);
     } else {
       localStorage.removeItem(CHAT_MODEL_KEY);
     }
@@ -2018,9 +2022,14 @@ function App() {
       "info",
       cumulativeProgressPercent,
       ingestStatusDetails,
+      {
+        label: isCancellingIngest ? "正在中止..." : "中止索引",
+        onClick: () => void handleCancelIngest(),
+      },
     );
   }, [
     cumulativeProgressPercent,
+    isCancellingIngest,
     ingestStatusDetails,
     ingestProgress,
     isIngesting,
@@ -2159,12 +2168,25 @@ function App() {
     };
   }, [currentModel, getInstalledModels]);
 
+  const handleCancelIngest = async () => {
+    if (!isIngesting || isCancellingIngest) return;
+    setIsCancellingIngest(true);
+    try {
+      await invoke("cancel_research_ingest");
+      showPersistentStatus("正在中止索引，当前步骤结束后会停止...", "info");
+    } catch (error) {
+      setIsCancellingIngest(false);
+      showPersistentStatus(`中止索引失败：${String(error)}`, "error");
+    }
+  };
+
   const ingestWorkspacePath = async (
     path: string,
     modeOverride?: IngestMode,
   ) => {
     setActiveSidebarTool("workspace");
     setIsIngesting(true);
+    setIsCancellingIngest(false);
     setIngestStageSnapshots({
       prepare_ingest: {
         current: 0,
@@ -2271,9 +2293,15 @@ function App() {
         showTemporaryStatus(`索引完成，已处理 ${count} 篇文献。`);
       }
     } catch (error) {
-      showPersistentStatus(`建立索引失败：${String(error)}`, "error");
+      const message = String(error);
+      if (message.includes("索引已取消")) {
+        showTemporaryStatus("索引已中止。", "info");
+      } else {
+        showPersistentStatus(`建立索引失败：${message}`, "error");
+      }
     } finally {
       setIsIngesting(false);
+      setIsCancellingIngest(false);
     }
   };
 
@@ -2675,19 +2703,12 @@ function App() {
         "list_paper_note_drafts",
       );
       setPaperNoteDrafts(drafts);
-      if (
-        selectedPaperNoteDraft &&
-        !drafts.some((draft) => draft.path === selectedPaperNoteDraft.path)
-      ) {
-        setSelectedPaperNoteDraft(null);
-        setIsEditingPaperNote(false);
-      }
     } catch (error) {
       showTemporaryStatus(`加载 Notes 失败：${String(error)}`, "error");
     } finally {
       setIsPaperNotesLoading(false);
     }
-  }, [selectedPaperNoteDraft]);
+  }, []);
 
   useEffect(() => {
     if (activeSidebarTool !== "notes") return;
@@ -2904,7 +2925,16 @@ function App() {
       <>
         {isIngesting && (
           <div className="ingest-panel">
-            <div className="ingest-title">{stageLabel}</div>
+            <div className="ingest-panel-header">
+              <div className="ingest-title">{stageLabel}</div>
+              <button
+                className="ghost-button ingest-cancel-button"
+                onClick={() => void handleCancelIngest()}
+                disabled={isCancellingIngest}
+              >
+                {isCancellingIngest ? "中止中..." : "中止"}
+              </button>
+            </div>
             <div className="ingest-subtitle">
               {ingestProgress?.total
                 ? `总进度 ${cumulativeProgressPercent}% · 当前阶段 ${ingestProgress.current}/${ingestProgress.total}`
@@ -3072,11 +3102,24 @@ function App() {
               <article
                 key={draft.path}
                 className={`card-item notes-card-item ${selectedPaperNoteDraft?.path === draft.path ? "active" : ""}`}
+                role="button"
+                tabIndex={0}
+                onClick={() => void handleOpenPaperNoteDraft(draft)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    void handleOpenPaperNoteDraft(draft);
+                  }
+                }}
+                title="打开 Note"
               >
                 <button
                   type="button"
                   className="card-item-title card-item-title-button"
-                  onClick={() => void handleOpenPaperNoteDraft(draft)}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void handleOpenPaperNoteDraft(draft);
+                  }}
                   title="打开 Note"
                 >
                   {draft.title}

@@ -1,19 +1,31 @@
+use axum::{
+    body::{Body, Bytes},
+    extract::{Path as AxumPath, State as AxumState},
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
+    routing::{get, post},
+    Json, Router,
+};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use futures_util::{stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
+use std::convert::Infallible;
 use std::fs;
 use std::net::UdpSocket;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Manager};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tauri::{AppHandle, Emitter, Manager};
+use tokio::net::TcpListener;
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::cards::{self, KnowledgeCardDetail};
+use crate::chat_queue::{ChatPriority, LlmChatQueueState};
 use crate::encyclopedia::TermLookupMode;
+use crate::research_memory::{self, ResearchSearchScope};
 
 const MOBILE_API_VERSION: &str = "2026-03-13.v1";
 const MOBILE_SERVICE_NAME: &str = "Research Assistant Desktop";
@@ -22,8 +34,11 @@ const REVIEW_STATE_DIR_NAME: &str = "review_state";
 const REVIEW_STATE_FILE_NAME: &str = "reviews.json";
 const MOBILE_INBOX_DIR_NAME: &str = "mobile_inbox";
 const MOBILE_INBOX_ASSET_DIR_NAME: &str = "assets";
-const HTTP_MAX_HEADER_BYTES: usize = 16 * 1024;
-const HTTP_MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
+const MOBILE_CHAT_DIR_NAME: &str = "mobile_chat_threads";
+const MOBILE_CHAT_SETTINGS_FILE_NAME: &str = "mobile_chat_settings.json";
+const MOBILE_CHAT_DEFAULT_MODEL: &str = "qwen3.5:9b";
+const MOBILE_CHAT_HISTORY_LIMIT: usize = 12;
+const MOBILE_CHAT_RETRIEVAL_LIMIT: usize = 5;
 const MOBILE_PORT_CANDIDATES: [u16; 5] = [38465, 38466, 38467, 38468, 38469];
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -221,6 +236,88 @@ pub struct MobileBootstrapResponse {
     pub review_records: Vec<ReviewRecord>,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum MobileChatRole {
+    User,
+    Assistant,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum MobileChatSource {
+    Mobile,
+    Desktop,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum MobileChatMessageStatus {
+    Complete,
+    Streaming,
+    Error,
+    Interrupted,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum MobileChatThreadStatus {
+    Idle,
+    Streaming,
+    Error,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MobileChatMessage {
+    pub message_id: String,
+    pub role: MobileChatRole,
+    pub content: String,
+    pub created_at: String,
+    pub source: MobileChatSource,
+    pub status: MobileChatMessageStatus,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MobileChatThread {
+    pub thread_id: String,
+    pub title: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub model: String,
+    pub status: MobileChatThreadStatus,
+    pub messages: Vec<MobileChatMessage>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MobileChatThreadSummary {
+    pub thread_id: String,
+    pub title: String,
+    pub updated_at: String,
+    pub model: String,
+    pub status: MobileChatThreadStatus,
+    pub last_message_preview: String,
+    pub message_count: usize,
+    pub last_error: Option<String>,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MobileChatSendRequest {
+    pub message: String,
+    #[serde(default)]
+    pub use_retrieval: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+struct MobileChatSettings {
+    model: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 struct StoredMobileCompanionState {
@@ -260,17 +357,11 @@ pub struct MobileCompanionState {
     inner: Arc<Mutex<MobileCompanionRuntime>>,
 }
 
-struct HttpRequest {
-    method: String,
-    path: String,
-    headers: HashMap<String, String>,
-    body: Vec<u8>,
-}
-
-struct HttpResponse {
-    status: u16,
-    content_type: &'static str,
-    body: Vec<u8>,
+#[derive(Clone)]
+struct MobileRouterState {
+    app: AppHandle,
+    mobile_state: MobileCompanionState,
+    chat_queue: LlmChatQueueState,
 }
 
 impl MobileCompanionState {
@@ -283,25 +374,6 @@ impl MobileCompanionState {
             .lock()
             .map(|guard| guard.clone())
             .map_err(|error| format!("Failed to lock mobile companion state: {}", error))
-    }
-}
-
-impl HttpResponse {
-    fn json<T: Serialize>(status: u16, value: &T) -> Self {
-        let body = serde_json::to_vec(value).unwrap_or_else(|_| b"{}".to_vec());
-        Self {
-            status,
-            content_type: "application/json; charset=utf-8",
-            body,
-        }
-    }
-
-    fn text(status: u16, message: impl Into<String>) -> Self {
-        Self {
-            status,
-            content_type: "text/plain; charset=utf-8",
-            body: message.into().into_bytes(),
-        }
     }
 }
 
@@ -359,7 +431,18 @@ pub fn initialize_mobile_companion(
                         return;
                     }
                 };
-                serve_mobile_requests(listener, app_handle, state_handle).await;
+                let router_state = MobileRouterState {
+                    chat_queue: app_handle.state::<LlmChatQueueState>().inner().clone(),
+                    app: app_handle.clone(),
+                    mobile_state: state_handle.clone(),
+                };
+                if let Err(error) = axum::serve(listener, build_mobile_router(router_state)).await {
+                    if let Ok(mut runtime) = state_handle.inner.lock() {
+                        runtime.running = false;
+                        runtime.last_error =
+                            Some(format!("Mobile companion axum service stopped: {}", error));
+                    }
+                }
             });
         }
         Err(error) => {
@@ -444,227 +527,186 @@ pub fn set_mobile_inbox_item_status(
     Ok(map_desktop_mobile_inbox_item(item, path))
 }
 
-async fn serve_mobile_requests(listener: TcpListener, app: AppHandle, state: MobileCompanionState) {
-    loop {
-        match listener.accept().await {
-            Ok((socket, _)) => {
-                let app_handle = app.clone();
-                let state_handle = state.clone();
-                tauri::async_runtime::spawn(async move {
-                    handle_mobile_socket(socket, app_handle, state_handle).await;
-                });
-            }
-            Err(error) => {
-                if let Ok(mut runtime) = state.inner.lock() {
-                    runtime.running = false;
-                    runtime.last_error =
-                        Some(format!("Mobile companion listener stopped: {}", error));
-                }
-                break;
-            }
-        }
-    }
+fn build_mobile_router(state: MobileRouterState) -> Router {
+    Router::new()
+        .route("/api/mobile/v1/health", get(axum_mobile_health))
+        .route("/api/mobile/v1/pair", post(axum_mobile_pair))
+        .route("/api/mobile/v1/bootstrap", get(axum_mobile_bootstrap))
+        .route(
+            "/api/mobile/v1/review-events",
+            post(axum_mobile_review_events),
+        )
+        .route("/api/mobile/v1/inbox/items", post(axum_mobile_inbox_item))
+        .route("/api/mobile/v1/chat/threads", get(axum_list_chat_threads))
+        .route(
+            "/api/mobile/v1/chat/threads/{thread_id}",
+            get(axum_read_chat_thread),
+        )
+        .route(
+            "/api/mobile/v1/chat/threads/stream",
+            post(axum_create_chat_thread_stream),
+        )
+        .route(
+            "/api/mobile/v1/chat/threads/{thread_id}/messages/stream",
+            post(axum_continue_chat_thread_stream),
+        )
+        .with_state(state)
 }
 
-async fn handle_mobile_socket(mut socket: TcpStream, app: AppHandle, state: MobileCompanionState) {
-    let response = match read_http_request(&mut socket).await {
-        Ok(request) => route_http_request(&app, &state, request).await,
-        Err(error) => HttpResponse::text(400, error),
-    };
-    let _ = write_http_response(&mut socket, response).await;
-}
-
-async fn route_http_request(
-    app: &AppHandle,
-    state: &MobileCompanionState,
-    request: HttpRequest,
-) -> HttpResponse {
-    match (request.method.as_str(), request.path.as_str()) {
-        ("GET", "/api/mobile/v1/health") => {
-            let snapshot = match state.snapshot() {
-                Ok(value) => value,
-                Err(error) => return HttpResponse::text(500, error),
-            };
-            HttpResponse::json(
-                200,
-                &MobileHealthResponse {
-                    api_version: MOBILE_API_VERSION.to_string(),
-                    service_name: MOBILE_SERVICE_NAME.to_string(),
-                    running: snapshot.running,
-                },
-            )
-        }
-        ("POST", "/api/mobile/v1/pair") => {
-            let payload = match serde_json::from_slice::<MobilePairRequest>(&request.body) {
-                Ok(value) => value,
-                Err(error) => {
-                    return HttpResponse::text(400, format!("Invalid pair payload: {}", error))
-                }
-            };
-            match pair_device(app, state, payload) {
-                Ok(response) => HttpResponse::json(200, &response),
-                Err(error) => HttpResponse::text(403, error),
-            }
-        }
-        ("GET", "/api/mobile/v1/bootstrap") => {
-            let _device = match authorize_request(app, state, &request.headers) {
-                Ok(device) => device,
-                Err(error) => return HttpResponse::text(401, error),
-            };
-            match load_bootstrap_payload(app, state) {
-                Ok(response) => HttpResponse::json(200, &response),
-                Err(error) => HttpResponse::text(500, error),
-            }
-        }
-        ("POST", "/api/mobile/v1/review-events") => {
-            let _device = match authorize_request(app, state, &request.headers) {
-                Ok(device) => device,
-                Err(error) => return HttpResponse::text(401, error),
-            };
-            let payload = match serde_json::from_slice::<ReviewSyncRequest>(&request.body) {
-                Ok(value) => value,
-                Err(error) => {
-                    return HttpResponse::text(400, format!("Invalid review payload: {}", error))
-                }
-            };
-            match apply_review_events(app, payload) {
-                Ok(response) => HttpResponse::json(200, &response),
-                Err(error) => HttpResponse::text(500, error),
-            }
-        }
-        ("POST", "/api/mobile/v1/inbox/items") => {
-            let device = match authorize_request(app, state, &request.headers) {
-                Ok(value) => value,
-                Err(error) => return HttpResponse::text(401, error),
-            };
-            let payload = match serde_json::from_slice::<MobileInboxItemInput>(&request.body) {
-                Ok(value) => value,
-                Err(error) => {
-                    return HttpResponse::text(400, format!("Invalid inbox payload: {}", error))
-                }
-            };
-            match store_inbox_item(app, &device.device_id, payload) {
-                Ok(item) => HttpResponse::json(200, &item),
-                Err(error) => HttpResponse::text(500, error),
-            }
-        }
-        _ => HttpResponse::json(404, &json!({ "error": "Not Found" })),
-    }
-}
-
-async fn read_http_request(socket: &mut TcpStream) -> Result<HttpRequest, String> {
-    let mut buffer = Vec::new();
-    let header_end;
-
-    loop {
-        let mut chunk = [0u8; 4096];
-        let read = socket
-            .read(&mut chunk)
-            .await
-            .map_err(|error| error.to_string())?;
-        if read == 0 {
-            return Err("Connection closed before request headers were received.".to_string());
-        }
-        buffer.extend_from_slice(&chunk[..read]);
-        if buffer.len() > HTTP_MAX_HEADER_BYTES {
-            return Err("HTTP headers exceeded the maximum supported size.".to_string());
-        }
-        if let Some(index) = find_subsequence(&buffer, b"\r\n\r\n") {
-            header_end = index + 4;
-            break;
-        }
-    }
-
-    let header_text = String::from_utf8_lossy(&buffer[..header_end]).to_string();
-    let mut lines = header_text.split("\r\n").filter(|line| !line.is_empty());
-    let request_line = lines
-        .next()
-        .ok_or_else(|| "Missing HTTP request line.".to_string())?;
-    let mut request_parts = request_line.split_whitespace();
-    let method = request_parts
-        .next()
-        .ok_or_else(|| "Missing HTTP method.".to_string())?
-        .to_string();
-    let path = request_parts
-        .next()
-        .ok_or_else(|| "Missing HTTP path.".to_string())?
-        .split('?')
-        .next()
-        .unwrap_or("/")
-        .to_string();
-
-    let mut headers = HashMap::new();
-    for line in lines {
-        if let Some((name, value)) = line.split_once(':') {
-            headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
-        }
-    }
-
-    let content_length = headers
-        .get("content-length")
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(0);
-    if content_length > HTTP_MAX_BODY_BYTES {
-        return Err("HTTP body exceeded the maximum supported size.".to_string());
-    }
-
-    while buffer.len().saturating_sub(header_end) < content_length {
-        let mut chunk = [0u8; 4096];
-        let read = socket
-            .read(&mut chunk)
-            .await
-            .map_err(|error| error.to_string())?;
-        if read == 0 {
-            return Err("Connection closed before request body was fully received.".to_string());
-        }
-        buffer.extend_from_slice(&chunk[..read]);
-        if buffer.len().saturating_sub(header_end) > HTTP_MAX_BODY_BYTES {
-            return Err("HTTP body exceeded the maximum supported size.".to_string());
-        }
-    }
-
-    let body = buffer[header_end..header_end + content_length].to_vec();
-    Ok(HttpRequest {
-        method,
-        path,
-        headers,
-        body,
+async fn axum_mobile_health(AxumState(state): AxumState<MobileRouterState>) -> impl IntoResponse {
+    let running = state
+        .mobile_state
+        .snapshot()
+        .map(|snapshot| snapshot.running)
+        .unwrap_or(false);
+    Json(MobileHealthResponse {
+        api_version: MOBILE_API_VERSION.to_string(),
+        service_name: MOBILE_SERVICE_NAME.to_string(),
+        running,
     })
 }
 
-async fn write_http_response(socket: &mut TcpStream, response: HttpResponse) -> Result<(), String> {
-    let status_text = match response.status {
-        200 => "OK",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        403 => "Forbidden",
-        404 => "Not Found",
-        500 => "Internal Server Error",
-        _ => "OK",
-    };
-
-    let header = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        response.status,
-        status_text,
-        response.content_type,
-        response.body.len()
-    );
-    socket
-        .write_all(header.as_bytes())
-        .await
-        .map_err(|error| error.to_string())?;
-    socket
-        .write_all(&response.body)
-        .await
-        .map_err(|error| error.to_string())?;
-    socket.flush().await.map_err(|error| error.to_string())
+async fn axum_mobile_pair(
+    AxumState(state): AxumState<MobileRouterState>,
+    Json(payload): Json<MobilePairRequest>,
+) -> Response {
+    match pair_device(&state.app, &state.mobile_state, payload) {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(error) => (StatusCode::FORBIDDEN, error).into_response(),
+    }
 }
 
-fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
+async fn axum_mobile_bootstrap(
+    AxumState(state): AxumState<MobileRouterState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(error) = authorize_headers(&state.app, &state.mobile_state, &headers) {
+        return (StatusCode::UNAUTHORIZED, error).into_response();
+    }
+    match load_bootstrap_payload(&state.app, &state.mobile_state) {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
+    }
+}
+
+async fn axum_mobile_review_events(
+    AxumState(state): AxumState<MobileRouterState>,
+    headers: HeaderMap,
+    Json(payload): Json<ReviewSyncRequest>,
+) -> Response {
+    if let Err(error) = authorize_headers(&state.app, &state.mobile_state, &headers) {
+        return (StatusCode::UNAUTHORIZED, error).into_response();
+    }
+    match apply_review_events(&state.app, payload) {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
+    }
+}
+
+async fn axum_mobile_inbox_item(
+    AxumState(state): AxumState<MobileRouterState>,
+    headers: HeaderMap,
+    Json(payload): Json<MobileInboxItemInput>,
+) -> Response {
+    let device = match authorize_headers(&state.app, &state.mobile_state, &headers) {
+        Ok(device) => device,
+        Err(error) => return (StatusCode::UNAUTHORIZED, error).into_response(),
+    };
+    match store_inbox_item(&state.app, &device.device_id, payload) {
+        Ok(item) => (StatusCode::OK, Json(item)).into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
+    }
+}
+
+async fn axum_list_chat_threads(
+    AxumState(state): AxumState<MobileRouterState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(error) = authorize_headers(&state.app, &state.mobile_state, &headers) {
+        return (StatusCode::UNAUTHORIZED, error).into_response();
+    }
+    match list_mobile_chat_threads(&state.app) {
+        Ok(threads) => (StatusCode::OK, Json(threads)).into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
+    }
+}
+
+async fn axum_read_chat_thread(
+    AxumState(state): AxumState<MobileRouterState>,
+    AxumPath(thread_id): AxumPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(error) = authorize_headers(&state.app, &state.mobile_state, &headers) {
+        return (StatusCode::UNAUTHORIZED, error).into_response();
+    }
+    match read_mobile_chat_thread(&state.app, &thread_id) {
+        Ok(thread) => (StatusCode::OK, Json(thread)).into_response(),
+        Err(error) => (StatusCode::NOT_FOUND, error).into_response(),
+    }
+}
+
+async fn axum_create_chat_thread_stream(
+    AxumState(state): AxumState<MobileRouterState>,
+    headers: HeaderMap,
+    Json(payload): Json<MobileChatSendRequest>,
+) -> Response {
+    if let Err(error) = authorize_headers(&state.app, &state.mobile_state, &headers) {
+        return (StatusCode::UNAUTHORIZED, error).into_response();
+    }
+    stream_mobile_chat_response(state, None, payload)
+}
+
+async fn axum_continue_chat_thread_stream(
+    AxumState(state): AxumState<MobileRouterState>,
+    AxumPath(thread_id): AxumPath<String>,
+    headers: HeaderMap,
+    Json(payload): Json<MobileChatSendRequest>,
+) -> Response {
+    if let Err(error) = authorize_headers(&state.app, &state.mobile_state, &headers) {
+        return (StatusCode::UNAUTHORIZED, error).into_response();
+    }
+    stream_mobile_chat_response(state, Some(thread_id), payload)
+}
+
+fn authorize_headers(
+    app: &AppHandle,
+    state: &MobileCompanionState,
+    headers: &HeaderMap,
+) -> Result<PairedDeviceRecord, String> {
+    let mapped = headers
+        .iter()
+        .filter_map(|(key, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|value| (key.as_str().to_ascii_lowercase(), value.to_string()))
+        })
+        .collect::<HashMap<_, _>>();
+    authorize_request(app, state, &mapped)
+}
+
+fn stream_mobile_chat_response(
+    state: MobileRouterState,
+    thread_id: Option<String>,
+    payload: MobileChatSendRequest,
+) -> Response {
+    if payload.message.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "Message must not be empty.").into_response();
+    }
+
+    let (sender, receiver) = mpsc::channel::<Result<Bytes, Infallible>>(64);
+    tauri::async_runtime::spawn(async move {
+        run_mobile_chat_stream_task(state, thread_id, payload, sender).await;
+    });
+    let stream = stream::unfold(receiver, |mut receiver| async move {
+        receiver.recv().await.map(|item| (item, receiver))
+    });
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "application/x-ndjson; charset=utf-8")
+        .body(Body::from_stream(stream))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 fn bind_mobile_listener() -> Result<(std::net::TcpListener, u16), String> {
@@ -1048,6 +1090,470 @@ fn map_desktop_mobile_inbox_item(
     }
 }
 
+pub fn set_mobile_chat_model(app: &AppHandle, model: &str) -> Result<(), String> {
+    let normalized = model.trim();
+    let settings = MobileChatSettings {
+        model: if normalized.is_empty() {
+            MOBILE_CHAT_DEFAULT_MODEL.to_string()
+        } else {
+            normalized.to_string()
+        },
+    };
+    let content = serde_json::to_string_pretty(&settings).map_err(|error| error.to_string())?;
+    fs::write(mobile_chat_settings_file(app)?, content).map_err(|error| error.to_string())
+}
+
+fn get_mobile_chat_model(app: &AppHandle) -> String {
+    read_mobile_chat_settings(app)
+        .ok()
+        .and_then(|settings| {
+            let model = settings.model.trim();
+            (!model.is_empty()).then(|| model.to_string())
+        })
+        .unwrap_or_else(|| MOBILE_CHAT_DEFAULT_MODEL.to_string())
+}
+
+pub fn list_mobile_chat_threads(app: &AppHandle) -> Result<Vec<MobileChatThreadSummary>, String> {
+    ensure_mobile_dirs(app)?;
+    let mut threads = Vec::new();
+    for path in mobile_chat_thread_paths(app)? {
+        let thread = match read_mobile_chat_thread_file(&path) {
+            Ok(thread) => thread,
+            Err(error) => {
+                eprintln!(
+                    "Failed to load mobile chat thread '{}': {}",
+                    path.display(),
+                    error
+                );
+                continue;
+            }
+        };
+        threads.push(summarize_mobile_chat_thread(&thread));
+    }
+    threads.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    Ok(threads)
+}
+
+pub fn read_mobile_chat_thread(
+    app: &AppHandle,
+    thread_id: &str,
+) -> Result<MobileChatThread, String> {
+    let normalized = sanitize_thread_id(thread_id)?;
+    read_mobile_chat_thread_file(&mobile_chat_dir(app)?.join(format!("{normalized}.json")))
+}
+
+pub fn append_mobile_chat_thread_turn(
+    app: &AppHandle,
+    thread_id: &str,
+    user_content: &str,
+    assistant_content: &str,
+    model: &str,
+) -> Result<MobileChatThread, String> {
+    let mut thread = read_mobile_chat_thread(app, thread_id)?;
+    let now = cards::current_timestamp_iso_utc();
+    thread.messages.push(MobileChatMessage {
+        message_id: Uuid::new_v4().simple().to_string(),
+        role: MobileChatRole::User,
+        content: user_content.trim().to_string(),
+        created_at: now.clone(),
+        source: MobileChatSource::Desktop,
+        status: MobileChatMessageStatus::Complete,
+    });
+    thread.messages.push(MobileChatMessage {
+        message_id: Uuid::new_v4().simple().to_string(),
+        role: MobileChatRole::Assistant,
+        content: assistant_content.trim().to_string(),
+        created_at: now.clone(),
+        source: MobileChatSource::Desktop,
+        status: MobileChatMessageStatus::Complete,
+    });
+    thread.model = model.trim().to_string();
+    thread.status = MobileChatThreadStatus::Idle;
+    thread.updated_at = now;
+    thread.last_error = None;
+    write_mobile_chat_thread(app, &thread)?;
+    emit_mobile_thread_update(app, &thread);
+    Ok(thread)
+}
+
+async fn run_mobile_chat_stream_task(
+    state: MobileRouterState,
+    thread_id: Option<String>,
+    payload: MobileChatSendRequest,
+    sender: mpsc::Sender<Result<Bytes, Infallible>>,
+) {
+    let result = run_mobile_chat_stream_task_inner(&state, thread_id, payload, &sender).await;
+    if let Err(error) = result {
+        let _ = send_ndjson(&sender, json!({ "type": "error", "error": error })).await;
+    }
+}
+
+async fn run_mobile_chat_stream_task_inner(
+    state: &MobileRouterState,
+    thread_id: Option<String>,
+    payload: MobileChatSendRequest,
+    sender: &mpsc::Sender<Result<Bytes, Infallible>>,
+) -> Result<(), String> {
+    ensure_mobile_dirs(&state.app)?;
+    let now = cards::current_timestamp_iso_utc();
+    let is_new_thread = thread_id.is_none();
+    let mut thread = if let Some(thread_id) = thread_id.as_deref() {
+        read_mobile_chat_thread(&state.app, thread_id)?
+    } else {
+        let thread_id = Uuid::new_v4().simple().to_string();
+        let title = build_mobile_chat_title(&payload.message);
+        MobileChatThread {
+            thread_id,
+            title,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            model: get_mobile_chat_model(&state.app),
+            status: MobileChatThreadStatus::Idle,
+            messages: Vec::new(),
+            last_error: None,
+        }
+    };
+
+    let use_retrieval = payload.use_retrieval.unwrap_or(is_new_thread);
+    let user_message = MobileChatMessage {
+        message_id: Uuid::new_v4().simple().to_string(),
+        role: MobileChatRole::User,
+        content: payload.message.trim().to_string(),
+        created_at: now.clone(),
+        source: MobileChatSource::Mobile,
+        status: MobileChatMessageStatus::Complete,
+    };
+    let assistant_id = Uuid::new_v4().simple().to_string();
+    let assistant_message = MobileChatMessage {
+        message_id: assistant_id.clone(),
+        role: MobileChatRole::Assistant,
+        content: String::new(),
+        created_at: now.clone(),
+        source: MobileChatSource::Desktop,
+        status: MobileChatMessageStatus::Streaming,
+    };
+
+    let previous_messages = thread.messages.clone();
+    thread.messages.push(user_message.clone());
+    thread.messages.push(assistant_message);
+    thread.status = MobileChatThreadStatus::Streaming;
+    thread.updated_at = now;
+    thread.last_error = None;
+    write_mobile_chat_thread(&state.app, &thread)?;
+    emit_mobile_thread_update(&state.app, &thread);
+
+    send_ndjson(
+        sender,
+        json!({
+            "type": "thread",
+            "thread": thread,
+            "useRetrieval": use_retrieval
+        }),
+    )
+    .await?;
+    send_ndjson(sender, json!({ "type": "queued" })).await?;
+
+    let permit = state.chat_queue.acquire(ChatPriority::Mobile).await;
+    let context = if use_retrieval {
+        build_mobile_chat_retrieval_context(&state.app, &user_message.content)
+            .await
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let messages =
+        build_mobile_chat_llm_messages(&previous_messages, &user_message.content, &context);
+    let model = thread.model.clone();
+    let stream_result = stream_ollama_mobile_chat(&model, messages, true, sender).await;
+    permit.release().await;
+
+    match stream_result {
+        Ok(answer) => {
+            update_mobile_thread_assistant(
+                &state.app,
+                &thread.thread_id,
+                &assistant_id,
+                answer,
+                MobileChatMessageStatus::Complete,
+                None,
+            )?;
+            send_ndjson(sender, json!({ "type": "done" })).await?;
+        }
+        Err(error) => {
+            update_mobile_thread_assistant(
+                &state.app,
+                &thread.thread_id,
+                &assistant_id,
+                format!("回答失败：{error}"),
+                MobileChatMessageStatus::Error,
+                Some(error.clone()),
+            )?;
+            send_ndjson(sender, json!({ "type": "error", "error": error })).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn build_mobile_chat_retrieval_context(
+    app: &AppHandle,
+    query: &str,
+) -> Result<String, String> {
+    let docs = research_memory::query_knowledge_base(
+        app,
+        query,
+        MOBILE_CHAT_RETRIEVAL_LIMIT,
+        None,
+        ResearchSearchScope::default(),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(docs
+        .into_iter()
+        .map(|doc| doc.content)
+        .collect::<Vec<_>>()
+        .join("\n\n"))
+}
+
+fn build_mobile_chat_llm_messages(
+    previous_messages: &[MobileChatMessage],
+    current_user_message: &str,
+    retrieval_context: &str,
+) -> Vec<serde_json::Value> {
+    let mut messages = vec![json!({
+        "role": "system",
+        "content": "你是科研助手。除非用户明确要求其他语言，否则使用中文 Markdown 回答。优先利用给定知识库上下文；没有上下文时基于已有对话和通用知识回答，并明确区分证据与推断。"
+    })];
+
+    let start = previous_messages
+        .len()
+        .saturating_sub(MOBILE_CHAT_HISTORY_LIMIT);
+    for message in previous_messages.iter().skip(start) {
+        if message.content.trim().is_empty() {
+            continue;
+        }
+        messages.push(json!({
+            "role": match message.role {
+                MobileChatRole::User => "user",
+                MobileChatRole::Assistant => "assistant",
+            },
+            "content": message.content
+        }));
+    }
+
+    let content = if retrieval_context.trim().is_empty() {
+        current_user_message.to_string()
+    } else {
+        format!(
+            "## 知识库上下文\n{}\n\n## 用户消息\n{}",
+            retrieval_context, current_user_message
+        )
+    };
+    messages.push(json!({ "role": "user", "content": content }));
+    messages
+}
+
+async fn stream_ollama_mobile_chat(
+    model: &str,
+    messages: Vec<serde_json::Value>,
+    think_enabled: bool,
+    sender: &mpsc::Sender<Result<Bytes, Infallible>>,
+) -> Result<String, String> {
+    let client = reqwest::Client::new();
+    let response = client
+        .post("http://localhost:11434/api/chat")
+        .json(&json!({
+            "model": model,
+            "messages": messages,
+            "think": think_enabled,
+            "stream": true
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("Failed to connect to LLM: {}", error))?;
+    if !response.status().is_success() {
+        return Err(format!("LLM API error: {}", response.status()));
+    }
+
+    let mut answer = String::new();
+    let mut buffer = String::new();
+    let mut bytes_stream = response.bytes_stream();
+    while let Some(chunk) = bytes_stream.next().await {
+        let chunk = chunk.map_err(|error| error.to_string())?;
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        while let Some(newline_index) = buffer.find('\n') {
+            let line = buffer[..newline_index].trim().to_string();
+            buffer.drain(..=newline_index);
+            if line.is_empty() {
+                continue;
+            }
+            process_ollama_mobile_line(&line, &mut answer, sender).await?;
+        }
+    }
+    if !buffer.trim().is_empty() {
+        process_ollama_mobile_line(buffer.trim(), &mut answer, sender).await?;
+    }
+    if answer.trim().is_empty() {
+        Err("LLM response did not include content".to_string())
+    } else {
+        Ok(answer)
+    }
+}
+
+async fn process_ollama_mobile_line(
+    line: &str,
+    answer: &mut String,
+    sender: &mpsc::Sender<Result<Bytes, Infallible>>,
+) -> Result<(), String> {
+    let value: serde_json::Value = serde_json::from_str(line).map_err(|error| error.to_string())?;
+    let message = value.get("message");
+    let delta = message
+        .and_then(|value| value.get("content"))
+        .and_then(|value| value.as_str())
+        .or_else(|| value.get("response").and_then(|value| value.as_str()))
+        .unwrap_or("");
+    if !delta.is_empty() {
+        answer.push_str(delta);
+        send_ndjson(sender, json!({ "type": "delta", "delta": delta })).await?;
+    }
+    Ok(())
+}
+
+async fn send_ndjson(
+    sender: &mpsc::Sender<Result<Bytes, Infallible>>,
+    value: serde_json::Value,
+) -> Result<(), String> {
+    let line = serde_json::to_string(&value).map_err(|error| error.to_string())? + "\n";
+    sender
+        .send(Ok(Bytes::from(line)))
+        .await
+        .map_err(|_| "mobile chat stream closed".to_string())
+}
+
+fn update_mobile_thread_assistant(
+    app: &AppHandle,
+    thread_id: &str,
+    assistant_id: &str,
+    content: String,
+    status: MobileChatMessageStatus,
+    last_error: Option<String>,
+) -> Result<(), String> {
+    let mut thread = read_mobile_chat_thread(app, thread_id)?;
+    if let Some(message) = thread
+        .messages
+        .iter_mut()
+        .find(|message| message.message_id == assistant_id)
+    {
+        message.content = content;
+        message.status = status.clone();
+    }
+    thread.status = if last_error.is_some() {
+        MobileChatThreadStatus::Error
+    } else {
+        MobileChatThreadStatus::Idle
+    };
+    thread.updated_at = cards::current_timestamp_iso_utc();
+    thread.last_error = last_error;
+    write_mobile_chat_thread(app, &thread)?;
+    emit_mobile_thread_update(app, &thread);
+    Ok(())
+}
+
+fn emit_mobile_thread_update(app: &AppHandle, thread: &MobileChatThread) {
+    let _ = app.emit(
+        "mobile-chat-thread-updated",
+        summarize_mobile_chat_thread(thread),
+    );
+}
+
+fn summarize_mobile_chat_thread(thread: &MobileChatThread) -> MobileChatThreadSummary {
+    let last_message_preview = thread
+        .messages
+        .iter()
+        .rev()
+        .find(|message| !message.content.trim().is_empty())
+        .map(|message| truncate_preview(&message.content, 120))
+        .unwrap_or_default();
+    MobileChatThreadSummary {
+        thread_id: thread.thread_id.clone(),
+        title: thread.title.clone(),
+        updated_at: thread.updated_at.clone(),
+        model: thread.model.clone(),
+        status: thread.status.clone(),
+        last_message_preview,
+        message_count: thread.messages.len(),
+        last_error: thread.last_error.clone(),
+    }
+}
+
+fn build_mobile_chat_title(message: &str) -> String {
+    let title = truncate_preview(message, 32);
+    if title.is_empty() {
+        "移动端会话".to_string()
+    } else {
+        title
+    }
+}
+
+fn truncate_preview(value: &str, limit: usize) -> String {
+    let normalized = value
+        .replace('\n', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut result = normalized.chars().take(limit).collect::<String>();
+    if normalized.chars().count() > limit {
+        result.push_str("...");
+    }
+    result
+}
+
+fn sanitize_thread_id(thread_id: &str) -> Result<String, String> {
+    let normalized = thread_id.trim();
+    if normalized.is_empty()
+        || !normalized
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        return Err("Invalid chat thread id.".to_string());
+    }
+    Ok(normalized.to_string())
+}
+
+fn mobile_chat_thread_paths(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
+    let entries = fs::read_dir(mobile_chat_dir(app)?).map_err(|error| error.to_string())?;
+    Ok(entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file() && is_json_file(path))
+        .collect())
+}
+
+fn read_mobile_chat_thread_file(path: &Path) -> Result<MobileChatThread, String> {
+    let content = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    serde_json::from_str(&content).map_err(|error| error.to_string())
+}
+
+fn write_mobile_chat_thread(app: &AppHandle, thread: &MobileChatThread) -> Result<(), String> {
+    let thread_id = sanitize_thread_id(&thread.thread_id)?;
+    let content = serde_json::to_string_pretty(thread).map_err(|error| error.to_string())?;
+    fs::write(
+        mobile_chat_dir(app)?.join(format!("{thread_id}.json")),
+        content,
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn read_mobile_chat_settings(app: &AppHandle) -> Result<MobileChatSettings, String> {
+    let path = mobile_chat_settings_file(app)?;
+    if !path.exists() {
+        return Ok(MobileChatSettings {
+            model: MOBILE_CHAT_DEFAULT_MODEL.to_string(),
+        });
+    }
+    let content = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    serde_json::from_str(&content).map_err(|error| error.to_string())
+}
+
 fn mobile_inbox_status_rank(status: MobileInboxStatus) -> u8 {
     match status {
         MobileInboxStatus::Received => 0,
@@ -1173,6 +1679,7 @@ fn ensure_mobile_dirs(app: &AppHandle) -> Result<(), String> {
     fs::create_dir_all(mobile_inbox_dir(app)?).map_err(|error| error.to_string())?;
     fs::create_dir_all(inbox_asset_dir(app)?).map_err(|error| error.to_string())?;
     fs::create_dir_all(review_state_dir(app)?).map_err(|error| error.to_string())?;
+    fs::create_dir_all(mobile_chat_dir(app)?).map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -1194,6 +1701,14 @@ fn mobile_inbox_dir(app: &AppHandle) -> Result<PathBuf, String> {
 
 fn inbox_asset_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(mobile_inbox_dir(app)?.join(MOBILE_INBOX_ASSET_DIR_NAME))
+}
+
+fn mobile_chat_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app_data_dir(app)?.join(MOBILE_CHAT_DIR_NAME))
+}
+
+fn mobile_chat_settings_file(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app_data_dir(app)?.join(MOBILE_CHAT_SETTINGS_FILE_NAME))
 }
 
 fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {

@@ -1145,9 +1145,23 @@ textarea:focus {
   padding: 12px 14px;
 }
 
+.ingest-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
 .ingest-title {
   font-size: 0.84rem;
   font-weight: 700;
+}
+
+.ingest-cancel-button {
+  min-height: 28px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  font-size: 0.74rem;
 }
 
 .ingest-subtitle,

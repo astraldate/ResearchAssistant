@@ -314,14 +314,27 @@ export const CardLibrary: React.FC<CardLibraryProps> = ({
           <article
             key={card.id}
             className="card-item"
+            role="button"
+            tabIndex={0}
+            onClick={() => void handleOpenCardDetail(card)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                void handleOpenCardDetail(card);
+              }
+            }}
             onContextMenu={(event) => handleCardContextMenu(event, card)}
+            title="查看完整卡片内容"
           >
             <div className="card-item-header">
               <div className="card-item-title-block">
                 <button
                   type="button"
                   className="card-item-title card-item-title-button"
-                  onClick={() => void handleOpenCardDetail(card)}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void handleOpenCardDetail(card);
+                  }}
                   title="查看完整卡片内容"
                 >
                   {card.term}

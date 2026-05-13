@@ -16,6 +16,7 @@ interface TranslatePdfSelectionResult {
   page: number;
   generated_at: string;
   model_used: string;
+  prompt_version_used?: string;
 }
 
 interface PdfTranslatePopoverProps {

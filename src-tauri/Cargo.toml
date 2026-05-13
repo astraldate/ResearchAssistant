@@ -43,3 +43,4 @@ rusqlite = { version = "0.32.1", features = ["bundled"] }
 lancedb = "0.27.1"
 arrow-array = "57.2.0"
 arrow-schema = "57.2.0"
+axum = "0.8.7"

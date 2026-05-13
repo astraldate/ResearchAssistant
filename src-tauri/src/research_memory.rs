@@ -9,12 +9,13 @@ use futures_util::{stream, StreamExt, TryStreamExt};
 use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::{connect, Connection};
 use rusqlite::{params, Connection as SqliteConnection, OptionalExtension};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, Window};
 use text_splitter::TextSplitter;
@@ -42,6 +43,7 @@ const MAP_PROMPT_CHAR_LIMIT: usize = 3600;
 const MAP_MAX_ITEMS_PER_KIND: usize = 4;
 const MAP_EXTRACT_CONCURRENCY: usize = 2;
 const OLLAMA_REQUEST_TIMEOUT_SECS: u64 = 90;
+const OPENAI_COMPATIBLE_CHAT_MAX_ATTEMPTS: usize = 3;
 const READY_STATUS: &str = "ready";
 const PENDING_STATUS: &str = "pending";
 const APPROVED_STATUS: &str = "approved";
@@ -57,6 +59,23 @@ const RULE3_MODULE_SEARCH_LIMIT: usize = 8;
 const PAPER_TYPE_METHOD: &str = "method";
 const PAPER_TYPE_APPLICATION: &str = "application";
 const PAPER_TYPE_REVIEW: &str = "review";
+static INGEST_CANCEL_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+pub fn request_ingest_cancel() {
+    INGEST_CANCEL_REQUESTED.store(true, AtomicOrdering::SeqCst);
+}
+
+fn reset_ingest_cancel() {
+    INGEST_CANCEL_REQUESTED.store(false, AtomicOrdering::SeqCst);
+}
+
+fn check_ingest_cancelled() -> Result<()> {
+    if INGEST_CANCEL_REQUESTED.load(AtomicOrdering::SeqCst) {
+        Err(anyhow!("索引已取消。"))
+    } else {
+        Ok(())
+    }
+}
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -509,6 +528,7 @@ pub struct PageVisualNoteResult {
 pub struct LocalExtractionItem {
     pub label: String,
     pub summary: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_confidence")]
     pub confidence: Option<f32>,
     pub evidence_snippet: Option<String>,
     #[serde(default)]
@@ -520,6 +540,7 @@ pub struct LocalExtractionItem {
 pub struct LocalExtractionEdge {
     pub from_label: String,
     pub to_label: String,
+    #[serde(default, deserialize_with = "deserialize_optional_confidence")]
     pub confidence: Option<f32>,
     pub evidence_snippet: Option<String>,
 }
@@ -908,7 +929,9 @@ pub async fn ingest_research_corpus(
     path: &str,
     options: ResearchIngestOptions,
 ) -> Result<usize> {
+    reset_ingest_cancel();
     initialize(app).await?;
+    check_ingest_cancelled()?;
     emit_progress(
         window,
         IngestProgress::new(
@@ -999,11 +1022,13 @@ pub async fn ingest_research_corpus(
         ),
     );
     let embedding_model = resolve_embedding_model(options.embedding_model.as_deref()).await?;
+    check_ingest_cancelled()?;
     emit_progress(
         window,
         IngestProgress::new("scan", 0, 1, "正在扫描可处理文献文件..."),
     );
     let documents = collect_documents(path).await?;
+    check_ingest_cancelled()?;
     if documents.is_empty() {
         emit_progress(
             window,
@@ -1060,6 +1085,7 @@ pub async fn ingest_research_corpus(
 
     let mut processed = 0usize;
     for (index, document) in documents.iter().enumerate() {
+        check_ingest_cancelled()?;
         emit_progress(
             window,
             IngestProgress::new(
@@ -1092,6 +1118,7 @@ pub async fn ingest_research_corpus(
     }
 
     let conn = open_sqlite(app)?;
+    check_ingest_cancelled()?;
     materialize_graph_from_approved_candidates(&conn)?;
     materialize_stats(&conn)?;
 
@@ -1100,6 +1127,7 @@ pub async fn ingest_research_corpus(
         IngestProgress::new("index_vectors", 0, 1, "正在重建派生向量索引..."),
     );
     rebuild_vector_indexes(app, Some(window), &embedding_model).await?;
+    check_ingest_cancelled()?;
     refresh_idea_candidates(app, &embedding_model).await?;
 
     emit_progress(
@@ -2631,6 +2659,7 @@ async fn ingest_single_document(
     extract_edge_model: &str,
     extract_edge_validate_model: &str,
 ) -> Result<()> {
+    check_ingest_cancelled()?;
     let conn = open_sqlite(app)?;
     let resume_state = load_resume_paper_state(&conn, document)?;
     let has_any_checkpoint = resume_state
@@ -2732,6 +2761,7 @@ async fn ingest_single_document(
     if !seed_units.is_empty() {
         let mut seed_candidates = Vec::new();
         for unit in &seed_units {
+            check_ingest_cancelled()?;
             let (candidate, _) = extract_candidate_with_fallback(
                 unit,
                 document,
@@ -2889,6 +2919,7 @@ async fn ingest_single_document(
         let edge_model = extract_edge_model.to_string();
         let edge_validate_model = extract_edge_validate_model.to_string();
         async move {
+            check_ingest_cancelled()?;
             let use_seed_context = !unit.unit_kind.contains("seed");
             let (local, candidate_status, diagnostics) = extract_map_unit(
                 &unit,
@@ -2918,6 +2949,7 @@ async fn ingest_single_document(
     tokio::pin!(extraction_stream);
 
     while let Some(result) = extraction_stream.next().await {
+        check_ingest_cancelled()?;
         let (unit, chunk_id, local, candidate_status, diagnostics) = result?;
         candidate_completed_units += 1;
         candidate_conflict_count += diagnostics.candidate_conflict_count;
@@ -3054,6 +3086,7 @@ async fn ingest_single_document(
     }
 
     let (canonical_nodes, canonical_edges) = if extraction_mode == ExtractionMode::Balanced {
+        check_ingest_cancelled()?;
         emit_progress(
             window,
             IngestProgress::new(
@@ -3078,6 +3111,7 @@ async fn ingest_single_document(
     let (canonical_nodes, canonical_edges) =
         apply_candidate_budget(&paper_type, canonical_nodes, canonical_edges);
     let conn = open_sqlite(app)?;
+    check_ingest_cancelled()?;
     persist_candidates(&conn, document, &canonical_nodes, &canonical_edges)?;
     persist_extraction_diagnostics(
         &conn,
@@ -4210,6 +4244,7 @@ async fn rebuild_vector_indexes(
     window: Option<&Window>,
     embedding_model: &str,
 ) -> Result<()> {
+    check_ingest_cancelled()?;
     initialize(app).await?;
     let conn = open_sqlite(app)?;
     let chunk_rows = load_chunk_rows(&conn)?;
@@ -4223,6 +4258,7 @@ async fn rebuild_vector_indexes(
 
     let total = chunk_rows.len() + page_rows.len() + concept_rows.len();
     if !chunk_rows.is_empty() {
+        check_ingest_cancelled()?;
         if let Some(window) = window {
             emit_progress(
                 window,
@@ -4233,10 +4269,12 @@ async fn rebuild_vector_indexes(
             .await?;
     }
     if !page_rows.is_empty() {
+        check_ingest_cancelled()?;
         create_vector_table_from_chunks(&db, PAGE_VECTOR_TABLE, &page_rows, embedding_model)
             .await?;
     }
     if !concept_rows.is_empty() {
+        check_ingest_cancelled()?;
         create_vector_table_from_concepts(
             &db,
             CONCEPT_VECTOR_TABLE,
@@ -4276,6 +4314,7 @@ async fn create_vector_table_from_chunks(
     }
     let mut vectors = Vec::with_capacity(rows.len());
     for row in rows {
+        check_ingest_cancelled()?;
         vectors.push(embed_text(&row.content, embedding_model).await?);
     }
     let batch = build_chunk_record_batch(rows, &vectors)?;
@@ -4299,6 +4338,7 @@ async fn create_vector_table_from_concepts(
     }
     let mut vectors = Vec::with_capacity(rows.len());
     for row in rows {
+        check_ingest_cancelled()?;
         vectors.push(embed_text(&row.text, embedding_model).await?);
     }
     let batch = build_concept_record_batch(rows, &vectors)?;
@@ -4982,7 +5022,16 @@ async fn extract_candidate_items(
     )
     .await;
     match value {
-        Ok(value) => Ok(sanitize_candidate_extraction(serde_json::from_value(value)?)),
+        Ok(value) => match serde_json::from_value::<CandidateExtraction>(value) {
+            Ok(candidate) => Ok(sanitize_candidate_extraction(candidate)),
+            Err(parse_error) => extract_candidate_items_lenient(unit, document, provider, model)
+                .await
+                .map_err(|fallback_error| {
+                    anyhow!(
+                        "candidate structured extraction deserialization failed: {parse_error}; lenient fallback failed: {fallback_error}"
+                    )
+                }),
+        },
         Err(primary_error) => extract_candidate_items_lenient(unit, document, provider, model)
             .await
             .map_err(|fallback_error| {
@@ -5876,6 +5925,10 @@ fn normalize_extraction_value(
 }
 
 fn normalize_value_against_schema(value: &mut serde_json::Value, schema: &serde_json::Value) {
+    if schema_accepts_number(schema) {
+        coerce_json_number_value(value);
+        return;
+    }
     if schema_accepts_string(schema) && !value.is_string() && !value.is_null() {
         if let Some(text) = value_to_compact_text(value) {
             *value = json!(text);
@@ -5932,6 +5985,10 @@ fn schema_accepts_object(schema: &serde_json::Value) -> bool {
     schema_accepts_type(schema, "object")
 }
 
+fn schema_accepts_number(schema: &serde_json::Value) -> bool {
+    schema_accepts_type(schema, "number")
+}
+
 fn schema_accepts_null(schema: &serde_json::Value) -> bool {
     schema_accepts_type(schema, "null")
 }
@@ -5944,6 +6001,41 @@ fn default_value_for_schema(schema: &serde_json::Value) -> serde_json::Value {
     } else {
         serde_json::Value::Null
     }
+}
+
+fn deserialize_optional_confidence<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<f32>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| coerce_confidence_value(&value)))
+}
+
+fn coerce_confidence_value(value: &serde_json::Value) -> Option<f32> {
+    let number = match value {
+        serde_json::Value::Null => return None,
+        serde_json::Value::Number(number) => number.as_f64(),
+        serde_json::Value::String(text) => {
+            let normalized = text.trim().to_ascii_lowercase();
+            match normalized.as_str() {
+                "high" => Some(0.85),
+                "medium" => Some(0.6),
+                "low" => Some(0.35),
+                _ => normalized.parse::<f64>().ok(),
+            }
+        }
+        _ => None,
+    }?;
+    Some(number.clamp(0.0, 1.0) as f32)
+}
+
+fn coerce_json_number_value(value: &mut serde_json::Value) {
+    *value = coerce_confidence_value(value)
+        .and_then(|number| serde_json::Number::from_f64(number as f64))
+        .map(serde_json::Value::Number)
+        .unwrap_or(serde_json::Value::Null);
 }
 
 fn value_to_compact_text(value: &serde_json::Value) -> Option<String> {
@@ -6123,48 +6215,82 @@ async fn run_openai_compatible_chat(
     if let Some(response_format) = response_format {
         payload["response_format"] = response_format;
     }
-    let mut request = client
-        .post(openai_chat_completions_url(base_url))
-        .header("Content-Type", "application/json");
-    if let Some(api_key) = api_key {
-        request = request.bearer_auth(api_key);
+    let url = openai_chat_completions_url(base_url);
+    let mut last_error: Option<anyhow::Error> = None;
+    for attempt in 1..=OPENAI_COMPATIBLE_CHAT_MAX_ATTEMPTS {
+        let mut request = client.post(&url).header("Content-Type", "application/json");
+        if let Some(api_key) = api_key {
+            request = request.bearer_auth(api_key);
+        }
+        match request.json(&payload).send().await {
+            Ok(res)
+                if should_retry_openai_status(res.status())
+                    && attempt < OPENAI_COMPATIBLE_CHAT_MAX_ATTEMPTS =>
+            {
+                let status = res.status();
+                let body = res.text().await.unwrap_or_default();
+                last_error = Some(anyhow!(
+                    "OpenAI-compatible chat transient status: {status}. Response body: {}",
+                    truncate_chars(body.trim(), 600)
+                ));
+            }
+            Ok(res) => {
+                if !res.status().is_success() {
+                    let status = res.status();
+                    let body = res.text().await.unwrap_or_default();
+                    let body = truncate_chars(body.trim(), 1200);
+                    return Err(anyhow!(
+                        "OpenAI-compatible chat failed: {status}. Response body: {body}"
+                    ));
+                }
+                let value: serde_json::Value = res.json().await?;
+                let message = value
+                    .get("choices")
+                    .and_then(|choices| choices.as_array())
+                    .and_then(|choices| choices.first())
+                    .and_then(|choice| choice.get("message"))
+                    .ok_or_else(|| anyhow!("OpenAI-compatible response missing choice message"))?;
+                if let Some(content) = message.get("content").and_then(|content| content.as_str()) {
+                    return Ok(content.trim().to_string());
+                }
+                if let Some(parts) = message
+                    .get("content")
+                    .and_then(|content| content.as_array())
+                {
+                    let text = parts
+                        .iter()
+                        .filter_map(|part| {
+                            part.get("text")
+                                .and_then(|value| value.as_str())
+                                .map(|value| value.trim())
+                        })
+                        .filter(|value| !value.is_empty())
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    return Ok(text);
+                }
+                return Err(anyhow!("OpenAI-compatible response missing text content"));
+            }
+            Err(error)
+                if attempt < OPENAI_COMPATIBLE_CHAT_MAX_ATTEMPTS
+                    && is_retryable_reqwest_error(&error) =>
+            {
+                last_error = Some(error.into());
+            }
+            Err(error) => return Err(error.into()),
+        }
+        let backoff_ms = 600 * attempt as u64;
+        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
     }
-    let res = request.json(&payload).send().await?;
-    if !res.status().is_success() {
-        let status = res.status();
-        let body = res.text().await.unwrap_or_default();
-        let body = truncate_chars(body.trim(), 1200);
-        return Err(anyhow!(
-            "OpenAI-compatible chat failed: {status}. Response body: {body}"
-        ));
-    }
-    let value: serde_json::Value = res.json().await?;
-    let message = value
-        .get("choices")
-        .and_then(|choices| choices.as_array())
-        .and_then(|choices| choices.first())
-        .and_then(|choice| choice.get("message"))
-        .ok_or_else(|| anyhow!("OpenAI-compatible response missing choice message"))?;
-    if let Some(content) = message.get("content").and_then(|content| content.as_str()) {
-        return Ok(content.trim().to_string());
-    }
-    if let Some(parts) = message
-        .get("content")
-        .and_then(|content| content.as_array())
-    {
-        let text = parts
-            .iter()
-            .filter_map(|part| {
-                part.get("text")
-                    .and_then(|value| value.as_str())
-                    .map(|value| value.trim())
-            })
-            .filter(|value| !value.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n");
-        return Ok(text);
-    }
-    Err(anyhow!("OpenAI-compatible response missing text content"))
+    Err(last_error.unwrap_or_else(|| anyhow!("OpenAI-compatible chat failed after retries")))
+}
+
+fn should_retry_openai_status(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+}
+
+fn is_retryable_reqwest_error(error: &reqwest::Error) -> bool {
+    error.is_connect() || error.is_timeout() || error.is_request() || error.is_body()
 }
 
 async fn run_chat_text(
@@ -8113,4 +8239,122 @@ fn set_meta(conn: &SqliteConnection, key: &str, value: &str) -> Result<()> {
 
 fn emit_progress(window: &Window, progress: IngestProgress) {
     let _ = window.emit("ingest-progress", progress);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn candidate_with_confidence(confidence: serde_json::Value) -> serde_json::Value {
+        json!({
+            "tasks": [{
+                "label": "causal machine learning",
+                "summary": "Causal modeling task",
+                "confidence": confidence,
+                "evidenceSnippet": "The excerpt discusses causal machine learning for single-cell genomics.",
+                "kindRationale": "It describes the studied task."
+            }],
+            "modules": [],
+            "challenges": [],
+            "insights": []
+        })
+    }
+
+    fn normalized_task_confidence(confidence: serde_json::Value) -> serde_json::Value {
+        let normalized = normalize_extraction_value(
+            candidate_with_confidence(confidence),
+            candidate_extraction_schema(),
+        )
+        .expect("candidate extraction should normalize");
+        normalized["tasks"][0]["confidence"].clone()
+    }
+
+    #[test]
+    fn normalizes_named_confidence_levels_to_numbers() {
+        let cases = [
+            (json!("high"), 0.85),
+            (json!("medium"), 0.6),
+            (json!("low"), 0.35),
+        ];
+
+        for (input, expected) in cases {
+            let value = normalized_task_confidence(input);
+            let actual = value.as_f64().expect("confidence should be numeric");
+            assert!((actual - expected).abs() < 0.000_001);
+        }
+    }
+
+    #[test]
+    fn normalizes_numeric_confidence_strings_to_numbers() {
+        let value = normalized_task_confidence(json!("0.80"));
+        let actual = value.as_f64().expect("confidence should be numeric");
+        assert!((actual - 0.8).abs() < 0.000_001);
+    }
+
+    #[test]
+    fn clamps_numeric_confidence_to_unit_interval() {
+        let high = normalized_task_confidence(json!(1.4));
+        let low = normalized_task_confidence(json!(-0.2));
+
+        assert_eq!(high.as_f64(), Some(1.0));
+        assert_eq!(low.as_f64(), Some(0.0));
+    }
+
+    #[test]
+    fn normalizes_invalid_confidence_to_null() {
+        let value = normalized_task_confidence(json!("very high"));
+        assert!(value.is_null());
+    }
+
+    #[test]
+    fn normalized_string_confidence_deserializes_as_candidate_extraction() {
+        let normalized = normalize_extraction_value(
+            candidate_with_confidence(json!("high")),
+            candidate_extraction_schema(),
+        )
+        .expect("candidate extraction should normalize");
+        let parsed: CandidateExtraction =
+            serde_json::from_value(normalized).expect("normalized candidate should deserialize");
+
+        assert_eq!(parsed.tasks.len(), 1);
+        assert_eq!(parsed.tasks[0].confidence, Some(0.85));
+    }
+
+    #[test]
+    fn raw_candidate_extraction_accepts_string_confidence() {
+        let parsed: CandidateExtraction =
+            serde_json::from_value(candidate_with_confidence(json!("high")))
+                .expect("raw candidate should accept string confidence");
+
+        assert_eq!(parsed.tasks[0].confidence, Some(0.85));
+    }
+
+    #[test]
+    fn raw_pipeline_and_edge_extraction_accept_string_confidence() {
+        let pipeline: PipelineExtraction = serde_json::from_value(json!({
+            "pipelines": [{
+                "label": "causal discovery workflow",
+                "summary": null,
+                "confidence": "medium",
+                "evidenceSnippet": "The excerpt describes causal discovery workflow steps.",
+                "kindRationale": null
+            }]
+        }))
+        .expect("pipeline extraction should accept string confidence");
+        let edge: EdgeExtraction = serde_json::from_value(json!({
+            "taskPipelinePairs": [{
+                "fromLabel": "single-cell causal learning",
+                "toLabel": "causal discovery workflow",
+                "confidence": "low",
+                "evidenceSnippet": "The sentence links the task and workflow."
+            }],
+            "taskModulePairs": [],
+            "pipelineModulePairs": [],
+            "challengeInsightPairs": []
+        }))
+        .expect("edge extraction should accept string confidence");
+
+        assert_eq!(pipeline.pipelines[0].confidence, Some(0.6));
+        assert_eq!(edge.task_pipeline_pairs[0].confidence, Some(0.35));
+    }
 }
