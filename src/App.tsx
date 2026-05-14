@@ -3208,7 +3208,8 @@ function App() {
               {mobileStatus?.pairCode || "------"}
             </div>
             <p className="settings-help-text">
-              在手机 App 的“配对”页输入下面的局域网地址和 6 位配对码。
+              在手机 App 的“配对”页输入下面的地址和 6 位配对码。若已开启
+              Tailscale，优先使用 100.x 的 Tailscale 地址。
             </p>
           </div>
           <div
@@ -3262,6 +3263,17 @@ function App() {
               </button>
             </div>
           ))}
+          {mobileStatus &&
+            !mobileStatus.baseUrls.some((address) =>
+              /^http:\/\/100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\./.test(
+                address,
+              ),
+            ) && (
+              <p className="settings-help-text">
+                未检测到 Tailscale 100.x 地址。请确认桌面端已连接
+                Tailscale，然后点击“刷新状态”。
+              </p>
+            )}
         </div>
 
         <div className="mobile-settings-grid">

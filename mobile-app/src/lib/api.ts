@@ -14,8 +14,13 @@ import {
   type ReviewSyncResponse,
 } from "../contracts";
 
-function normalizeBaseUrl(baseUrl: string) {
-  return baseUrl.trim().replace(/\/+$/, "");
+export function normalizeBaseUrl(baseUrl: string) {
+  const trimmed = baseUrl.trim().replace(/\/+$/, "");
+  if (!trimmed) return trimmed;
+  if (/^https?:\/\//i.test(trimmed)) {
+    return trimmed;
+  }
+  return `http://${trimmed}`;
 }
 
 async function requestJson<T>(
@@ -24,18 +29,33 @@ async function requestJson<T>(
   init: RequestInit = {},
   token?: string,
 ): Promise<T> {
-  const response = await fetch(`${normalizeBaseUrl(baseUrl)}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(init.headers || {}),
-    },
-  });
+  const url = `${normalizeBaseUrl(baseUrl)}${path}`;
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(init.headers || {}),
+      },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `无法连接桌面端地址：${url}。请确认手机与电脑的 Tailscale 均在线，且使用 http://100.x.y.z:端口。原始错误：${message}`,
+    );
+  }
 
   const text = await response.text();
   if (!response.ok) {
-    throw new Error(text || `Request failed with ${response.status}`);
+    const suffix =
+      response.status === 502
+        ? "如果这是 Tailscale 地址，请确认填写的是 http://100.x.y.z:端口，而不是 HTTPS/MagicDNS Serve 地址。"
+        : "";
+    throw new Error(
+      `桌面端返回 ${response.status} ${response.statusText || ""}：${text || "无响应内容"}${suffix ? ` ${suffix}` : ""}`,
+    );
   }
 
   if (!text.trim()) {
@@ -135,56 +155,62 @@ export async function streamChatMessage(
   const path = threadId
     ? `${MOBILE_API_PREFIX}/chat/threads/${encodeURIComponent(threadId)}/messages/stream`
     : `${MOBILE_API_PREFIX}/chat/threads/stream`;
-  const response = await fetch(`${normalizeBaseUrl(baseUrl)}${path}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify(payload),
-  });
-
-  if (!response.ok) {
-    throw new Error(
-      (await response.text()) || `Request failed with ${response.status}`,
-    );
-  }
-
-  await parseNdjsonResponse(response, onEvent);
+  await streamNdjsonWithXhr(
+    `${normalizeBaseUrl(baseUrl)}${path}`,
+    token,
+    payload,
+    onEvent,
+  );
 }
 
-async function parseNdjsonResponse(
-  response: Response,
+function streamNdjsonWithXhr(
+  url: string,
+  token: string,
+  payload: MobileChatSendRequest,
   onEvent: (event: MobileChatStreamEvent) => void,
-) {
-  const body = response.body as unknown as {
-    getReader?: () => {
-      read: () => Promise<{ done: boolean; value?: Uint8Array }>;
-    };
-  } | null;
-  const reader = body?.getReader?.();
-  if (!reader) {
-    parseNdjsonText(await response.text(), onEvent, false);
-    return;
-  }
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    let seenLength = 0;
+    let buffer = "";
 
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let done = false;
-  while (!done) {
-    const chunk = await reader.read();
-    done = chunk.done;
-    if (chunk.value) {
-      buffer += decoder.decode(chunk.value, { stream: !done });
+    const consumeText = (text: string, tolerateTrailingPartial: boolean) => {
+      if (!text) return;
+      buffer += text;
       const lines = buffer.split(/\r?\n/);
       buffer = lines.pop() ?? "";
-      for (const line of lines) {
-        parseNdjsonLine(line, onEvent);
+      lines.forEach((line) => parseNdjsonLine(line, onEvent));
+      if (tolerateTrailingPartial && buffer.trim()) {
+        parseNdjsonText(buffer, onEvent, true);
+        buffer = "";
       }
-    }
-  }
-  buffer += decoder.decode();
-  parseNdjsonText(buffer, onEvent, true);
+    };
+
+    xhr.open("POST", url);
+    xhr.setRequestHeader("Content-Type", "application/json");
+    xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    xhr.onprogress = () => {
+      const nextText = xhr.responseText.slice(seenLength);
+      seenLength = xhr.responseText.length;
+      consumeText(nextText, false);
+    };
+    xhr.onerror = () => reject(new Error("移动端聊天流连接失败。"));
+    xhr.onload = () => {
+      const nextText = xhr.responseText.slice(seenLength);
+      seenLength = xhr.responseText.length;
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(
+          new Error(
+            xhr.responseText.trim() || `Request failed with ${xhr.status}`,
+          ),
+        );
+        return;
+      }
+      consumeText(nextText, true);
+      resolve();
+    };
+    xhr.send(JSON.stringify(payload));
+  });
 }
 
 function parseNdjsonText(

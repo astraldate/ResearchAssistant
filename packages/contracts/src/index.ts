@@ -191,6 +191,6 @@ export interface MobileChatSendRequest {
 export type MobileChatStreamEvent =
   | { type: "thread"; thread: MobileChatThread; useRetrieval?: boolean }
   | { type: "queued" }
-  | { type: "delta"; delta: string }
+  | { type: "delta"; delta: string; phase?: "thinking" | "answer" }
   | { type: "done" }
   | { type: "error"; error: string };

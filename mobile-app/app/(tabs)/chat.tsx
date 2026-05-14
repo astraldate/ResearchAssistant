@@ -139,20 +139,25 @@ export default function ChatScreen() {
             setActiveThread(event.thread);
             return;
           }
+          if (event.type === "queued") {
+            setActiveThread((previous) =>
+              appendAssistantDelta(
+                previous,
+                "正在排队并准备检索上下文...\n\n",
+                "streaming",
+              ),
+            );
+            return;
+          }
           if (event.type === "delta") {
-            setActiveThread((previous) => {
-              if (!previous) return previous;
-              const messages = previous.messages.slice();
-              const last = messages[messages.length - 1];
-              if (last?.role === "assistant") {
-                messages[messages.length - 1] = {
-                  ...last,
-                  content: `${last.content}${event.delta}`,
-                  status: "streaming",
-                };
-              }
-              return { ...previous, messages };
-            });
+            setActiveThread((previous) =>
+              appendAssistantDelta(
+                previous,
+                event.delta,
+                "streaming",
+                event.phase,
+              ),
+            );
             return;
           }
           if (event.type === "error") {
@@ -235,8 +240,7 @@ export default function ChatScreen() {
                   {message.role === "user" ? "我" : "桌面模型"}
                 </Text>
                 <Text style={styles.messageText}>
-                  {message.content ||
-                    (message.status === "streaming" ? "生成中..." : "")}
+                  {formatMessageForDisplay(message)}
                 </Text>
               </View>
             ))}
@@ -304,6 +308,65 @@ function markLastAssistant(
   return { ...thread, messages, status: "error", lastError: error };
 }
 
+function formatMessageForDisplay(message: MobileChatMessage) {
+  if (message.role === "user") return message.content;
+  const answer = stripThinkingBlock(message.content).trim();
+  if (answer) return answer;
+  if (message.content.includes("<think>")) {
+    return message.status === "streaming"
+      ? "正在思考，等待答案输出..."
+      : "已完成思考，但没有生成可显示的答案。";
+  }
+  return message.content || (message.status === "streaming" ? "生成中..." : "");
+}
+
+function stripThinkingBlock(content: string) {
+  return content
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/<think>[\s\S]*$/gi, "")
+    .trim();
+}
+
+function appendAssistantDelta(
+  thread: MobileChatThread | null,
+  delta: string,
+  status: MobileChatMessage["status"],
+  phase?: "thinking" | "answer",
+): MobileChatThread | null {
+  if (!thread) return thread;
+  const messages = thread.messages.slice();
+  const last = messages[messages.length - 1];
+  if (last?.role !== "assistant") return thread;
+  const previousContent = last.content;
+  const nextDelta =
+    phase === "thinking"
+      ? formatThinkingDelta(previousContent, delta)
+      : closeOpenThinkingBlock(previousContent, delta);
+  messages[messages.length - 1] = {
+    ...last,
+    content: `${previousContent}${nextDelta}`,
+    status,
+  };
+  return { ...thread, messages };
+}
+
+function formatThinkingDelta(previousContent: string, delta: string) {
+  if (!previousContent.includes("<think>")) {
+    return `<think>\n${delta}`;
+  }
+  return delta;
+}
+
+function closeOpenThinkingBlock(previousContent: string, delta = "") {
+  if (
+    previousContent.includes("<think>") &&
+    !previousContent.includes("</think>")
+  ) {
+    return `\n</think>\n\n${delta}`;
+  }
+  return delta;
+}
+
 function markLastAssistantComplete(
   thread: MobileChatThread | null,
 ): MobileChatThread | null {
@@ -313,6 +376,10 @@ function markLastAssistantComplete(
   if (last?.role === "assistant") {
     messages[messages.length - 1] = {
       ...last,
+      content:
+        last.content.includes("<think>") && !last.content.includes("</think>")
+          ? `${last.content}\n</think>\n\n`
+          : last.content,
       status: "complete",
     };
   }

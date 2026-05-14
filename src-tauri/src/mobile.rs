@@ -13,8 +13,9 @@ use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::fs;
-use std::net::UdpSocket;
+use std::net::{IpAddr, UdpSocket};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
@@ -727,11 +728,164 @@ fn bind_mobile_listener() -> Result<(std::net::TcpListener, u16), String> {
 
 fn detect_base_urls(port: u16) -> Vec<String> {
     let mut urls = Vec::new();
-    if let Some(ip) = infer_lan_ip() {
-        urls.push(format!("http://{}:{}", ip, port));
+    for ip in detect_tailscale_ips() {
+        push_unique_url(&mut urls, ip, port);
     }
-    urls.push(format!("http://127.0.0.1:{}", port));
+    if let Some(ip) = infer_lan_ip() {
+        push_unique_url(&mut urls, ip, port);
+    }
+    push_unique_url(&mut urls, "127.0.0.1".to_string(), port);
     urls
+}
+
+fn push_unique_url(urls: &mut Vec<String>, ip: String, port: u16) {
+    let url = format!("http://{}:{}", ip, port);
+    if !urls.contains(&url) {
+        urls.push(url);
+    }
+}
+
+fn detect_tailscale_ips() -> Vec<String> {
+    let mut ips = collect_tailscale_ips_from_system();
+    if let Some(ip) = infer_tailscale_ip_from_route() {
+        if !ips.contains(&ip) {
+            ips.push(ip);
+        }
+    }
+    ips
+}
+
+fn infer_tailscale_ip_from_route() -> Option<String> {
+    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("100.100.100.100:53").ok()?;
+    let ip = socket.local_addr().ok()?.ip();
+    if is_tailscale_ip(ip) {
+        Some(ip.to_string())
+    } else {
+        None
+    }
+}
+
+fn collect_tailscale_ips_from_system() -> Vec<String> {
+    #[cfg(target_os = "windows")]
+    {
+        for command in windows_tailscale_command_candidates() {
+            let output = Command::new(&command).args(["ip", "-4"]).output();
+            if let Ok(output) = output {
+                if output.status.success() {
+                    let ips = parse_tailscale_ips(&String::from_utf8_lossy(&output.stdout));
+                    if !ips.is_empty() {
+                        return ips;
+                    }
+                }
+            }
+        }
+
+        let output = Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -match '^100\\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\\.' } | Select-Object -ExpandProperty IPAddress",
+            ])
+            .output();
+        if let Ok(output) = output {
+            if output.status.success() {
+                let ips = parse_tailscale_ips(&String::from_utf8_lossy(&output.stdout));
+                if !ips.is_empty() {
+                    return ips;
+                }
+            }
+        }
+
+        let output = Command::new("netsh")
+            .args(["interface", "ipv4", "show", "addresses"])
+            .output();
+        if let Ok(output) = output {
+            if output.status.success() {
+                let ips = parse_tailscale_ips_from_interface_text(&String::from_utf8_lossy(
+                    &output.stdout,
+                ));
+                if !ips.is_empty() {
+                    return ips;
+                }
+            }
+        }
+
+        let output = Command::new("ipconfig").output();
+        if let Ok(output) = output {
+            if output.status.success() {
+                return parse_tailscale_ips_from_interface_text(&String::from_utf8_lossy(
+                    &output.stdout,
+                ));
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let output = Command::new("sh")
+            .args(["-c", "ip -4 addr show 2>/dev/null || ifconfig 2>/dev/null"])
+            .output();
+        if let Ok(output) = output {
+            if output.status.success() {
+                return parse_tailscale_ips(&String::from_utf8_lossy(&output.stdout));
+            }
+        }
+    }
+
+    Vec::new()
+}
+
+#[cfg(target_os = "windows")]
+fn windows_tailscale_command_candidates() -> Vec<PathBuf> {
+    let mut candidates = vec![PathBuf::from("tailscale.exe")];
+    if let Ok(program_files) = std::env::var("ProgramFiles") {
+        candidates.push(PathBuf::from(program_files).join("Tailscale").join("tailscale.exe"));
+    }
+    if let Ok(program_files_x86) = std::env::var("ProgramFiles(x86)") {
+        candidates.push(
+            PathBuf::from(program_files_x86)
+                .join("Tailscale")
+                .join("tailscale.exe"),
+        );
+    }
+    candidates
+}
+
+fn parse_tailscale_ips_from_interface_text(text: &str) -> Vec<String> {
+    let ipv4_lines = text
+        .lines()
+        .filter(|line| {
+            let lower = line.to_ascii_lowercase();
+            lower.contains("ipv4") || lower.contains("ip address")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    parse_tailscale_ips(&ipv4_lines)
+}
+
+fn parse_tailscale_ips(text: &str) -> Vec<String> {
+    let mut ips = Vec::new();
+    for token in text.split(|character: char| !character.is_ascii_digit() && character != '.') {
+        let Ok(ip) = token.parse::<IpAddr>() else {
+            continue;
+        };
+        if is_tailscale_ip(ip) {
+            let value = ip.to_string();
+            if !ips.contains(&value) {
+                ips.push(value);
+            }
+        }
+    }
+    ips
+}
+
+fn is_tailscale_ip(ip: IpAddr) -> bool {
+    let IpAddr::V4(ipv4) = ip else {
+        return false;
+    };
+    let octets = ipv4.octets();
+    octets[0] == 100 && (64..=127).contains(&octets[1])
 }
 
 fn infer_lan_ip() -> Option<String> {
@@ -750,7 +904,7 @@ fn build_mobile_status(
     state: &MobileCompanionState,
 ) -> Result<MobileCompanionStatus, String> {
     ensure_mobile_dirs(app)?;
-    let snapshot = state.snapshot()?;
+    let snapshot = refresh_runtime_base_urls(state)?;
     let cards = cards::list_knowledge_cards(app)?;
     let review_state = read_review_state(app)?;
     let inbox_dir = mobile_inbox_dir(app)?;
@@ -780,6 +934,19 @@ fn build_mobile_status(
         inbox_dir: inbox_dir.to_string_lossy().to_string(),
         review_state_dir: review_dir.to_string_lossy().to_string(),
     })
+}
+
+fn refresh_runtime_base_urls(
+    state: &MobileCompanionState,
+) -> Result<MobileCompanionRuntime, String> {
+    let mut runtime = state
+        .inner
+        .lock()
+        .map_err(|error| format!("Failed to lock mobile companion runtime: {}", error))?;
+    if runtime.running && runtime.listener_port > 0 {
+        runtime.base_urls = detect_base_urls(runtime.listener_port);
+    }
+    Ok(runtime.clone())
 }
 
 fn pair_device(
@@ -1375,6 +1542,7 @@ async fn stream_ollama_mobile_chat(
     }
 
     let mut answer = String::new();
+    let mut reasoning = String::new();
     let mut buffer = String::new();
     let mut bytes_stream = response.bytes_stream();
     while let Some(chunk) = bytes_stream.next().await {
@@ -1386,34 +1554,56 @@ async fn stream_ollama_mobile_chat(
             if line.is_empty() {
                 continue;
             }
-            process_ollama_mobile_line(&line, &mut answer, sender).await?;
+            process_ollama_mobile_line(&line, &mut answer, &mut reasoning, sender).await?;
         }
     }
     if !buffer.trim().is_empty() {
-        process_ollama_mobile_line(buffer.trim(), &mut answer, sender).await?;
+        process_ollama_mobile_line(buffer.trim(), &mut answer, &mut reasoning, sender).await?;
     }
-    if answer.trim().is_empty() {
+    if answer.trim().is_empty() && reasoning.trim().is_empty() {
         Err("LLM response did not include content".to_string())
-    } else {
+    } else if answer.trim().is_empty() {
+        Ok(format!("<think>\n{}\n</think>", reasoning.trim()))
+    } else if reasoning.trim().is_empty() {
         Ok(answer)
+    } else {
+        Ok(format!("<think>\n{}\n</think>\n\n{}", reasoning.trim(), answer))
     }
 }
 
 async fn process_ollama_mobile_line(
     line: &str,
     answer: &mut String,
+    reasoning: &mut String,
     sender: &mpsc::Sender<Result<Bytes, Infallible>>,
 ) -> Result<(), String> {
     let value: serde_json::Value = serde_json::from_str(line).map_err(|error| error.to_string())?;
     let message = value.get("message");
+    let thinking_delta = message
+        .and_then(|value| value.get("thinking"))
+        .and_then(|value| value.as_str())
+        .or_else(|| value.get("thinking").and_then(|value| value.as_str()))
+        .unwrap_or("");
     let delta = message
         .and_then(|value| value.get("content"))
         .and_then(|value| value.as_str())
         .or_else(|| value.get("response").and_then(|value| value.as_str()))
         .unwrap_or("");
+    if !thinking_delta.is_empty() {
+        reasoning.push_str(thinking_delta);
+        send_ndjson(
+            sender,
+            json!({ "type": "delta", "delta": thinking_delta, "phase": "thinking" }),
+        )
+        .await?;
+    }
     if !delta.is_empty() {
         answer.push_str(delta);
-        send_ndjson(sender, json!({ "type": "delta", "delta": delta })).await?;
+        send_ndjson(
+            sender,
+            json!({ "type": "delta", "delta": delta, "phase": "answer" }),
+        )
+        .await?;
     }
     Ok(())
 }

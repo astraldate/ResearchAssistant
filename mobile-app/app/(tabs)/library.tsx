@@ -1,6 +1,13 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import {
+  ActivityIndicator,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
 import { CardTile } from "../../src/components/CardTile";
 import { ScreenShell } from "../../src/components/ScreenShell";
 import { listCards } from "../../src/lib/database";
@@ -8,21 +15,40 @@ import { bootstrapSync } from "../../src/lib/sync";
 import { palette, spacing } from "../../src/theme";
 
 export default function LibraryScreen() {
+  const queryClient = useQueryClient();
   const [searchText, setSearchText] = useState("");
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const cardsQuery = useQuery({
     queryKey: ["cards", searchText],
     queryFn: () => listCards(searchText),
   });
 
-  const selectedCard = cardsQuery.data?.find((card) => card.id === selectedCardId) ?? cardsQuery.data?.[0] ?? null;
+  const selectedCard =
+    cardsQuery.data?.find((card) => card.id === selectedCardId) ??
+    cardsQuery.data?.[0] ??
+    null;
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
+    setSyncMessage(null);
     try {
-      await bootstrapSync();
-      await cardsQuery.refetch();
+      const bootstrap = await bootstrapSync();
+      await queryClient.invalidateQueries({ queryKey: ["cards"] });
+      await queryClient.invalidateQueries({ queryKey: ["due-review-cards"] });
+      const refreshed = await cardsQuery.refetch();
+      const nextCards = refreshed.data ?? [];
+      if (
+        selectedCardId &&
+        !nextCards.some((card) => card.id === selectedCardId)
+      ) {
+        setSelectedCardId(nextCards[0]?.id ?? null);
+      }
+      setSyncMessage(`已同步 ${bootstrap.cards.length} 张卡片。`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setSyncMessage(`同步失败：${message}`);
     } finally {
       setIsRefreshing(false);
     }
@@ -33,8 +59,17 @@ export default function LibraryScreen() {
       title="卡片库"
       subtitle="浏览桌面端同步到手机本地的 Markdown 卡片，搜索只查本机缓存。"
       headerRight={
-        <Pressable style={styles.headerButton} onPress={() => void handleRefresh()}>
-          <Text style={styles.headerButtonText}>{isRefreshing ? "同步中" : "立即同步"}</Text>
+        <Pressable
+          style={[
+            styles.headerButton,
+            isRefreshing ? styles.headerButtonDisabled : null,
+          ]}
+          onPress={() => void handleRefresh()}
+          disabled={isRefreshing}
+        >
+          <Text style={styles.headerButtonText}>
+            {isRefreshing ? "同步中" : "立即同步"}
+          </Text>
         </Pressable>
       }
     >
@@ -45,6 +80,9 @@ export default function LibraryScreen() {
         placeholderTextColor={palette.slate}
         style={styles.searchInput}
       />
+      {syncMessage ? (
+        <Text style={styles.syncMessage}>{syncMessage}</Text>
+      ) : null}
 
       {cardsQuery.isLoading ? (
         <View style={styles.emptyState}>
@@ -53,18 +91,27 @@ export default function LibraryScreen() {
       ) : cardsQuery.data?.length ? (
         <>
           {cardsQuery.data.map((card) => (
-            <CardTile key={card.id} card={card} selected={selectedCard?.id === card.id} onPress={() => setSelectedCardId(card.id)} />
+            <CardTile
+              key={card.id}
+              card={card}
+              selected={selectedCard?.id === card.id}
+              onPress={() => setSelectedCardId(card.id)}
+            />
           ))}
           {selectedCard ? (
             <View style={styles.detailPanel}>
-              <Text style={styles.detailTitle}>{selectedCard.title || selectedCard.term}</Text>
+              <Text style={styles.detailTitle}>
+                {selectedCard.title || selectedCard.term}
+              </Text>
               <Text style={styles.detailBody}>{selectedCard.markdown}</Text>
             </View>
           ) : null}
         </>
       ) : (
         <View style={styles.emptyState}>
-          <Text style={styles.emptyText}>当前没有可用卡片。先完成桌面端配对，并执行一次同步。</Text>
+          <Text style={styles.emptyText}>
+            当前没有可用卡片。先完成桌面端配对，并执行一次同步。
+          </Text>
         </View>
       )}
     </ScreenShell>
@@ -78,6 +125,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 10,
   },
+  headerButtonDisabled: {
+    opacity: 0.65,
+  },
   headerButtonText: {
     color: "#fff",
     fontWeight: "700",
@@ -90,6 +140,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 12,
     color: palette.ink,
+  },
+  syncMessage: {
+    color: palette.slate,
+    lineHeight: 22,
   },
   detailPanel: {
     borderRadius: 22,

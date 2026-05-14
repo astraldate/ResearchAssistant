@@ -268,6 +268,8 @@ pub struct GenerateBriefReportRequest {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct PaperCommandRequest {
+    #[serde(default)]
+    pub request_id: String,
     pub command_type: String,
     pub paper_path: Option<String>,
     pub scope_paper: Option<String>,
@@ -5472,7 +5474,9 @@ async fn generate_brief_report(
     );
 
     let settings = settings_state.get()?;
-    run_ollama_chat(
+    run_ollama_chat_stream(
+        &window,
+        &request.request_id,
         &request.model,
         vec![
             serde_json::json!({
@@ -5496,6 +5500,7 @@ async fn generate_brief_report(
 
 #[tauri::command]
 async fn run_paper_command(
+    window: Window,
     app: AppHandle,
     request: PaperCommandRequest,
     settings_state: State<'_, InferenceSettingsState>,
@@ -5515,7 +5520,9 @@ async fn run_paper_command(
         request.user_instruction.as_deref(),
     );
     let settings = settings_state.get()?;
-    run_ollama_chat(
+    run_ollama_chat_stream(
+        &window,
+        &request.request_id,
         &request.model,
         vec![
             serde_json::json!({

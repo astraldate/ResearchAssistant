@@ -9,7 +9,7 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { ImagePlus, Send, X } from "lucide-react";
+import { History, ImagePlus, Monitor, Send, Smartphone, X } from "lucide-react";
 import { ModelSelector } from "./ModelSelector";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 
@@ -117,14 +117,16 @@ const buildDraftCardFallbackContent = (draft: PaperDraftResult) =>
   ].join("\n");
 
 interface ChatStreamEvent {
-  request_id: string;
+  request_id?: string;
+  requestId?: string;
   phase: "thinking" | "answer" | "done";
   reasoning: string;
   answer: string;
 }
 
 interface BriefProgressEvent {
-  request_id: string;
+  request_id?: string;
+  requestId?: string;
   phase: "locating" | "retrieving" | "generating" | "done";
   message: string;
 }
@@ -457,7 +459,6 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     }
     return null;
   }, [messages]);
-
   const persistSession = useCallback(
     (payload?: SessionPayload) => {
       if (activeMobileThreadId) return;
@@ -626,10 +627,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
     listen<ChatStreamEvent>("chat-stream", (event) => {
       const activeStream = activeStreamRef.current;
-      if (
-        !activeStream ||
-        activeStream.requestId !== event.payload.request_id
-      ) {
+      const eventRequestId =
+        event.payload.request_id ?? event.payload.requestId;
+      if (!activeStream || activeStream.requestId !== eventRequestId) {
         return;
       }
 
@@ -662,13 +662,19 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
     listen<BriefProgressEvent>("brief-progress", (event) => {
       const activeBrief = activeBriefRef.current;
-      if (!activeBrief || activeBrief.requestId !== event.payload.request_id) {
+      const eventRequestId =
+        event.payload.request_id ?? event.payload.requestId;
+      if (!activeBrief || activeBrief.requestId !== eventRequestId) {
+        return;
+      }
+      if (event.payload.phase === "done") {
         return;
       }
 
       setMessages((previous) =>
         previous.map((message) =>
-          message.id === activeBrief.messageId
+          message.id === activeBrief.messageId &&
+          message.content.startsWith("_正在")
             ? {
                 ...message,
                 content: buildBriefProgressContent(event.payload.message),
@@ -724,6 +730,31 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     },
     [onStatus],
   );
+
+  const openLocalDesktopSession = useCallback(() => {
+    const stored = readSession();
+    setActiveMobileThreadId(null);
+    setIsMobileThreadListOpen(false);
+    if (stored) {
+      setMessages(stored.messages?.length ? stored.messages : DEFAULT_MESSAGES);
+      setInputValue(stored.inputValue || "");
+      setImagePath(stored.imagePath || null);
+      setCitationDraft(stored.citationDraft || "");
+      setCitations(Array.isArray(stored.citations) ? stored.citations : []);
+      setNotes(Array.isArray(stored.notes) ? stored.notes : []);
+      setRestrictToActivePaper(Boolean(stored.restrictToActivePaper));
+      onPdfPageChange?.(
+        stored.pdfPage && stored.pdfPage > 0 ? stored.pdfPage : 1,
+      );
+      return;
+    }
+    setMessages(DEFAULT_MESSAGES);
+    setInputValue("");
+    setImagePath(null);
+    setCitationDraft("");
+    setCitations([]);
+    setNotes([]);
+  }, [onPdfPageChange]);
 
   useEffect(() => {
     void loadMobileThreads();
@@ -1053,7 +1084,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 ? "_正在生成 review 草稿..._"
                 : slashCommand
                   ? `_${slashCommand.name === "method" ? "正在聚焦方法设计..." : slashCommand.name === "exp" ? "正在聚焦实验与局限..." : slashCommand.name === "claim" ? "正在提取核心论点..." : "正在检索论文证据..."}_`
-                  : "",
+                  : "_正在连接模型，等待首段输出..._",
         timestamp: startedAt,
       },
     ]);
@@ -1061,7 +1092,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     setIsLoading(true);
     shouldAutoScrollRef.current = true;
     activeStreamRef.current =
-      slashCommand?.name === "brief"
+      slashCommand?.name === "note" || slashCommand?.name === "review"
         ? null
         : {
             requestId,
@@ -1112,6 +1143,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       ) {
         const response = await invoke<string>("run_paper_command", {
           request: {
+            requestId,
             commandType: slashCommand.name,
             scopePaper: effectiveScopePaper ?? undefined,
             paperPath: scopePath,
@@ -1505,6 +1537,21 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     () => (activeFilePath ? getFileName(activeFilePath) : "未选中文件"),
     [activeFilePath],
   );
+  const activeMobileThreadSummary = useMemo(
+    () =>
+      activeMobileThreadId
+        ? mobileThreadSummaries.find(
+            (thread) => thread.threadId === activeMobileThreadId,
+          ) || null
+        : null,
+    [activeMobileThreadId, mobileThreadSummaries],
+  );
+  const activeSessionTitle = activeMobileThreadId
+    ? activeMobileThreadSummary?.title || "移动端会话"
+    : "本地桌面会话";
+  const activeSessionMeta = activeMobileThreadId
+    ? `${activeMobileThreadSummary?.messageCount ?? messages.length} 条消息 · 后续轮次默认仅使用历史上下文`
+    : `当前文件：${activeFileLabel}`;
   const parsedScope = useMemo(
     () => parsePaperScopedQuestion(inputValue),
     [inputValue],
@@ -1668,20 +1715,20 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         <div className="main-view-meta">
           <div className="main-view-title">科研助手</div>
           <div className="main-view-subtitle" title={activeFileLabel}>
-            {activeMobileThreadId
-              ? "移动端会话 · 后续轮次默认仅使用历史上下文"
-              : `当前文件：${activeFileLabel}`}
+            {activeSessionMeta}
           </div>
         </div>
         <div className="chat-toolbar">
           <button
-            style={TOOL_BUTTON_STYLE}
+            className={`session-switch-button ${activeMobileThreadId ? "mobile-active" : ""}`}
             onClick={() => {
               setIsMobileThreadListOpen((previous) => !previous);
               void loadMobileThreads();
             }}
+            title="切换本地桌面会话或移动端会话"
           >
-            移动线程
+            <History size={15} />
+            切换会话
           </button>
           <button style={TOOL_BUTTON_STYLE} onClick={handleClearSession}>
             清空会话
@@ -1705,35 +1752,83 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
             )}
         </div>
       </div>
-      {isMobileThreadListOpen && (
-        <div
-          style={{
-            borderBottom: "1px solid var(--border-color)",
-            padding: 8,
-            display: "grid",
-            gap: 6,
-            background: "var(--bg-secondary)",
+      <div
+        className={`active-session-strip ${activeMobileThreadId ? "mobile" : "desktop"}`}
+      >
+        <div className="active-session-icon">
+          {activeMobileThreadId ? (
+            <Smartphone size={18} />
+          ) : (
+            <Monitor size={18} />
+          )}
+        </div>
+        <div className="active-session-copy">
+          <div className="active-session-label">
+            当前会话 · {activeMobileThreadId ? "移动端" : "桌面端"}
+          </div>
+          <div className="active-session-title">{activeSessionTitle}</div>
+        </div>
+        <button
+          type="button"
+          className="active-session-action"
+          onClick={() => {
+            setIsMobileThreadListOpen((previous) => !previous);
+            void loadMobileThreads();
           }}
         >
+          切换
+        </button>
+      </div>
+      {isMobileThreadListOpen && (
+        <div className="mobile-thread-switcher">
+          <div className="mobile-thread-switcher-header">
+            <div>
+              <div className="mobile-thread-switcher-title">切换会话</div>
+              <div className="mobile-thread-switcher-subtitle">
+                可回到本地桌面会话，也可打开手机端发起的历史会话。
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            className={`mobile-thread-option ${!activeMobileThreadId ? "active" : ""}`}
+            onClick={openLocalDesktopSession}
+          >
+            <span className="mobile-thread-option-icon">
+              <Monitor size={16} />
+            </span>
+            <span className="mobile-thread-option-main">
+              <span className="mobile-thread-option-title">本地桌面会话</span>
+              <span className="mobile-thread-option-meta">
+                使用当前桌面聊天上下文和当前文件范围
+              </span>
+            </span>
+          </button>
           {mobileThreadSummaries.length ? (
             mobileThreadSummaries.slice(0, 8).map((thread) => (
               <button
                 key={thread.threadId}
-                style={{
-                  ...TOOL_BUTTON_STYLE,
-                  textAlign: "left",
-                  background:
-                    activeMobileThreadId === thread.threadId
-                      ? "var(--accent-soft)"
-                      : "var(--bg-primary)",
-                }}
+                type="button"
+                className={`mobile-thread-option ${
+                  activeMobileThreadId === thread.threadId ? "active" : ""
+                }`}
                 onClick={() => void openMobileThread(thread.threadId)}
               >
-                {thread.title || "移动端会话"} · {thread.messageCount} 条
+                <span className="mobile-thread-option-icon">
+                  <Smartphone size={16} />
+                </span>
+                <span className="mobile-thread-option-main">
+                  <span className="mobile-thread-option-title">
+                    {thread.title || "移动端会话"}
+                  </span>
+                  <span className="mobile-thread-option-meta">
+                    {thread.messageCount} 条 · {thread.updatedAt}
+                  </span>
+                </span>
               </button>
             ))
           ) : (
-            <div className="main-view-subtitle">暂无移动端会话。</div>
+            <div className="mobile-thread-empty">暂无移动端会话。</div>
           )}
         </div>
       )}
