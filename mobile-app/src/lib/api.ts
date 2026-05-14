@@ -145,6 +145,19 @@ export async function fetchChatThread(
   );
 }
 
+export async function deleteChatThread(
+  baseUrl: string,
+  token: string,
+  threadId: string,
+) {
+  return requestJson<Record<string, never>>(
+    baseUrl,
+    `${MOBILE_API_PREFIX}/chat/threads/${encodeURIComponent(threadId)}`,
+    { method: "DELETE" },
+    token,
+  );
+}
+
 export async function streamChatMessage(
   baseUrl: string,
   token: string,
@@ -173,9 +186,45 @@ function streamNdjsonWithXhr(
     const xhr = new XMLHttpRequest();
     let seenLength = 0;
     let buffer = "";
+    let settled = false;
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const clearIdleTimer = () => {
+      if (idleTimer) {
+        clearTimeout(idleTimer);
+        idleTimer = null;
+      }
+    };
+
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      clearIdleTimer();
+      xhr.abort();
+      reject(error);
+    };
+
+    const succeed = () => {
+      if (settled) return;
+      settled = true;
+      clearIdleTimer();
+      resolve();
+    };
+
+    const resetIdleTimer = (stage: string) => {
+      clearIdleTimer();
+      idleTimer = setTimeout(() => {
+        fail(
+          new Error(
+            `${stage}超过 150 秒没有收到桌面端新响应。请确认桌面端应用已重启到最新版、Ollama 正在运行，或先新建会话重试。`,
+          ),
+        );
+      }, 150_000);
+    };
 
     const consumeText = (text: string, tolerateTrailingPartial: boolean) => {
       if (!text) return;
+      resetIdleTimer("聊天流");
       buffer += text;
       const lines = buffer.split(/\r?\n/);
       buffer = lines.pop() ?? "";
@@ -187,19 +236,24 @@ function streamNdjsonWithXhr(
     };
 
     xhr.open("POST", url);
+    xhr.timeout = 0;
     xhr.setRequestHeader("Content-Type", "application/json");
     xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    resetIdleTimer("连接桌面端");
     xhr.onprogress = () => {
       const nextText = xhr.responseText.slice(seenLength);
       seenLength = xhr.responseText.length;
       consumeText(nextText, false);
     };
-    xhr.onerror = () => reject(new Error("移动端聊天流连接失败。"));
+    xhr.onerror = () => fail(new Error("移动端聊天流连接失败。"));
+    xhr.ontimeout = () =>
+      fail(new Error("移动端聊天流超时：桌面端长时间没有完成响应。"));
     xhr.onload = () => {
+      if (settled) return;
       const nextText = xhr.responseText.slice(seenLength);
       seenLength = xhr.responseText.length;
       if (xhr.status < 200 || xhr.status >= 300) {
-        reject(
+        fail(
           new Error(
             xhr.responseText.trim() || `Request failed with ${xhr.status}`,
           ),
@@ -207,7 +261,7 @@ function streamNdjsonWithXhr(
         return;
       }
       consumeText(nextText, true);
-      resolve();
+      succeed();
     };
     xhr.send(JSON.stringify(payload));
   });

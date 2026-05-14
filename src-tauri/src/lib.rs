@@ -5712,7 +5712,12 @@ async fn chat_with_llm(
 ) -> Result<String, String> {
     let settings = settings_state.get()?;
     let normalized_image_path = normalize_optional_path(image_path);
-    let permit = queue_state.acquire(ChatPriority::Desktop).await;
+    let Some(permit) = queue_state
+        .acquire_timeout(ChatPriority::Desktop, tokio::time::Duration::from_secs(45))
+        .await
+    else {
+        return Err("模型队列等待超时：已有生成任务长时间未结束，请稍后重试。".to_string());
+    };
     let result = route_chat_completion(
         &window,
         &request_id,
@@ -5778,6 +5783,11 @@ async fn read_mobile_chat_thread(
     thread_id: String,
 ) -> Result<mobile::MobileChatThread, String> {
     mobile::read_mobile_chat_thread(&app, &thread_id)
+}
+
+#[tauri::command]
+async fn delete_mobile_chat_thread(app: AppHandle, thread_id: String) -> Result<(), String> {
+    mobile::delete_mobile_chat_thread(&app, &thread_id)
 }
 
 #[tauri::command]
@@ -5938,6 +5948,7 @@ pub fn run() {
             set_mobile_chat_model,
             list_mobile_chat_threads,
             read_mobile_chat_thread,
+            delete_mobile_chat_thread,
             append_mobile_chat_thread_turn
         ])
         .build(tauri::generate_context!())

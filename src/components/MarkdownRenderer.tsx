@@ -83,8 +83,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
       return;
     }
     autoExpandedOnceRef.current = false;
-    setExpandedThinkSections({});
-  }, [autoExpandReasoning, content, segments]);
+  }, [autoExpandReasoning, segments]);
 
   const hasThinkSection = segments.some((segment) => segment.kind === "think");
 

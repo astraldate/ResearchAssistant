@@ -186,11 +186,13 @@ export interface MobileChatThreadSummary {
 export interface MobileChatSendRequest {
   message: string;
   useRetrieval?: boolean | null;
+  thinkingEnabled?: boolean | null;
 }
 
 export type MobileChatStreamEvent =
   | { type: "thread"; thread: MobileChatThread; useRetrieval?: boolean }
   | { type: "queued" }
+  | { type: "status"; status: string }
   | { type: "delta"; delta: string; phase?: "thinking" | "answer" }
   | { type: "done" }
   | { type: "error"; error: string };

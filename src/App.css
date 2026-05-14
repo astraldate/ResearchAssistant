@@ -1801,11 +1801,40 @@ textarea:focus {
   border-radius: 8px;
   padding: 10px 12px;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
   text-align: left;
   cursor: pointer;
+}
+
+.mobile-thread-open {
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  display: contents;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mobile-thread-delete {
+  width: 32px;
+  height: 32px;
+  border: 1px solid rgba(178, 67, 51, 0.22);
+  background: rgba(255, 245, 243, 0.95);
+  color: #b42318;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.mobile-thread-delete:hover {
+  border-color: rgba(178, 67, 51, 0.38);
+  background: rgba(255, 237, 233, 0.98);
 }
 
 .mobile-thread-option:hover {

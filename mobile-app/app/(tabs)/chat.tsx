@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -15,6 +15,7 @@ import type {
 } from "../../src/contracts";
 import { ScreenShell } from "../../src/components/ScreenShell";
 import {
+  deleteChatThread,
   fetchChatThread,
   fetchChatThreads,
   streamChatMessage,
@@ -30,8 +31,10 @@ export default function ChatScreen() {
   );
   const [input, setInput] = useState("");
   const [useRetrieval, setUseRetrieval] = useState(true);
+  const [thinkingEnabled, setThinkingEnabled] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [streamStatus, setStreamStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const loadThreads = async () => {
@@ -67,6 +70,7 @@ export default function ChatScreen() {
   const openThread = async (threadId: string) => {
     if (!session) return;
     setError(null);
+    setStreamStatus(null);
     const thread = await fetchChatThread(
       session.baseUrl,
       session.deviceToken,
@@ -80,6 +84,26 @@ export default function ChatScreen() {
     setActiveThread(null);
     setInput("");
     setUseRetrieval(true);
+    setError(null);
+    setStreamStatus(null);
+  };
+
+  const handleDeleteThread = async (threadId: string) => {
+    if (!session || isStreaming) return;
+    setError(null);
+    try {
+      await deleteChatThread(session.baseUrl, session.deviceToken, threadId);
+      setThreads((previous) =>
+        previous.filter((thread) => thread.threadId !== threadId),
+      );
+      if (activeThread?.threadId === threadId) {
+        setActiveThread(null);
+        setUseRetrieval(true);
+      }
+      await loadThreads();
+    } catch (nextError) {
+      setError(String(nextError));
+    }
   };
 
   const handleSend = async () => {
@@ -87,6 +111,7 @@ export default function ChatScreen() {
     const content = input.trim();
     setInput("");
     setError(null);
+    setStreamStatus("正在连接桌面端...");
     setIsStreaming(true);
 
     const optimisticUser: MobileChatMessage = {
@@ -133,23 +158,40 @@ export default function ChatScreen() {
         session.baseUrl,
         session.deviceToken,
         activeThread?.threadId || null,
-        { message: content, useRetrieval },
+        { message: content, useRetrieval, thinkingEnabled },
         (event) => {
           if (event.type === "thread") {
             setActiveThread(event.thread);
+            setStreamStatus(
+              useRetrieval
+                ? "桌面端已接收，准备检索知识库上下文..."
+                : "桌面端已接收，准备调用模型...",
+            );
             return;
           }
           if (event.type === "queued") {
+            setStreamStatus("模型队列中，等待桌面端空闲...");
             setActiveThread((previous) =>
               appendAssistantDelta(
                 previous,
-                "正在排队并准备检索上下文...\n\n",
+                useRetrieval
+                  ? "正在排队，随后会检索上下文并生成回答...\n\n"
+                  : "正在排队，随后会直接生成回答...\n\n",
                 "streaming",
               ),
             );
             return;
           }
+          if (event.type === "status") {
+            setStreamStatus(event.status);
+            return;
+          }
           if (event.type === "delta") {
+            setStreamStatus(
+              event.phase === "thinking"
+                ? "模型正在思考..."
+                : "正在流式输出回答...",
+            );
             setActiveThread((previous) =>
               appendAssistantDelta(
                 previous,
@@ -162,11 +204,13 @@ export default function ChatScreen() {
           }
           if (event.type === "error") {
             setError(event.error);
+            setStreamStatus("生成失败");
             setActiveThread((previous) =>
               markLastAssistant(previous, event.error),
             );
           }
           if (event.type === "done") {
+            setStreamStatus(null);
             setActiveThread((previous) => markLastAssistantComplete(previous));
           }
         },
@@ -176,6 +220,7 @@ export default function ChatScreen() {
     } catch (nextError) {
       const message = String(nextError);
       setError(message);
+      setStreamStatus("生成中断");
       setActiveThread((previous) => markLastAssistant(previous, message));
     } finally {
       setIsStreaming(false);
@@ -187,9 +232,20 @@ export default function ChatScreen() {
       title="聊天"
       subtitle="把思路发回桌面端，由桌面模型结合知识库生成独立会话。"
       headerRight={
-        <Pressable style={styles.headerButton} onPress={startNewThread}>
-          <Text style={styles.headerButtonText}>新会话</Text>
-        </Pressable>
+        <View style={styles.headerActions}>
+          {activeThread?.threadId ? (
+            <Pressable
+              style={[styles.headerButton, styles.deleteHeaderButton]}
+              onPress={() => void handleDeleteThread(activeThread.threadId)}
+              disabled={isStreaming}
+            >
+              <Text style={styles.headerButtonText}>删除</Text>
+            </Pressable>
+          ) : null}
+          <Pressable style={styles.headerButton} onPress={startNewThread}>
+            <Text style={styles.headerButtonText}>新会话</Text>
+          </Pressable>
+        </View>
       }
     >
       {!session ? (
@@ -214,13 +270,42 @@ export default function ChatScreen() {
                 ]}
                 onPress={() => void openThread(thread.threadId)}
               >
-                <Text style={styles.threadTitle} numberOfLines={1}>
-                  {thread.title || "移动端会话"}
-                </Text>
+                <View style={styles.threadChipTop}>
+                  <Text style={styles.threadTitle} numberOfLines={1}>
+                    {thread.title || "移动端会话"}
+                  </Text>
+                  <Pressable
+                    style={styles.threadDeleteButton}
+                    onPress={(event) => {
+                      event.stopPropagation();
+                      void handleDeleteThread(thread.threadId);
+                    }}
+                    disabled={isStreaming}
+                  >
+                    <Text style={styles.threadDeleteText}>×</Text>
+                  </Pressable>
+                </View>
                 <Text style={styles.threadMeta}>{thread.messageCount} 条</Text>
               </Pressable>
             ))}
           </ScrollView>
+
+          {isStreaming || streamStatus ? (
+            <View style={styles.streamStatusCard}>
+              {isStreaming ? (
+                <ActivityIndicator color={palette.primary} />
+              ) : null}
+              <View style={styles.streamStatusCopy}>
+                <Text style={styles.streamStatusTitle}>
+                  {streamStatus || "正在等待桌面端..."}
+                </Text>
+                <Text style={styles.streamStatusHint}>
+                  如果长时间停在这里，请确认桌面端已经重启到最新版，且 Ollama
+                  没有被上一条生成卡住。
+                </Text>
+              </View>
+            </View>
+          ) : null}
 
           <ScrollView
             style={styles.messagesPanel}
@@ -239,9 +324,7 @@ export default function ChatScreen() {
                 <Text style={styles.messageRole}>
                   {message.role === "user" ? "我" : "桌面模型"}
                 </Text>
-                <Text style={styles.messageText}>
-                  {formatMessageForDisplay(message)}
-                </Text>
+                <MobileMessageContent message={message} />
               </View>
             ))}
             {error ? <Text style={styles.errorText}>{error}</Text> : null}
@@ -272,6 +355,23 @@ export default function ChatScreen() {
               multiline
               style={styles.input}
             />
+            <Pressable
+              style={[
+                styles.thinkingToggle,
+                thinkingEnabled && styles.thinkingToggleActive,
+              ]}
+              onPress={() => setThinkingEnabled((previous) => !previous)}
+              disabled={isStreaming}
+            >
+              <Text
+                style={[
+                  styles.thinkingToggleText,
+                  thinkingEnabled && styles.thinkingToggleTextActive,
+                ]}
+              >
+                思考
+              </Text>
+            </Pressable>
             <Pressable
               style={[
                 styles.sendButton,
@@ -308,23 +408,86 @@ function markLastAssistant(
   return { ...thread, messages, status: "error", lastError: error };
 }
 
-function formatMessageForDisplay(message: MobileChatMessage) {
-  if (message.role === "user") return message.content;
-  const answer = stripThinkingBlock(message.content).trim();
+function MobileMessageContent({ message }: { message: MobileChatMessage }) {
+  const [isReasoningExpanded, setIsReasoningExpanded] = useState(false);
+  const parsed = useMemo(
+    () => parseThinkingContent(message.content),
+    [message.content],
+  );
+
+  if (message.role === "user") {
+    return <Text style={styles.messageText}>{message.content}</Text>;
+  }
+
+  const answer = parsed.answer.trim();
+  const reasoning = parsed.reasoning.trim();
+  const fallback = formatAssistantFallback(message, answer, reasoning);
+
+  return (
+    <View style={styles.messageContentStack}>
+      {reasoning ? (
+        <View style={styles.reasoningBlock}>
+          <Pressable
+            style={styles.reasoningToggle}
+            onPress={() => setIsReasoningExpanded((previous) => !previous)}
+          >
+            <Text style={styles.reasoningToggleText}>
+              {isReasoningExpanded ? "隐藏思路" : "显示思路"}
+            </Text>
+            <Text style={styles.reasoningToggleIcon}>
+              {isReasoningExpanded ? "⌃" : "⌄"}
+            </Text>
+          </Pressable>
+          {isReasoningExpanded ? (
+            <Text style={styles.reasoningText}>{reasoning}</Text>
+          ) : null}
+        </View>
+      ) : null}
+      <Text style={styles.messageText}>{answer || fallback}</Text>
+    </View>
+  );
+}
+
+function formatAssistantFallback(
+  message: MobileChatMessage,
+  answer: string,
+  reasoning: string,
+) {
   if (answer) return answer;
-  if (message.content.includes("<think>")) {
+  if (reasoning) {
     return message.status === "streaming"
       ? "正在思考，等待答案输出..."
       : "已完成思考，但没有生成可显示的答案。";
   }
-  return message.content || (message.status === "streaming" ? "生成中..." : "");
+  return (
+    message.content ||
+    (message.status === "streaming"
+      ? "已发送到桌面端，正在等待第一段响应..."
+      : "")
+  );
 }
 
-function stripThinkingBlock(content: string) {
-  return content
-    .replace(/<think>[\s\S]*?<\/think>/gi, "")
-    .replace(/<think>[\s\S]*$/gi, "")
-    .trim();
+function parseThinkingContent(content: string) {
+  const openMatch = content.match(/<think>/i);
+  if (!openMatch || openMatch.index == null) {
+    return { reasoning: "", answer: content };
+  }
+  const openStart = openMatch.index;
+  const thinkStart = openStart + openMatch[0].length;
+  const before = content.slice(0, openStart).trim();
+  const afterOpen = content.slice(thinkStart);
+  const closeMatch = afterOpen.match(/<\/think>/i);
+  if (!closeMatch || closeMatch.index == null) {
+    return { reasoning: afterOpen.trim(), answer: before };
+  }
+  const reasoning = afterOpen.slice(0, closeMatch.index).trim();
+  const answer = [
+    before,
+    afterOpen.slice(closeMatch.index + closeMatch[0].length).trim(),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  return { reasoning, answer };
 }
 
 function appendAssistantDelta(
@@ -387,11 +550,18 @@ function markLastAssistantComplete(
 }
 
 const styles = StyleSheet.create({
+  headerActions: {
+    flexDirection: "row",
+    gap: spacing.sm,
+  },
   headerButton: {
     borderRadius: 999,
     backgroundColor: palette.primary,
     paddingHorizontal: 14,
     paddingVertical: 10,
+  },
+  deleteHeaderButton: {
+    backgroundColor: palette.danger,
   },
   headerButtonText: {
     color: "#fff",
@@ -409,17 +579,59 @@ const styles = StyleSheet.create({
     backgroundColor: palette.panel,
     padding: spacing.md,
   },
+  threadChipTop: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+  },
   threadChipActive: {
     borderColor: palette.primary,
     backgroundColor: "#eef4ff",
   },
   threadTitle: {
+    flex: 1,
     color: palette.ink,
     fontWeight: "800",
+  },
+  threadDeleteButton: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#f7ded9",
+  },
+  threadDeleteText: {
+    color: palette.danger,
+    fontSize: 18,
+    fontWeight: "900",
+    lineHeight: 20,
   },
   threadMeta: {
     color: palette.slate,
     marginTop: 4,
+  },
+  streamStatusCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: palette.border,
+    backgroundColor: palette.primarySoft,
+    padding: spacing.md,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: spacing.sm,
+  },
+  streamStatusCopy: {
+    flex: 1,
+    gap: spacing.xs,
+  },
+  streamStatusTitle: {
+    color: palette.ink,
+    fontWeight: "800",
+  },
+  streamStatusHint: {
+    color: palette.slate,
+    lineHeight: 20,
   },
   messagesPanel: {
     minHeight: 360,
@@ -450,6 +662,40 @@ const styles = StyleSheet.create({
     color: palette.ink,
     lineHeight: 22,
   },
+  messageContentStack: {
+    gap: spacing.sm,
+  },
+  reasoningBlock: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: palette.border,
+    backgroundColor: "#f8fafc",
+    overflow: "hidden",
+  },
+  reasoningToggle: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.sm,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  reasoningToggleText: {
+    color: palette.slate,
+    fontWeight: "800",
+  },
+  reasoningToggleIcon: {
+    color: palette.slate,
+    fontSize: 18,
+    lineHeight: 18,
+    fontWeight: "900",
+  },
+  reasoningText: {
+    borderTopWidth: 1,
+    borderTopColor: palette.border,
+    color: palette.slate,
+    lineHeight: 20,
+    padding: spacing.sm,
+  },
   errorText: {
     color: "#b42318",
     lineHeight: 20,
@@ -477,6 +723,25 @@ const styles = StyleSheet.create({
   },
   retrievalToggleTextActive: {
     color: "#fff",
+  },
+  thinkingToggle: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: palette.border,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    backgroundColor: palette.panel,
+  },
+  thinkingToggleActive: {
+    borderColor: palette.primary,
+    backgroundColor: "#eef4ff",
+  },
+  thinkingToggleText: {
+    color: palette.slate,
+    fontWeight: "800",
+  },
+  thinkingToggleTextActive: {
+    color: palette.primary,
   },
   input: {
     flex: 1,

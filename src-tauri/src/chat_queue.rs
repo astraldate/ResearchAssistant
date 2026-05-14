@@ -4,6 +4,7 @@ use std::sync::{
     Arc,
 };
 use tokio::sync::{oneshot, Mutex};
+use tokio::time::{timeout, Duration};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ChatPriority {
@@ -39,7 +40,11 @@ impl LlmChatQueueState {
         Self::default()
     }
 
-    pub async fn acquire(&self, priority: ChatPriority) -> ChatQueuePermit {
+    pub async fn acquire_timeout(
+        &self,
+        priority: ChatPriority,
+        wait: Duration,
+    ) -> Option<ChatQueuePermit> {
         let (sender, receiver) = oneshot::channel();
         let sequence = self.sequence.fetch_add(1, Ordering::SeqCst);
         let mut start_now = false;
@@ -58,14 +63,18 @@ impl LlmChatQueueState {
             }
         }
 
-        if !start_now {
-            let _ = receiver.await;
+        if !start_now && timeout(wait, receiver).await.is_err() {
+            let mut inner = self.inner.lock().await;
+            if let Some(index) = inner.jobs.iter().position(|job| job.sequence == sequence) {
+                inner.jobs.remove(index);
+            }
+            return None;
         }
 
-        ChatQueuePermit {
+        Some(ChatQueuePermit {
             state: self.clone(),
             released: false,
-        }
+        })
     }
 
     async fn release_next(&self) {

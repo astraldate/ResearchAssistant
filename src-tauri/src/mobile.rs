@@ -40,6 +40,7 @@ const MOBILE_CHAT_SETTINGS_FILE_NAME: &str = "mobile_chat_settings.json";
 const MOBILE_CHAT_DEFAULT_MODEL: &str = "qwen3.5:9b";
 const MOBILE_CHAT_HISTORY_LIMIT: usize = 12;
 const MOBILE_CHAT_RETRIEVAL_LIMIT: usize = 5;
+const MOBILE_CHAT_QUEUE_TIMEOUT_SECS: u64 = 45;
 const MOBILE_PORT_CANDIDATES: [u16; 5] = [38465, 38466, 38467, 38468, 38469];
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -311,6 +312,8 @@ pub struct MobileChatSendRequest {
     pub message: String,
     #[serde(default)]
     pub use_retrieval: Option<bool>,
+    #[serde(default)]
+    pub thinking_enabled: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -541,7 +544,7 @@ fn build_mobile_router(state: MobileRouterState) -> Router {
         .route("/api/mobile/v1/chat/threads", get(axum_list_chat_threads))
         .route(
             "/api/mobile/v1/chat/threads/{thread_id}",
-            get(axum_read_chat_thread),
+            get(axum_read_chat_thread).delete(axum_delete_chat_thread),
         )
         .route(
             "/api/mobile/v1/chat/threads/stream",
@@ -642,6 +645,20 @@ async fn axum_read_chat_thread(
     }
     match read_mobile_chat_thread(&state.app, &thread_id) {
         Ok(thread) => (StatusCode::OK, Json(thread)).into_response(),
+        Err(error) => (StatusCode::NOT_FOUND, error).into_response(),
+    }
+}
+
+async fn axum_delete_chat_thread(
+    AxumState(state): AxumState<MobileRouterState>,
+    AxumPath(thread_id): AxumPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(error) = authorize_headers(&state.app, &state.mobile_state, &headers) {
+        return (StatusCode::UNAUTHORIZED, error).into_response();
+    }
+    match delete_mobile_chat_thread(&state.app, &thread_id) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => (StatusCode::NOT_FOUND, error).into_response(),
     }
 }
@@ -840,7 +857,11 @@ fn collect_tailscale_ips_from_system() -> Vec<String> {
 fn windows_tailscale_command_candidates() -> Vec<PathBuf> {
     let mut candidates = vec![PathBuf::from("tailscale.exe")];
     if let Ok(program_files) = std::env::var("ProgramFiles") {
-        candidates.push(PathBuf::from(program_files).join("Tailscale").join("tailscale.exe"));
+        candidates.push(
+            PathBuf::from(program_files)
+                .join("Tailscale")
+                .join("tailscale.exe"),
+        );
     }
     if let Ok(program_files_x86) = std::env::var("ProgramFiles(x86)") {
         candidates.push(
@@ -1309,6 +1330,15 @@ pub fn read_mobile_chat_thread(
     read_mobile_chat_thread_file(&mobile_chat_dir(app)?.join(format!("{normalized}.json")))
 }
 
+pub fn delete_mobile_chat_thread(app: &AppHandle, thread_id: &str) -> Result<(), String> {
+    let normalized = sanitize_thread_id(thread_id)?;
+    let path = mobile_chat_dir(app)?.join(format!("{normalized}.json"));
+    if !path.exists() {
+        return Err("Mobile chat thread was not found.".to_string());
+    }
+    fs::remove_file(path).map_err(|error| error.to_string())
+}
+
 pub fn append_mobile_chat_thread_turn(
     app: &AppHandle,
     thread_id: &str,
@@ -1420,18 +1450,76 @@ async fn run_mobile_chat_stream_task_inner(
     .await?;
     send_ndjson(sender, json!({ "type": "queued" })).await?;
 
-    let permit = state.chat_queue.acquire(ChatPriority::Mobile).await;
     let context = if use_retrieval {
+        emit_mobile_thread_progress(
+            &state.app,
+            &thread.thread_id,
+            &assistant_id,
+            Some("正在检索知识库上下文..."),
+            "",
+            "",
+        );
+        send_ndjson(
+            sender,
+            json!({ "type": "status", "status": "正在检索知识库上下文..." }),
+        )
+        .await?;
         build_mobile_chat_retrieval_context(&state.app, &user_message.content)
             .await
             .unwrap_or_default()
     } else {
         String::new()
     };
+    emit_mobile_thread_progress(
+        &state.app,
+        &thread.thread_id,
+        &assistant_id,
+        Some("正在等待桌面模型空闲..."),
+        "",
+        "",
+    );
+    send_ndjson(
+        sender,
+        json!({ "type": "status", "status": "正在等待桌面模型空闲..." }),
+    )
+    .await?;
+    let Some(permit) = state
+        .chat_queue
+        .acquire_timeout(
+            ChatPriority::Mobile,
+            tokio::time::Duration::from_secs(MOBILE_CHAT_QUEUE_TIMEOUT_SECS),
+        )
+        .await
+    else {
+        return Err("模型队列等待超时：桌面端可能仍有一个生成任务卡住。请稍后重试，或在桌面端停止当前生成。".to_string());
+    };
+    emit_mobile_thread_progress(
+        &state.app,
+        &thread.thread_id,
+        &assistant_id,
+        Some("正在连接桌面模型并等待首段输出..."),
+        "",
+        "",
+    );
+    send_ndjson(
+        sender,
+        json!({ "type": "status", "status": "正在连接桌面模型并等待首段输出..." }),
+    )
+    .await?;
     let messages =
         build_mobile_chat_llm_messages(&previous_messages, &user_message.content, &context);
     let model = thread.model.clone();
-    let stream_result = stream_ollama_mobile_chat(&model, messages, true, sender).await;
+    let thinking_enabled = payload.thinking_enabled.unwrap_or(true);
+    let stream_result = stream_ollama_mobile_chat(
+        &state.app,
+        &thread.thread_id,
+        &assistant_id,
+        &model,
+        messages,
+        thinking_enabled,
+        sender,
+    )
+    .await;
     permit.release().await;
 
     match stream_result {
@@ -1520,6 +1608,9 @@ fn build_mobile_chat_llm_messages(
 }
 
 async fn stream_ollama_mobile_chat(
+    app: &AppHandle,
+    thread_id: &str,
+    assistant_id: &str,
     model: &str,
     messages: Vec<serde_json::Value>,
     think_enabled: bool,
@@ -1554,11 +1645,29 @@ async fn stream_ollama_mobile_chat(
             if line.is_empty() {
                 continue;
             }
-            process_ollama_mobile_line(&line, &mut answer, &mut reasoning, sender).await?;
+            process_ollama_mobile_line(
+                app,
+                thread_id,
+                assistant_id,
+                &line,
+                &mut answer,
+                &mut reasoning,
+                sender,
+            )
+            .await?;
         }
     }
     if !buffer.trim().is_empty() {
-        process_ollama_mobile_line(buffer.trim(), &mut answer, &mut reasoning, sender).await?;
+        process_ollama_mobile_line(
+            app,
+            thread_id,
+            assistant_id,
+            buffer.trim(),
+            &mut answer,
+            &mut reasoning,
+            sender,
+        )
+        .await?;
     }
     if answer.trim().is_empty() && reasoning.trim().is_empty() {
         Err("LLM response did not include content".to_string())
@@ -1567,11 +1676,18 @@ async fn stream_ollama_mobile_chat(
     } else if reasoning.trim().is_empty() {
         Ok(answer)
     } else {
-        Ok(format!("<think>\n{}\n</think>\n\n{}", reasoning.trim(), answer))
+        Ok(format!(
+            "<think>\n{}\n</think>\n\n{}",
+            reasoning.trim(),
+            answer
+        ))
     }
 }
 
 async fn process_ollama_mobile_line(
+    app: &AppHandle,
+    thread_id: &str,
+    assistant_id: &str,
     line: &str,
     answer: &mut String,
     reasoning: &mut String,
@@ -1591,6 +1707,7 @@ async fn process_ollama_mobile_line(
         .unwrap_or("");
     if !thinking_delta.is_empty() {
         reasoning.push_str(thinking_delta);
+        emit_mobile_thread_progress(app, thread_id, assistant_id, None, reasoning, answer);
         send_ndjson(
             sender,
             json!({ "type": "delta", "delta": thinking_delta, "phase": "thinking" }),
@@ -1599,6 +1716,7 @@ async fn process_ollama_mobile_line(
     }
     if !delta.is_empty() {
         answer.push_str(delta);
+        emit_mobile_thread_progress(app, thread_id, assistant_id, None, reasoning, answer);
         send_ndjson(
             sender,
             json!({ "type": "delta", "delta": delta, "phase": "answer" }),
@@ -1646,6 +1764,26 @@ fn update_mobile_thread_assistant(
     write_mobile_chat_thread(app, &thread)?;
     emit_mobile_thread_update(app, &thread);
     Ok(())
+}
+
+fn emit_mobile_thread_progress(
+    app: &AppHandle,
+    thread_id: &str,
+    assistant_id: &str,
+    status: Option<&str>,
+    reasoning: &str,
+    answer: &str,
+) {
+    let _ = app.emit(
+        "mobile-chat-thread-progress",
+        json!({
+            "threadId": thread_id,
+            "messageId": assistant_id,
+            "status": status,
+            "reasoning": reasoning,
+            "answer": answer,
+        }),
+    );
 }
 
 fn emit_mobile_thread_update(app: &AppHandle, thread: &MobileChatThread) {

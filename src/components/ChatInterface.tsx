@@ -9,7 +9,15 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { History, ImagePlus, Monitor, Send, Smartphone, X } from "lucide-react";
+import {
+  History,
+  ImagePlus,
+  Monitor,
+  Send,
+  Smartphone,
+  Trash2,
+  X,
+} from "lucide-react";
 import { ModelSelector } from "./ModelSelector";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 
@@ -120,6 +128,14 @@ interface ChatStreamEvent {
   request_id?: string;
   requestId?: string;
   phase: "thinking" | "answer" | "done";
+  reasoning: string;
+  answer: string;
+}
+
+interface MobileChatThreadProgressEvent {
+  threadId: string;
+  messageId: string;
+  status?: string | null;
   reasoning: string;
   answer: string;
 }
@@ -443,6 +459,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     requestId: string;
     messageId: string;
   } | null>(null);
+  const activeMobileThreadIdRef = useRef<string | null>(null);
   const cancelledRequestIdsRef = useRef<Set<string>>(new Set());
   const shouldAutoScrollRef = useRef(true);
   const activePdfPath =
@@ -623,6 +640,10 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   }, [inputValue, isPaperOptionsLoaded, paperMentionQuery]);
 
   useEffect(() => {
+    activeMobileThreadIdRef.current = activeMobileThreadId;
+  }, [activeMobileThreadId]);
+
+  useEffect(() => {
     let unlistenFn: (() => void) | null = null;
 
     listen<ChatStreamEvent>("chat-stream", (event) => {
@@ -654,6 +675,39 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       if (unlistenFn) {
         unlistenFn();
       }
+    };
+  }, []);
+
+  useEffect(() => {
+    let unlistenFn: (() => void) | null = null;
+
+    listen<MobileChatThreadProgressEvent>(
+      "mobile-chat-thread-progress",
+      (event) => {
+        const activeId = activeMobileThreadIdRef.current;
+        if (!activeId || event.payload.threadId !== activeId) {
+          return;
+        }
+        const content = event.payload.status
+          ? `_${event.payload.status}_`
+          : buildStreamingContent(
+              event.payload.reasoning,
+              event.payload.answer,
+            );
+        setMessages((previous) =>
+          previous.map((message) =>
+            message.id === event.payload.messageId
+              ? { ...message, content, timestamp: Date.now() }
+              : message,
+          ),
+        );
+      },
+    ).then((unlisten) => {
+      unlistenFn = unlisten;
+    });
+
+    return () => {
+      unlistenFn?.();
     };
   }, []);
 
@@ -755,6 +809,30 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     setCitations([]);
     setNotes([]);
   }, [onPdfPageChange]);
+
+  const deleteMobileThread = useCallback(
+    async (threadId: string) => {
+      try {
+        await invoke("delete_mobile_chat_thread", { threadId });
+        setMobileThreadSummaries((previous) =>
+          previous.filter((thread) => thread.threadId !== threadId),
+        );
+        if (activeMobileThreadId === threadId) {
+          openLocalDesktopSession();
+        }
+        await loadMobileThreads();
+        onStatus("已删除移动端会话。", "info", false);
+      } catch (error) {
+        onStatus(`删除移动端会话失败：${String(error)}`, "error", true);
+      }
+    },
+    [
+      activeMobileThreadId,
+      loadMobileThreads,
+      onStatus,
+      openLocalDesktopSession,
+    ],
+  );
 
   useEffect(() => {
     void loadMobileThreads();
@@ -1216,14 +1294,49 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       let context = "";
       if (!activeMobileThreadId) {
         try {
+          setMessages((previous) =>
+            previous.map((message) =>
+              message.id === assistantMessageId
+                ? {
+                    ...message,
+                    content: "_正在检索知识库上下文..._",
+                    timestamp: Date.now(),
+                  }
+                : message,
+            ),
+          );
           const docs = await invoke<DocumentResult[]>("query_knowledge_base", {
             query: effectiveQuestion,
             scopePath,
             scopePaper: effectiveScopePaper ?? undefined,
           });
           context = docs.map((doc) => doc.content).join("\n\n");
+          setMessages((previous) =>
+            previous.map((message) =>
+              message.id === assistantMessageId
+                ? {
+                    ...message,
+                    content: context.trim()
+                      ? "_已完成检索，正在等待模型首段输出..._"
+                      : "_未检索到可用上下文，正在直接调用模型..._",
+                    timestamp: Date.now(),
+                  }
+                : message,
+            ),
+          );
         } catch {
           context = "";
+          setMessages((previous) =>
+            previous.map((message) =>
+              message.id === assistantMessageId
+                ? {
+                    ...message,
+                    content: "_检索暂不可用，正在直接调用模型..._",
+                    timestamp: Date.now(),
+                  }
+                : message,
+            ),
+          );
         }
       }
 
@@ -1806,26 +1919,38 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
           </button>
           {mobileThreadSummaries.length ? (
             mobileThreadSummaries.slice(0, 8).map((thread) => (
-              <button
+              <div
                 key={thread.threadId}
-                type="button"
                 className={`mobile-thread-option ${
                   activeMobileThreadId === thread.threadId ? "active" : ""
                 }`}
-                onClick={() => void openMobileThread(thread.threadId)}
               >
-                <span className="mobile-thread-option-icon">
-                  <Smartphone size={16} />
-                </span>
-                <span className="mobile-thread-option-main">
-                  <span className="mobile-thread-option-title">
-                    {thread.title || "移动端会话"}
+                <button
+                  type="button"
+                  className="mobile-thread-open"
+                  onClick={() => void openMobileThread(thread.threadId)}
+                >
+                  <span className="mobile-thread-option-icon">
+                    <Smartphone size={16} />
                   </span>
-                  <span className="mobile-thread-option-meta">
-                    {thread.messageCount} 条 · {thread.updatedAt}
+                  <span className="mobile-thread-option-main">
+                    <span className="mobile-thread-option-title">
+                      {thread.title || "移动端会话"}
+                    </span>
+                    <span className="mobile-thread-option-meta">
+                      {thread.messageCount} 条 · {thread.updatedAt}
+                    </span>
                   </span>
-                </span>
-              </button>
+                </button>
+                <button
+                  type="button"
+                  className="mobile-thread-delete"
+                  title="删除这个移动端会话"
+                  onClick={() => void deleteMobileThread(thread.threadId)}
+                >
+                  <Trash2 size={15} />
+                </button>
+              </div>
             ))
           ) : (
             <div className="mobile-thread-empty">暂无移动端会话。</div>
