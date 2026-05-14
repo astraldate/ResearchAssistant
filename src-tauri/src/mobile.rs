@@ -15,9 +15,9 @@ use std::convert::Infallible;
 use std::fs;
 use std::net::{IpAddr, UdpSocket};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
@@ -421,6 +421,7 @@ pub fn initialize_mobile_companion(
 
             let app_handle = app.clone();
             let state_handle = state.clone();
+            configure_tailscale_tcp_serve_background(state.clone(), port);
             tauri::async_runtime::spawn(async move {
                 let listener = match TcpListener::from_std(listener) {
                     Ok(value) => value,
@@ -753,6 +754,125 @@ fn detect_base_urls(port: u16) -> Vec<String> {
     }
     push_unique_url(&mut urls, "127.0.0.1".to_string(), port);
     urls
+}
+
+fn configure_tailscale_tcp_serve_background(state: MobileCompanionState, port: u16) {
+    tauri::async_runtime::spawn_blocking(move || {
+        if detect_tailscale_ips().is_empty() {
+            return;
+        }
+
+        if let Err(error) = configure_tailscale_tcp_serve(port) {
+            if let Ok(mut runtime) = state.inner.lock() {
+                let prefix = runtime
+                    .last_error
+                    .take()
+                    .map(|previous| format!("{previous}; "))
+                    .unwrap_or_default();
+                runtime.last_error = Some(format!("{prefix}Tailscale Serve 自动配置失败：{error}"));
+            }
+        }
+    });
+}
+
+fn configure_tailscale_tcp_serve(port: u16) -> Result<(), String> {
+    let command =
+        find_tailscale_command().ok_or_else(|| "未找到 tailscale 可执行文件。".to_string())?;
+    let output = run_command_with_timeout(
+        {
+            let mut command_builder = Command::new(&command);
+            command_builder
+                .arg("serve")
+                .arg("--yes")
+                .arg("--bg")
+                .arg(format!("--tcp={port}"))
+                .arg(port.to_string());
+            command_builder
+        },
+        Duration::from_secs(8),
+    )?;
+    if !output.status.success() {
+        return Err(command_failure_message(&output));
+    }
+
+    let status_output = run_command_with_timeout(
+        {
+            let mut command_builder = Command::new(&command);
+            command_builder.args(["serve", "status"]);
+            command_builder
+        },
+        Duration::from_secs(4),
+    )?;
+    if !status_output.status.success() {
+        return Err(command_failure_message(&status_output));
+    }
+    let status_text = String::from_utf8_lossy(&status_output.stdout);
+    let expected_loopback = format!("127.0.0.1:{port}");
+    if !status_text.contains(&expected_loopback) {
+        return Err(format!(
+            "Serve 状态未包含本机转发目标 {expected_loopback}。"
+        ));
+    }
+    Ok(())
+}
+
+fn run_command_with_timeout(mut command: Command, timeout: Duration) -> Result<Output, String> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("启动命令失败：{error}"))?;
+    let started_at = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                return child
+                    .wait_with_output()
+                    .map_err(|error| format!("读取命令输出失败：{error}"));
+            }
+            Ok(None) => {
+                if started_at.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("命令执行超时。".to_string());
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(error) => return Err(format!("等待命令结束失败：{error}")),
+        }
+    }
+}
+
+fn command_failure_message(output: &Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !stderr.is_empty() {
+        stderr
+    } else if !stdout.is_empty() {
+        stdout
+    } else {
+        format!("退出码 {:?}", output.status.code())
+    }
+}
+
+fn find_tailscale_command() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        let candidates = windows_tailscale_command_candidates();
+        candidates
+            .iter()
+            .find(|path| path.exists())
+            .cloned()
+            .or_else(|| {
+                candidates
+                    .into_iter()
+                    .find(|path| path.components().count() == 1)
+            })
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Some(PathBuf::from("tailscale"))
+    }
 }
 
 fn push_unique_url(urls: &mut Vec<String>, ip: String, port: u16) {
