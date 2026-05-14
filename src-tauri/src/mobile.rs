@@ -1851,10 +1851,12 @@ async fn send_ndjson(
     value: serde_json::Value,
 ) -> Result<(), String> {
     let line = serde_json::to_string(&value).map_err(|error| error.to_string())? + "\n";
-    sender
-        .send(Ok(Bytes::from(line)))
-        .await
-        .map_err(|_| "mobile chat stream closed".to_string())
+    if sender.send(Ok(Bytes::from(line))).await.is_err() {
+        // The phone may drop a long-lived HTTP stream while the desktop model keeps
+        // generating. Treat that as a best-effort push failure so the final answer
+        // is still persisted into the mobile conversation.
+    }
+    Ok(())
 }
 
 fn update_mobile_thread_assistant(
