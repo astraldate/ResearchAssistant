@@ -78,7 +78,7 @@ jobs:
       - name: Build and publish Tauri release
         uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: ResearchAssistant ${{ github.ref_name }}
@@ -145,4 +145,4 @@ jobs:
           draft: true
           files: mobile-app/android/app/build/outputs/apk/release/*.apk
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
