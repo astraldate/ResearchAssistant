@@ -1,10 +1,10 @@
 ﻿# ResearchAssistant Coding Plan
 
-更新日期：2026-04-14
+更新日期：2026-05-14
 
 ## 当前路线
 
-- 产品主线：桌面端作为知识库和同步权威节点，移动端作为 companion app 补充采集、复习和轻量浏览。
+- 产品主线：桌面端作为知识库、模型和同步权威节点，移动端作为 companion app 补充采集、复习、卡片浏览和移动聊天。
 - 协议主线：桌面端与移动端继续共用 `packages/contracts`，避免双仓库协议漂移。
 - 构建主线：Android release 继续留在当前 monorepo 内解决，不另开仓库。
 - Windows 主线：通过 `hoisted node linker + patchedDependencies + 短 Android 子项目路径` 控制构建复杂度。
@@ -13,10 +13,10 @@
 
 ### P0 已完成
 
-- 桌面端新增移动 companion service，支持局域网配对、token 会话、卡片下发、复习事件回传和移动收件箱落盘。
+- 桌面端新增移动 companion service，支持局域网或 Tailscale 配对、token 会话、卡片下发、复习事件回传、移动收件箱落盘和移动聊天会话持久化。
 - 桌面端新增“待处理收件箱”主视图，支持查看、标记已处理、恢复待处理和打开附件。
 - 桌面端左侧 rail 已补 `Inbox` 入口，避免收件箱组件存在但 UI 不可达。
-- 移动端 Expo Router 工程完成首版可用链路：配对、复习、卡片库、采集、设置。
+- 移动端 Expo Router 工程完成首版可用链路：配对、复习、卡片库、采集、聊天、设置。
 - 移动端本地会话切到 `expo-secure-store`，本地缓存和离线队列切到 `expo-sqlite`。
 - 修复移动端 React / Expo 原生模块版本错配导致的启动崩溃。
 - 修复桌面 companion service 在 Tokio runtime 之外初始化导致的启动 panic。
@@ -26,6 +26,10 @@
 - 根目录新增 `pnpm.patchedDependencies`，把 Windows Android 构建补丁持久化到仓库。
 - `.gitignore` 已补齐 Expo、Android 构建产物、autolink 快照和本机日志忽略规则。
 - README、技术设计文档和 master plan 已改成 UTF-8 中文，并同步当前移动端与 APK 流程。
+- 桌面端移动设置页已支持检测并展示 Tailscale `100.x.y.z` 地址，并在移动服务启动后尝试自动配置 Tailscale TCP Serve。
+- 移动聊天已支持桌面端模型流式输出、队列状态、知识库检索状态、思考开关、思考过程折叠展示、会话切换和删除会话。
+- 移动聊天流断开时，桌面端不再把手机连接关闭当成模型失败，而是继续生成并保存最终结果。
+- 移动端卡片库同步按钮已接入真实刷新链路。
 
 ### P1 已完成
 
@@ -33,7 +37,7 @@
 - `mobile-app/android/settings.gradle` 加入较短 Android 子项目目录映射。
 - `expo-modules-core` 补丁增加 `CMAKE_OBJECT_PATH_MAX` 和固定中间目录。
 - `@react-native/gradle-plugin` 补丁修正 Windows 下 Hermes 命令行路径。
-- `mobile-app` 当前版本更新到 `0.1.4`，`versionCode = 5`。
+- `mobile-app` 当前版本更新到 `1.0.8`，`versionCode = 12`。
 
 ### Research Memory 已完成
 
@@ -82,7 +86,7 @@
 ### P0
 
 - 正式签名链路仍未完成，目前 release 在没有私有 keystore 时会回退到 debug keystore。
-- 需要补一份桌面端与移动端联调验收清单，覆盖配对、采集、复习同步和异常恢复。
+- 需要补一份桌面端与移动端联调验收清单，覆盖 Tailscale/LAN 配对、移动聊天、采集、卡片同步、复习同步和异常恢复。
 - 待处理收件箱还缺少“批量处理 / 转卡片 / 关联资料”的后续操作面板。
 
 ### P1
@@ -97,7 +101,7 @@
 ### P2
 
 - iOS 安装包和签名链路。
-- 移动端推送提醒、后台同步和更完整的复习计划。
+- 移动端推送提醒、后台同步、更完整的复习计划和断线后自动重连/续看体验。
 - OCR 扫描版 PDF、卡片编辑、标签管理和双向同步。
 
 ## 当前实现状态总览
@@ -106,6 +110,7 @@
 - 桌面端 Research Memory / 审核流 / Idea 引擎：已完成首版可用闭环
 - 桌面端 Graph Canvas / Idea Map：已完成首版可用闭环
 - 移动端 companion v1：已完成
+- 移动端聊天：已完成首版可用闭环
 - 桌面端待处理收件箱：已完成
 - Android release APK（仓库内构建）：已完成
 - 依赖补丁持久化：已完成
@@ -119,8 +124,10 @@
 - `cargo check --manifest-path src-tauri/Cargo.toml` 通过
 - `pnpm build` 通过
 - `pnpm --dir mobile-app android:apk:release` 或 `cd mobile-app/android && .\gradlew.bat assembleRelease --console=plain --no-daemon` 通过
-- 手机端可完成局域网配对
+- 手机端可完成局域网或 Tailscale 配对
+- 手机端可新建、切换、删除移动聊天会话，并看到桌面模型流式回答和思考折叠块
 - 手机端采集内容能进入桌面端“待处理收件箱”
+- 手机端卡片库能手动刷新同步桌面端卡片摘要
 - 手机端复习事件能回传并更新桌面端状态
 - 桌面端可对选中文件 / 文件夹建立索引并进入 `Review`
 - `Knowledge` 面板可查看 Method DAG、Problem DAG、Idea Map、Review 队列和 Rule 1/2/3 Idea 候选
@@ -132,10 +139,14 @@
 - `mobile-app/android/autolink-*.json` 包含本机绝对路径，必须忽略，不适合作为仓库输入。
 - 如果 Windows 未开启系统级长路径支持，构建 warning 会更多，但当前路径压缩方案已经能稳定出包。
 - 目前的 release APK 更适合本地安装测试，不等于可直接分发的正式签名包。
+- Tailscale 访问依赖本机 Tailscale 客户端和 tailnet 策略；自动 TCP Serve 失败时仍需回退局域网地址。
+- 移动端聊天首段响应受本地 Ollama 队列影响；桌面端长生成任务会让手机端进入排队状态。
 - Research Memory 说明已并入 `Design Specification.md`，后续不要再维护独立的 `RESEARCH_MEMORY_MANUAL.md`。
 
-ResearchMemoryPanel 按需加载
-PdfDock 按需加载
-PdfReader 再延后一层，只在真正打开 PDF 时加载
-CardLibrary 按需加载
-Graph Canvas 内的详情查询改成点击后再取，不在打开时预热
+## 性能优化记录
+
+- `ResearchMemoryPanel` 按需加载。
+- `PdfDock` 按需加载。
+- `PdfReader` 再延后一层，只在真正打开 PDF 时加载。
+- `CardLibrary` 按需加载。
+- Graph Canvas 内的详情查询改成点击后再取，不在打开时预热。

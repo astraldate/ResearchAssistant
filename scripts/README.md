@@ -46,6 +46,8 @@ pnpm check:conflicts
 - Chat Completions API：`http://localhost:11434/v1/chat/completions`
 - Ollama API：`http://localhost:11434/api/*`
 
+桌面端普通聊天、科研命令和移动端聊天共用本机 Ollama。移动端聊天通过桌面 companion service 代理到 `http://localhost:11434/api/chat`，因此手机端不需要直接访问 Ollama 端口。
+
 当前推荐模型：
 
 - 聊天：`qwen3.5:9b`

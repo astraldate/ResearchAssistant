@@ -1,13 +1,13 @@
 # Design Specification
 
-更新日期：2026-04-15
+更新日期：2026-05-14
 
 ## 1. 目标
 
 ResearchAssistant 当前的产品目标是把桌面端资料处理能力和移动端随手采集能力连接成一条闭环：
 
 - 桌面端负责知识库、PDF 阅读、知识卡片、待处理收件箱和复习状态的主存储。
-- 移动端负责局域网配对、随手采集、离线复习和轻量卡片浏览。
+- 移动端负责局域网或 Tailscale 配对、随手采集、离线复习、轻量卡片浏览和移动聊天。
 - 桌面端与移动端共享协议类型，保持版本联动和接口收敛。
 
 ## 2. 系统组成
@@ -22,6 +22,8 @@ ResearchAssistant 当前的产品目标是把桌面端资料处理能力和移�
   - Graph Canvas：Method DAG / Problem DAG / Idea Map 的 Cytoscape + overlay 可视化
   - PDF 阅读、术语解释、知识卡片保存
   - 移动端配对面板
+  - 移动聊天会话的权威存储和流式生成代理
+  - Tailscale TCP Serve 自动配置
   - 左侧 rail `Inbox` 待处理收件箱视图
   - 复习状态持久化
 
@@ -34,6 +36,7 @@ ResearchAssistant 当前的产品目标是把桌面端资料处理能力和移�
   - 复习
   - 卡片库
   - 采集
+  - 聊天
   - 设置
 
 ### 2.3 共享协议
@@ -43,13 +46,16 @@ ResearchAssistant 当前的产品目标是把桌面端资料处理能力和移�
   - 配对请求/响应
   - 卡片摘要与复习事件
   - 移动端收件箱投递格式
+  - 移动聊天线程、消息与流式事件
   - 设备会话与同步相关数据结构
 
 ## 3. 桌面 companion service
 
 ### 3.1 运行模型
 
-- 桌面端在本机局域网地址上启动 companion service。
+- 桌面端在本机 `38465` 端口启动 companion service。
+- 同一局域网下，手机可以直接访问桌面端 LAN 地址。
+- 如果检测到 Tailscale，桌面端会尝试自动配置 `tailscale serve --tcp=38465 38465`，把 `100.x.y.z:38465` 暴露为 tailnet 内可访问地址。
 - 手机端通过 6 位配对码换取 token。
 - 后续请求统一基于 token 访问，不再重复输入配对码。
 
@@ -59,11 +65,13 @@ ResearchAssistant 当前的产品目标是把桌面端资料处理能力和移�
 - 持久化移动端会话、收件箱和复习状态
 - 为移动端下发卡片摘要和复习数据
 - 接收移动端离线补发的复习事件
+- 为移动端聊天执行知识库检索、模型排队、Ollama 流式调用和最终结果落盘
 
 ### 3.3 数据落盘
 
 - `mobile_inbox`：移动端采集内容
 - `review_state`：复习事件和聚合状态
+- `mobile_chat`：移动端独立聊天线程、消息、状态和错误信息
 - 桌面端 UI 允许查看、标记已处理、恢复待处理和打开附件
 - 桌面端 Inbox 入口位于左侧 rail，接收手机端 `Capture` 页提交的图片、链接和文字笔记。
 
@@ -83,6 +91,23 @@ ResearchAssistant 当前的产品目标是把桌面端资料处理能力和移�
 - “采集”：发送笔记、链接、图片到桌面端待处理收件箱
 - “复习”：本地做题并向桌面端回传结果
 - “卡片库”：展示已同步的卡片摘要
+- “聊天”：把问题发送到桌面端，由桌面端结合知识库和本地 Ollama 生成独立会话
+
+### 4.3 移动聊天
+
+- 移动聊天线程由桌面端持久化，手机端只保留会话 token 与本地 UI 状态。
+- 新会话默认使用知识库检索；进入历史会话后默认仅使用历史上下文，可手动打开“检索”。
+- 手机端支持“思考”开关：打开时请求 Ollama `think`，并以折叠块展示思考内容；关闭时只展示答案正文。
+- 流式通道采用 NDJSON over HTTP，事件包括：
+  - `thread`
+  - `queued`
+  - `status`
+  - `delta`
+  - `done`
+  - `error`
+- 桌面端和移动端共用同一个模型队列，避免桌面聊天、命令和移动聊天同时抢占本地 Ollama。
+- 手机端长连接断开不再判定为模型失败；桌面端会继续读取 Ollama 输出并把最终结果保存到移动会话，用户刷新会话后可继续查看。
+- 移动端聊天支持删除会话、新建会话和切换历史会话。
 
 ## 5. Android 构建设计
 
@@ -312,7 +337,7 @@ Graph Canvas 采用 Cytoscape + SVG/React overlay：
 - `pnpm build`
 - `cd mobile-app/android && .\gradlew.bat assembleRelease --console=plain --no-daemon`
 - `pnpm tauri build --bundles nsis --ci`
-- 真机或模拟器可完成配对、采集、收件箱显示和复习状态同步
+- 真机或模拟器可完成配对、移动聊天、采集、收件箱显示、卡片同步和复习状态同步
 - 桌面端可完成论文导入、候选抽取、审核入图与向量检索
 
 ## 8. 已知限制
@@ -320,6 +345,8 @@ Graph Canvas 采用 Cytoscape + SVG/React overlay：
 - 若系统级 Windows 长路径策略未开启，构建日志仍可能出现 CMake 路径 warning，但当前已不阻断 release 构建。
 - `mobile-app/android/autolink-*.json` 含有本机绝对路径，因此只作为本地缓存，不入库。
 - 没有 `keystore.properties` 时，release 仍使用 debug keystore，本质上是“可安装 release 包”，不是可对外分发的正式签名包。
+- Tailscale 访问依赖本机 Tailscale 客户端和 tailnet 策略；自动 TCP Serve 失败时仍可退回局域网地址。
+- 移动端流式体验受本地 Ollama 队列影响；如果桌面端已有长生成任务，手机端会显示排队状态。
 - Expo / React Native 升级后，需要同步更新 `patches/` 与 Android 构建脚本。
 - Graph Canvas 已是 Cytoscape + React/SVG overlay 交互图，但节点拖动、边命中区、星图入场动画和大图性能仍需继续打磨。
 - `analyze_pdf_page_visual` 当前仍是页文本回退，不是真正的视觉模型解析。
