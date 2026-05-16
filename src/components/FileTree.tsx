@@ -515,9 +515,16 @@ export const FileTree: React.FC<FileTreeProps> = ({
         onClick: handleReveal,
       });
       if (onReindexPath || onIndexPath) {
+        if (onIndexPath) {
+          actions.push({
+            key: "index",
+            label: "建立 / 更新索引",
+            onClick: () => void handleIndexPath(),
+          });
+        }
         actions.push({
           key: "reindex",
-          label: "从零重建索引",
+          label: "从零重建全部索引",
           onClick: () =>
             void (onReindexPath ? handleReindexPath() : handleIndexPath()),
         });

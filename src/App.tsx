@@ -766,7 +766,7 @@ function App() {
   const [activeSidebarTool, setActiveSidebarTool] =
     useState<SidebarTool>("workspace");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
-  const [ingestMode, setIngestMode] = useState<IngestMode>("overwrite");
+  const [ingestMode, setIngestMode] = useState<IngestMode>("incremental");
   const [ingestRunMode, setIngestRunMode] =
     useState<ExtractionRunMode>("balanced");
   const [ingestProgress, setIngestProgress] = useState<IngestProgress | null>(
@@ -2970,7 +2970,7 @@ function App() {
               type_name: node.type_name,
               name: node.name,
             });
-            await ingestWorkspacePath(node.path, "overwrite");
+            await ingestWorkspacePath(node.path, "incremental");
           }}
           onReindexPath={async (node) => {
             setWorkspaceSelection({
@@ -3386,7 +3386,8 @@ function App() {
           <option value="incremental">增量导入</option>
         </select>
         <p className="settings-help-text">
-          覆盖导入会从零重建当前导入目标；增量导入会尽量保留已有内容，并在可恢复时续跑未完成索引。
+          增量导入会保留已有论文并索引新内容；覆盖导入会清空 Research Memory
+          中当前导入目标范围内的记录后从零重建，发布演示前请谨慎使用。
         </p>
       </div>
 

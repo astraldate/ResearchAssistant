@@ -14,6 +14,7 @@ use serde_json::json;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::Arc;
@@ -77,6 +78,36 @@ fn check_ingest_cancelled() -> Result<()> {
     }
 }
 
+async fn await_ingest_cancellable<F, T, E>(future: F) -> Result<T>
+where
+    F: Future<Output = std::result::Result<T, E>>,
+    E: Into<anyhow::Error>,
+{
+    tokio::pin!(future);
+    loop {
+        tokio::select! {
+            result = &mut future => return result.map_err(Into::into),
+            _ = tokio::time::sleep(std::time::Duration::from_millis(200)) => {
+                check_ingest_cancelled()?;
+            }
+        }
+    }
+}
+
+async fn sleep_ingest_cancellable(duration: std::time::Duration) -> Result<()> {
+    tokio::select! {
+        _ = tokio::time::sleep(duration) => Ok(()),
+        _ = async {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                if INGEST_CANCEL_REQUESTED.load(AtomicOrdering::SeqCst) {
+                    break;
+                }
+            }
+        } => Err(anyhow!("索引已取消。")),
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum IngestMode {
@@ -86,7 +117,7 @@ pub enum IngestMode {
 
 impl Default for IngestMode {
     fn default() -> Self {
-        Self::Overwrite
+        Self::Incremental
     }
 }
 
@@ -1042,14 +1073,12 @@ pub async fn ingest_research_corpus(
         return Ok(0);
     }
 
-    if mode == IngestMode::Overwrite {
+    {
         let mut conn = open_sqlite(app)?;
         create_schema(&mut conn)?;
-        clear_research_memory(&conn)?;
-    } else {
-        let mut conn = open_sqlite(app)?;
-        create_schema(&mut conn)?;
-        if has_resumable_work(&conn, path)? {
+        if mode == IngestMode::Overwrite {
+            clear_research_memory_scope(&conn, path, &documents)?;
+        } else if has_resumable_work(&conn, path)? {
             emit_progress(
                 window,
                 IngestProgress::new(
@@ -5684,9 +5713,10 @@ async fn run_structured_json(
             let client = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(OLLAMA_REQUEST_TIMEOUT_SECS))
                 .build()?;
-            let res = client
-                .post("http://localhost:11434/api/chat")
-                .json(&json!({
+            let res = await_ingest_cancellable(
+                client
+                    .post("http://localhost:11434/api/chat")
+                    .json(&json!({
                     "model": model,
                     "stream": false,
                     "format": schema,
@@ -5694,14 +5724,15 @@ async fn run_structured_json(
                         { "role": "system", "content": system_prompt },
                         { "role": "user", "content": user_prompt }
                     ],
-                    "options": { "temperature": 0.1 }
-                }))
-                .send()
-                .await?;
+                        "options": { "temperature": 0.1 }
+                    }))
+                    .send(),
+            )
+            .await?;
             if !res.status().is_success() {
                 return Err(anyhow!("Ollama structured output failed: {}", res.status()));
             }
-            let value: serde_json::Value = res.json().await?;
+            let value: serde_json::Value = await_ingest_cancellable(res.json()).await?;
             let raw = value
                 .get("message")
                 .and_then(|message| message.get("content"))
@@ -5769,21 +5800,23 @@ async fn run_json_generate(
             let client = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(OLLAMA_REQUEST_TIMEOUT_SECS))
                 .build()?;
-            let res = client
-                .post("http://localhost:11434/api/generate")
-                .json(&json!({
+            let res = await_ingest_cancellable(
+                client
+                    .post("http://localhost:11434/api/generate")
+                    .json(&json!({
                     "model": model,
                     "prompt": prompt,
                     "stream": false,
                     "format": "json",
                     "options": { "temperature": 0.0 }
-                }))
-                .send()
-                .await?;
+                    }))
+                    .send(),
+            )
+            .await?;
             if !res.status().is_success() {
                 return Err(anyhow!("Ollama generate failed: {}", res.status()));
             }
-            let value: serde_json::Value = res.json().await?;
+            let value: serde_json::Value = await_ingest_cancellable(res.json()).await?;
             let raw = value
                 .get("response")
                 .and_then(|content| content.as_str())
@@ -6222,13 +6255,16 @@ async fn run_openai_compatible_chat(
         if let Some(api_key) = api_key {
             request = request.bearer_auth(api_key);
         }
-        match request.json(&payload).send().await {
+        check_ingest_cancelled()?;
+        match await_ingest_cancellable(request.json(&payload).send()).await {
             Ok(res)
                 if should_retry_openai_status(res.status())
                     && attempt < OPENAI_COMPATIBLE_CHAT_MAX_ATTEMPTS =>
             {
                 let status = res.status();
-                let body = res.text().await.unwrap_or_default();
+                let body = await_ingest_cancellable(res.text())
+                    .await
+                    .unwrap_or_default();
                 last_error = Some(anyhow!(
                     "OpenAI-compatible chat transient status: {status}. Response body: {}",
                     truncate_chars(body.trim(), 600)
@@ -6237,13 +6273,15 @@ async fn run_openai_compatible_chat(
             Ok(res) => {
                 if !res.status().is_success() {
                     let status = res.status();
-                    let body = res.text().await.unwrap_or_default();
+                    let body = await_ingest_cancellable(res.text())
+                        .await
+                        .unwrap_or_default();
                     let body = truncate_chars(body.trim(), 1200);
                     return Err(anyhow!(
                         "OpenAI-compatible chat failed: {status}. Response body: {body}"
                     ));
                 }
-                let value: serde_json::Value = res.json().await?;
+                let value: serde_json::Value = await_ingest_cancellable(res.json()).await?;
                 let message = value
                     .get("choices")
                     .and_then(|choices| choices.as_array())
@@ -6273,14 +6311,17 @@ async fn run_openai_compatible_chat(
             }
             Err(error)
                 if attempt < OPENAI_COMPATIBLE_CHAT_MAX_ATTEMPTS
-                    && is_retryable_reqwest_error(&error) =>
+                    && error
+                        .downcast_ref::<reqwest::Error>()
+                        .map(is_retryable_reqwest_error)
+                        .unwrap_or(false) =>
             {
-                last_error = Some(error.into());
+                last_error = Some(error);
             }
-            Err(error) => return Err(error.into()),
+            Err(error) => return Err(error),
         }
         let backoff_ms = 600 * attempt as u64;
-        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+        sleep_ingest_cancellable(std::time::Duration::from_millis(backoff_ms)).await?;
     }
     Err(last_error.unwrap_or_else(|| anyhow!("OpenAI-compatible chat failed after retries")))
 }
@@ -6301,15 +6342,17 @@ async fn run_chat_text(
     match provider {
         ExtractionProviderRuntime::Ollama => {
             let client = reqwest::Client::new();
-            let res = client
-                .post("http://localhost:11434/api/chat")
-                .json(&json!({ "model": model, "stream": false, "messages": messages }))
-                .send()
-                .await?;
+            let res = await_ingest_cancellable(
+                client
+                    .post("http://localhost:11434/api/chat")
+                    .json(&json!({ "model": model, "stream": false, "messages": messages }))
+                    .send(),
+            )
+            .await?;
             if !res.status().is_success() {
                 return Err(anyhow!("Ollama chat failed: {}", res.status()));
             }
-            let value: serde_json::Value = res.json().await?;
+            let value: serde_json::Value = await_ingest_cancellable(res.json()).await?;
             Ok(value
                 .get("message")
                 .and_then(|message| message.get("content"))
@@ -6357,23 +6400,31 @@ async fn resolve_embedding_model(preferred: Option<&str>) -> Result<String> {
 
 async fn embed_text(text: &str, model: &str) -> Result<Vec<f32>> {
     let client = reqwest::Client::new();
-    let res = client
-        .post("http://localhost:11434/api/embed")
-        .json(&json!({ "model": model, "input": text }))
-        .send()
-        .await?;
+    check_ingest_cancelled()?;
+    let res = await_ingest_cancellable(
+        client
+            .post("http://localhost:11434/api/embed")
+            .json(&json!({ "model": model, "input": text }))
+            .send(),
+    )
+    .await?;
     if res.status().is_success() {
-        return parse_embedding_json(&res.json().await?);
+        let payload = await_ingest_cancellable(res.json()).await?;
+        return parse_embedding_json(&payload);
     }
-    let fallback = client
-        .post("http://localhost:11434/api/embeddings")
-        .json(&json!({ "model": model, "prompt": text }))
-        .send()
-        .await?;
+    check_ingest_cancelled()?;
+    let fallback = await_ingest_cancellable(
+        client
+            .post("http://localhost:11434/api/embeddings")
+            .json(&json!({ "model": model, "prompt": text }))
+            .send(),
+    )
+    .await?;
     if !fallback.status().is_success() {
         return Err(anyhow!("Embedding failed for '{}'", model));
     }
-    parse_embedding_json(&fallback.json().await?)
+    let payload = await_ingest_cancellable(fallback.json()).await?;
+    parse_embedding_json(&payload)
 }
 
 fn parse_embedding_json(json: &serde_json::Value) -> Result<Vec<f32>> {
@@ -7455,28 +7506,43 @@ fn delete_paper(conn: &SqliteConnection, paper_id: &str, path: &str) -> Result<(
     Ok(())
 }
 
-fn clear_research_memory(conn: &SqliteConnection) -> Result<()> {
-    for table in [
-        "idea_candidates",
-        "challenge_method_links",
-        "method_paths",
-        "problem_paths",
-        "orphan_nodes",
-        "node_stats",
-        "evidence_refs",
-        "graph_edges",
-        "graph_nodes",
-        "extraction_unit_results",
-        "review_queue",
-        "extraction_candidates",
-        "chunk_fts",
-        "chunks",
-        "sections",
-        "pages",
-        "papers",
-    ] {
-        conn.execute(&format!("DELETE FROM {}", table), []).ok();
+fn clear_research_memory_scope(
+    conn: &SqliteConnection,
+    ingest_path: &str,
+    documents: &[FileDocument],
+) -> Result<()> {
+    let mut paths = documents
+        .iter()
+        .map(|document| document.path.clone())
+        .collect::<Vec<_>>();
+    if Path::new(ingest_path).is_dir() {
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT path
+             FROM papers
+             WHERE path = ?1 OR path LIKE ?2
+             ORDER BY path",
+        )?;
+        let rows = stmt.query_map(
+            params![
+                ingest_path,
+                format!("{}%", ensure_trailing_separator(ingest_path))
+            ],
+            |row| row.get::<_, String>(0),
+        )?;
+        for row in rows {
+            paths.push(row?);
+        }
+    } else {
+        paths.push(ingest_path.to_string());
     }
+    paths.sort();
+    paths.dedup();
+    for path in paths {
+        let paper_id = stable_id("paper", &path);
+        delete_paper(conn, &paper_id, &path)?;
+    }
+    materialize_graph_from_approved_candidates(conn)?;
+    materialize_stats(conn)?;
     Ok(())
 }
 

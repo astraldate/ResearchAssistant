@@ -153,14 +153,16 @@ export default function ChatScreen() {
           },
     );
 
+    let recoveryThreadId = activeThread?.threadId || "";
     try {
       await streamChatMessage(
         session.baseUrl,
         session.deviceToken,
-        activeThread?.threadId || null,
+        recoveryThreadId || null,
         { message: content, useRetrieval, thinkingEnabled },
         (event) => {
           if (event.type === "thread") {
+            recoveryThreadId = event.thread.threadId;
             setActiveThread(event.thread);
             setStreamStatus(
               useRetrieval
@@ -219,6 +221,31 @@ export default function ChatScreen() {
       await loadThreads();
     } catch (nextError) {
       const message = String(nextError);
+      if (recoveryThreadId) {
+        const recovered = await recoverThreadAfterStreamDrop(
+          session.baseUrl,
+          session.deviceToken,
+          recoveryThreadId,
+        );
+        if (recovered) {
+          setActiveThread(recovered);
+          setUseRetrieval(false);
+          await loadThreads();
+          const lastAssistant = [...recovered.messages]
+            .reverse()
+            .find((message) => message.role === "assistant");
+          if (lastAssistant?.status === "complete") {
+            setError(null);
+            setStreamStatus(null);
+          } else {
+            setError(
+              "移动端流连接中断，桌面端仍可能继续生成；已刷新当前会话。",
+            );
+            setStreamStatus("已从桌面端刷新会话");
+          }
+          return;
+        }
+      }
       setError(message);
       setStreamStatus("生成中断");
       setActiveThread((previous) => markLastAssistant(previous, message));
@@ -406,6 +433,32 @@ function markLastAssistant(
     };
   }
   return { ...thread, messages, status: "error", lastError: error };
+}
+
+async function recoverThreadAfterStreamDrop(
+  baseUrl: string,
+  token: string,
+  threadId: string,
+) {
+  for (const delayMs of [300, 1200, 3000]) {
+    await delay(delayMs);
+    try {
+      const thread = await fetchChatThread(baseUrl, token, threadId);
+      const lastAssistant = [...thread.messages]
+        .reverse()
+        .find((message) => message.role === "assistant");
+      if (lastAssistant?.content.trim() || thread.status !== "streaming") {
+        return thread;
+      }
+    } catch {
+      // Keep the original stream error if recovery cannot reach the desktop.
+    }
+  }
+  return null;
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function MobileMessageContent({ message }: { message: MobileChatMessage }) {
