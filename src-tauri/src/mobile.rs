@@ -43,6 +43,17 @@ const MOBILE_CHAT_RETRIEVAL_LIMIT: usize = 5;
 const MOBILE_CHAT_QUEUE_TIMEOUT_SECS: u64 = 45;
 const MOBILE_PORT_CANDIDATES: [u16; 5] = [38465, 38466, 38467, 38468, 38469];
 
+#[cfg(target_os = "windows")]
+fn suppress_command_window(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn suppress_command_window(_command: &mut Command) {}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct PairedDeviceSummary {
@@ -817,6 +828,7 @@ fn configure_tailscale_tcp_serve(port: u16) -> Result<(), String> {
 }
 
 fn run_command_with_timeout(mut command: Command, timeout: Duration) -> Result<Output, String> {
+    suppress_command_window(&mut command);
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command
         .spawn()
@@ -907,7 +919,11 @@ fn collect_tailscale_ips_from_system() -> Vec<String> {
     #[cfg(target_os = "windows")]
     {
         for command in windows_tailscale_command_candidates() {
-            let output = Command::new(&command).args(["ip", "-4"]).output();
+            let output = {
+                let mut command_builder = Command::new(&command);
+                suppress_command_window(&mut command_builder);
+                command_builder.args(["ip", "-4"]).output()
+            };
             if let Ok(output) = output {
                 if output.status.success() {
                     let ips = parse_tailscale_ips(&String::from_utf8_lossy(&output.stdout));
@@ -918,13 +934,16 @@ fn collect_tailscale_ips_from_system() -> Vec<String> {
             }
         }
 
-        let output = Command::new("powershell.exe")
-            .args([
+        let output = {
+            let mut command_builder = Command::new("powershell.exe");
+            suppress_command_window(&mut command_builder);
+            command_builder.args([
                 "-NoProfile",
                 "-Command",
                 "Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -match '^100\\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\\.' } | Select-Object -ExpandProperty IPAddress",
             ])
-            .output();
+            .output()
+        };
         if let Ok(output) = output {
             if output.status.success() {
                 let ips = parse_tailscale_ips(&String::from_utf8_lossy(&output.stdout));
@@ -934,9 +953,13 @@ fn collect_tailscale_ips_from_system() -> Vec<String> {
             }
         }
 
-        let output = Command::new("netsh")
-            .args(["interface", "ipv4", "show", "addresses"])
-            .output();
+        let output = {
+            let mut command_builder = Command::new("netsh");
+            suppress_command_window(&mut command_builder);
+            command_builder
+                .args(["interface", "ipv4", "show", "addresses"])
+                .output()
+        };
         if let Ok(output) = output {
             if output.status.success() {
                 let ips = parse_tailscale_ips_from_interface_text(&String::from_utf8_lossy(
@@ -948,7 +971,11 @@ fn collect_tailscale_ips_from_system() -> Vec<String> {
             }
         }
 
-        let output = Command::new("ipconfig").output();
+        let output = {
+            let mut command_builder = Command::new("ipconfig");
+            suppress_command_window(&mut command_builder);
+            command_builder.output()
+        };
         if let Ok(output) = output {
             if output.status.success() {
                 return parse_tailscale_ips_from_interface_text(&String::from_utf8_lossy(

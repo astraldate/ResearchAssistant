@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -36,6 +36,15 @@ export default function ChatScreen() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamStatus, setStreamStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const streamAbortRef = useRef<AbortController | null>(null);
+  const activeThreadIdRef = useRef<string | null>(null);
+  const activeThreadRef = useRef<MobileChatThread | null>(null);
+  const streamingThreadIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    activeThreadIdRef.current = activeThread?.threadId || null;
+    activeThreadRef.current = activeThread;
+  }, [activeThread]);
 
   const loadThreads = async () => {
     if (!session) return;
@@ -89,7 +98,7 @@ export default function ChatScreen() {
   };
 
   const handleDeleteThread = async (threadId: string) => {
-    if (!session || isStreaming) return;
+    if (!session || streamingThreadIdRef.current === threadId) return;
     setError(null);
     try {
       await deleteChatThread(session.baseUrl, session.deviceToken, threadId);
@@ -109,6 +118,8 @@ export default function ChatScreen() {
   const handleSend = async () => {
     if (!session || !input.trim() || isStreaming) return;
     const content = input.trim();
+    const abortController = new AbortController();
+    streamAbortRef.current = abortController;
     setInput("");
     setError(null);
     setStreamStatus("正在连接桌面端...");
@@ -163,7 +174,16 @@ export default function ChatScreen() {
         (event) => {
           if (event.type === "thread") {
             recoveryThreadId = event.thread.threadId;
-            setActiveThread(event.thread);
+            streamingThreadIdRef.current = event.thread.threadId;
+            setThreads((previous) =>
+              upsertThreadSummary(previous, event.thread),
+            );
+            if (
+              !activeThreadIdRef.current ||
+              activeThreadIdRef.current === event.thread.threadId
+            ) {
+              setActiveThread(event.thread);
+            }
             setStreamStatus(
               useRetrieval
                 ? "桌面端已接收，准备检索知识库上下文..."
@@ -174,13 +194,15 @@ export default function ChatScreen() {
           if (event.type === "queued") {
             setStreamStatus("模型队列中，等待桌面端空闲...");
             setActiveThread((previous) =>
-              appendAssistantDelta(
-                previous,
-                useRetrieval
-                  ? "正在排队，随后会检索上下文并生成回答...\n\n"
-                  : "正在排队，随后会直接生成回答...\n\n",
-                "streaming",
-              ),
+              shouldApplyStreamingUpdate(previous, recoveryThreadId)
+                ? appendAssistantDelta(
+                    previous,
+                    useRetrieval
+                      ? "正在排队，随后会检索上下文并生成回答...\n\n"
+                      : "正在排队，随后会直接生成回答...\n\n",
+                    "streaming",
+                  )
+                : previous,
             );
             return;
           }
@@ -195,12 +217,14 @@ export default function ChatScreen() {
                 : "正在流式输出回答...",
             );
             setActiveThread((previous) =>
-              appendAssistantDelta(
-                previous,
-                event.delta,
-                "streaming",
-                event.phase,
-              ),
+              shouldApplyStreamingUpdate(previous, recoveryThreadId)
+                ? appendAssistantDelta(
+                    previous,
+                    event.delta,
+                    "streaming",
+                    event.phase,
+                  )
+                : previous,
             );
             return;
           }
@@ -208,19 +232,40 @@ export default function ChatScreen() {
             setError(event.error);
             setStreamStatus("生成失败");
             setActiveThread((previous) =>
-              markLastAssistant(previous, event.error),
+              shouldApplyStreamingUpdate(previous, recoveryThreadId)
+                ? markLastAssistant(previous, event.error)
+                : previous,
             );
           }
           if (event.type === "done") {
             setStreamStatus(null);
-            setActiveThread((previous) => markLastAssistantComplete(previous));
+            setActiveThread((previous) =>
+              shouldApplyStreamingUpdate(previous, recoveryThreadId)
+                ? markLastAssistantComplete(previous)
+                : previous,
+            );
           }
         },
+        abortController.signal,
       );
       setUseRetrieval(false);
       await loadThreads();
     } catch (nextError) {
       const message = String(nextError);
+      if (
+        nextError instanceof Error &&
+        (nextError.name === "AbortError" || abortController.signal.aborted)
+      ) {
+        setError(null);
+        setStreamStatus("已停止本次生成");
+        setActiveThread((previous) =>
+          markLastAssistantInterrupted(previous, "已停止本次生成。"),
+        );
+        if (recoveryThreadId) {
+          await loadThreads();
+        }
+        return;
+      }
       if (recoveryThreadId) {
         const recovered = await recoverThreadAfterStreamDrop(
           session.baseUrl,
@@ -228,7 +273,14 @@ export default function ChatScreen() {
           recoveryThreadId,
         );
         if (recovered) {
-          setActiveThread(recovered);
+          if (
+            shouldApplyStreamingUpdate(
+              activeThreadRef.current,
+              recoveryThreadId,
+            )
+          ) {
+            setActiveThread(recovered);
+          }
           setUseRetrieval(false);
           await loadThreads();
           const lastAssistant = [...recovered.messages]
@@ -250,8 +302,22 @@ export default function ChatScreen() {
       setStreamStatus("生成中断");
       setActiveThread((previous) => markLastAssistant(previous, message));
     } finally {
+      if (streamAbortRef.current === abortController) {
+        streamAbortRef.current = null;
+      }
+      if (streamingThreadIdRef.current === recoveryThreadId) {
+        streamingThreadIdRef.current = null;
+      }
       setIsStreaming(false);
     }
+  };
+
+  const handleStopStreaming = () => {
+    streamAbortRef.current?.abort();
+    setStreamStatus("正在停止...");
+    setActiveThread((previous) =>
+      markLastAssistantInterrupted(previous, "正在停止本次生成..."),
+    );
   };
 
   return (
@@ -264,7 +330,7 @@ export default function ChatScreen() {
             <Pressable
               style={[styles.headerButton, styles.deleteHeaderButton]}
               onPress={() => void handleDeleteThread(activeThread.threadId)}
-              disabled={isStreaming}
+              disabled={streamingThreadIdRef.current === activeThread.threadId}
             >
               <Text style={styles.headerButtonText}>删除</Text>
             </Pressable>
@@ -307,7 +373,7 @@ export default function ChatScreen() {
                       event.stopPropagation();
                       void handleDeleteThread(thread.threadId);
                     }}
-                    disabled={isStreaming}
+                    disabled={streamingThreadIdRef.current === thread.threadId}
                   >
                     <Text style={styles.threadDeleteText}>×</Text>
                   </Pressable>
@@ -331,6 +397,14 @@ export default function ChatScreen() {
                   没有被上一条生成卡住。
                 </Text>
               </View>
+              {isStreaming ? (
+                <Pressable
+                  style={styles.stopInlineButton}
+                  onPress={handleStopStreaming}
+                >
+                  <Text style={styles.stopInlineButtonText}>停止</Text>
+                </Pressable>
+              ) : null}
             </View>
           ) : null}
 
@@ -400,15 +474,13 @@ export default function ChatScreen() {
               </Text>
             </Pressable>
             <Pressable
-              style={[
-                styles.sendButton,
-                isStreaming && styles.sendButtonDisabled,
-              ]}
-              onPress={() => void handleSend()}
-              disabled={isStreaming}
+              style={[styles.sendButton, isStreaming && styles.stopButton]}
+              onPress={() =>
+                isStreaming ? handleStopStreaming() : void handleSend()
+              }
             >
               <Text style={styles.sendButtonText}>
-                {isStreaming ? "生成" : "发送"}
+                {isStreaming ? "停止" : "发送"}
               </Text>
             </Pressable>
           </View>
@@ -433,6 +505,52 @@ function markLastAssistant(
     };
   }
   return { ...thread, messages, status: "error", lastError: error };
+}
+
+function shouldApplyStreamingUpdate(
+  thread: MobileChatThread | null,
+  streamingThreadId: string,
+) {
+  if (!thread) return false;
+  if (!streamingThreadId) return true;
+  return !thread.threadId || thread.threadId === streamingThreadId;
+}
+
+function upsertThreadSummary(
+  threads: MobileChatThreadSummary[],
+  thread: MobileChatThread,
+) {
+  const summary: MobileChatThreadSummary = {
+    threadId: thread.threadId,
+    title: thread.title,
+    updatedAt: thread.updatedAt,
+    model: thread.model,
+    messageCount: thread.messages.length,
+    status: thread.status,
+    lastMessagePreview:
+      [...thread.messages].reverse().find((message) => message.content.trim())
+        ?.content ?? "",
+    lastError: thread.lastError,
+  };
+  const next = threads.filter((item) => item.threadId !== thread.threadId);
+  return [summary, ...next];
+}
+
+function markLastAssistantInterrupted(
+  thread: MobileChatThread | null,
+  fallback: string,
+): MobileChatThread | null {
+  if (!thread) return thread;
+  const messages = thread.messages.slice();
+  const last = messages[messages.length - 1];
+  if (last?.role === "assistant") {
+    messages[messages.length - 1] = {
+      ...last,
+      content: last.content || fallback,
+      status: "interrupted",
+    };
+  }
+  return { ...thread, messages, status: "idle", lastError: null };
 }
 
 async function recoverThreadAfterStreamDrop(
@@ -686,6 +804,16 @@ const styles = StyleSheet.create({
     color: palette.slate,
     lineHeight: 20,
   },
+  stopInlineButton: {
+    borderRadius: 14,
+    backgroundColor: palette.danger,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  stopInlineButtonText: {
+    color: "#fff",
+    fontWeight: "800",
+  },
   messagesPanel: {
     minHeight: 360,
   },
@@ -812,6 +940,9 @@ const styles = StyleSheet.create({
     backgroundColor: palette.primary,
     paddingHorizontal: 16,
     paddingVertical: 13,
+  },
+  stopButton: {
+    backgroundColor: palette.danger,
   },
   sendButtonDisabled: {
     opacity: 0.6,

@@ -164,6 +164,7 @@ export async function streamChatMessage(
   threadId: string | null,
   payload: MobileChatSendRequest,
   onEvent: (event: MobileChatStreamEvent) => void,
+  signal?: AbortSignal,
 ) {
   const path = threadId
     ? `${MOBILE_API_PREFIX}/chat/threads/${encodeURIComponent(threadId)}/messages/stream`
@@ -173,6 +174,7 @@ export async function streamChatMessage(
     token,
     payload,
     onEvent,
+    signal,
   );
 }
 
@@ -181,6 +183,7 @@ function streamNdjsonWithXhr(
   token: string,
   payload: MobileChatSendRequest,
   onEvent: (event: MobileChatStreamEvent) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -196,10 +199,27 @@ function streamNdjsonWithXhr(
       }
     };
 
+    const abort = () => {
+      if (settled) return;
+      settled = true;
+      clearIdleTimer();
+      xhr.abort();
+      const error = new Error("用户已停止本次生成。");
+      error.name = "AbortError";
+      reject(error);
+    };
+
+    if (signal?.aborted) {
+      abort();
+      return;
+    }
+    signal?.addEventListener("abort", abort, { once: true });
+
     const fail = (error: Error) => {
       if (settled) return;
       settled = true;
       clearIdleTimer();
+      signal?.removeEventListener("abort", abort);
       xhr.abort();
       reject(error);
     };
@@ -208,6 +228,7 @@ function streamNdjsonWithXhr(
       if (settled) return;
       settled = true;
       clearIdleTimer();
+      signal?.removeEventListener("abort", abort);
       resolve();
     };
 
