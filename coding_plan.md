@@ -37,7 +37,7 @@
 - `mobile-app/android/settings.gradle` 加入较短 Android 子项目目录映射。
 - `expo-modules-core` 补丁增加 `CMAKE_OBJECT_PATH_MAX` 和固定中间目录。
 - `@react-native/gradle-plugin` 补丁修正 Windows 下 Hermes 命令行路径。
-- `mobile-app` 当前版本更新到 `1.1.4`，`versionCode = 15`。
+- `mobile-app` 当前版本更新到 `1.1.5`，`versionCode = 16`。
 
 ### Research Memory 已完成
 

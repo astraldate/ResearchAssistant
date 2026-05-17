@@ -1052,7 +1052,8 @@ pub async fn ingest_research_corpus(
             ),
         ),
     );
-    let embedding_model = resolve_embedding_model(options.embedding_model.as_deref()).await?;
+    let embedding_model =
+        resolve_embedding_model_cancellable(options.embedding_model.as_deref()).await?;
     check_ingest_cancelled()?;
     emit_progress(
         window,
@@ -4344,7 +4345,7 @@ async fn create_vector_table_from_chunks(
     let mut vectors = Vec::with_capacity(rows.len());
     for row in rows {
         check_ingest_cancelled()?;
-        vectors.push(embed_text(&row.content, embedding_model).await?);
+        vectors.push(embed_text_cancellable(&row.content, embedding_model).await?);
     }
     let batch = build_chunk_record_batch(rows, &vectors)?;
     let schema = batch.schema();
@@ -4368,7 +4369,7 @@ async fn create_vector_table_from_concepts(
     let mut vectors = Vec::with_capacity(rows.len());
     for row in rows {
         check_ingest_cancelled()?;
-        vectors.push(embed_text(&row.text, embedding_model).await?);
+        vectors.push(embed_text_cancellable(&row.text, embedding_model).await?);
     }
     let batch = build_concept_record_batch(rows, &vectors)?;
     let schema = batch.schema();
@@ -6374,6 +6375,17 @@ async fn run_ollama_chat(model: &str, messages: Vec<serde_json::Value>) -> Resul
 }
 
 async fn resolve_embedding_model(preferred: Option<&str>) -> Result<String> {
+    resolve_embedding_model_inner(preferred, false).await
+}
+
+async fn resolve_embedding_model_cancellable(preferred: Option<&str>) -> Result<String> {
+    resolve_embedding_model_inner(preferred, true).await
+}
+
+async fn resolve_embedding_model_inner(
+    preferred: Option<&str>,
+    cancellable: bool,
+) -> Result<String> {
     let mut candidates = Vec::new();
     if let Some(preferred) = preferred {
         if !preferred.trim().is_empty() {
@@ -6391,7 +6403,12 @@ async fn resolve_embedding_model(preferred: Option<&str>) -> Result<String> {
         }
     }
     for candidate in candidates {
-        if embed_text("embedding probe", &candidate).await.is_ok() {
+        let probe = if cancellable {
+            embed_text_cancellable("embedding probe", &candidate).await
+        } else {
+            embed_text("embedding probe", &candidate).await
+        };
+        if probe.is_ok() {
             return Ok(candidate);
         }
     }
@@ -6399,31 +6416,55 @@ async fn resolve_embedding_model(preferred: Option<&str>) -> Result<String> {
 }
 
 async fn embed_text(text: &str, model: &str) -> Result<Vec<f32>> {
+    embed_text_inner(text, model, false).await
+}
+
+async fn embed_text_cancellable(text: &str, model: &str) -> Result<Vec<f32>> {
+    embed_text_inner(text, model, true).await
+}
+
+async fn embed_text_inner(text: &str, model: &str, cancellable: bool) -> Result<Vec<f32>> {
     let client = reqwest::Client::new();
-    check_ingest_cancelled()?;
-    let res = await_ingest_cancellable(
-        client
-            .post("http://localhost:11434/api/embed")
-            .json(&json!({ "model": model, "input": text }))
-            .send(),
-    )
-    .await?;
+    if cancellable {
+        check_ingest_cancelled()?;
+    }
+    let embed_request = client
+        .post("http://localhost:11434/api/embed")
+        .json(&json!({ "model": model, "input": text }))
+        .send();
+    let res = if cancellable {
+        await_ingest_cancellable(embed_request).await?
+    } else {
+        embed_request.await?
+    };
     if res.status().is_success() {
-        let payload = await_ingest_cancellable(res.json()).await?;
+        let payload = if cancellable {
+            await_ingest_cancellable(res.json()).await?
+        } else {
+            res.json().await?
+        };
         return parse_embedding_json(&payload);
     }
-    check_ingest_cancelled()?;
-    let fallback = await_ingest_cancellable(
-        client
-            .post("http://localhost:11434/api/embeddings")
-            .json(&json!({ "model": model, "prompt": text }))
-            .send(),
-    )
-    .await?;
+    if cancellable {
+        check_ingest_cancelled()?;
+    }
+    let fallback_request = client
+        .post("http://localhost:11434/api/embeddings")
+        .json(&json!({ "model": model, "prompt": text }))
+        .send();
+    let fallback = if cancellable {
+        await_ingest_cancellable(fallback_request).await?
+    } else {
+        fallback_request.await?
+    };
     if !fallback.status().is_success() {
         return Err(anyhow!("Embedding failed for '{}'", model));
     }
-    let payload = await_ingest_cancellable(fallback.json()).await?;
+    let payload = if cancellable {
+        await_ingest_cancellable(fallback.json()).await?
+    } else {
+        fallback.json().await?
+    };
     parse_embedding_json(&payload)
 }
 
@@ -6665,7 +6706,7 @@ async fn materialize_rule3_ideas(app: &AppHandle, embedding_model: &str) -> Resu
     }
 
     for challenge in challenges {
-        let vector = match embed_text(&challenge.text, embedding_model).await {
+        let vector = match embed_text_cancellable(&challenge.text, embedding_model).await {
             Ok(vector) if !vector.is_empty() => vector,
             _ => continue,
         };

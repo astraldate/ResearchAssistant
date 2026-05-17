@@ -163,8 +163,8 @@ Gradle 原始产物路径：
 4. 创建并推送 tag，例如：
 
 ```bash
-git tag v1.1.4
-git push origin v1.1.4
+git tag v1.1.5
+git push origin v1.1.5
 ```
 
 5. GitHub 会自动触发 `Release Desktop`，生成一个 draft release。
