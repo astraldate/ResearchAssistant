@@ -1268,6 +1268,9 @@ textarea:focus {
 .context-menu {
   position: fixed;
   min-width: 180px;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -2808,6 +2811,9 @@ textarea:focus {
   flex-direction: column;
   gap: 4px;
   min-width: 168px;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 8px;
   border-radius: 10px;
   border: 1px solid var(--border-color);

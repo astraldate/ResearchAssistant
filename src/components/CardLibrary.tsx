@@ -1,7 +1,7 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+﻿import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Plus, RefreshCw, X } from "lucide-react";
+import { ContextMenuPortal } from "./ContextMenuPortal";
 import { LookupMode } from "./TermExplainPopover";
 
 type StatusTone = "info" | "error";
@@ -58,18 +58,6 @@ export const CardLibrary: React.FC<CardLibraryProps> = ({
   const [deleteDialog, setDeleteDialog] = useState<KnowledgeCardSummary | null>(
     null,
   );
-  const menuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const handleOutside = (event: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
-        setContextMenu(null);
-      }
-    };
-    document.addEventListener("mousedown", handleOutside);
-    return () => document.removeEventListener("mousedown", handleOutside);
-  }, []);
-
   const loadCards = useCallback(async () => {
     setIsLoading(true);
     try {
@@ -365,26 +353,22 @@ export const CardLibrary: React.FC<CardLibraryProps> = ({
         ))}
       </div>
 
-      {contextMenu &&
-        typeof document !== "undefined" &&
-        createPortal(
-          <div
-            ref={menuRef}
-            className="pdf-selection-context-menu card-context-menu"
-            style={{ left: contextMenu.x, top: contextMenu.y }}
-          >
-            <button type="button" onClick={() => void handleRevealCard()}>
-              在文件夹中定位
-            </button>
-            <button type="button" onClick={() => void handleEditCard()}>
-              编辑
-            </button>
-            <button type="button" onClick={openDeleteDialog}>
-              删除
-            </button>
-          </div>,
-          document.body,
-        )}
+      <ContextMenuPortal
+        open={Boolean(contextMenu)}
+        anchor={contextMenu ? { x: contextMenu.x, y: contextMenu.y } : null}
+        className="pdf-selection-context-menu card-context-menu"
+        onClose={() => setContextMenu(null)}
+      >
+        <button type="button" onClick={() => void handleRevealCard()}>
+          在文件夹中定位
+        </button>
+        <button type="button" onClick={() => void handleEditCard()}>
+          编辑
+        </button>
+        <button type="button" onClick={openDeleteDialog}>
+          删除
+        </button>
+      </ContextMenuPortal>
 
       {deleteDialog && (
         <div
