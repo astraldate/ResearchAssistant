@@ -1,3 +1,4 @@
+import * as FileSystem from "expo-file-system/legacy";
 import {
   MOBILE_API_PREFIX,
   type MobileBootstrapResponse,
@@ -8,11 +9,18 @@ import {
   type MobileHealthResponse,
   type MobileInboxItem,
   type MobileInboxItemInput,
+  type MobilePaperRecord,
   type MobilePairRequest,
   type MobilePairResponse,
   type ReviewSyncRequest,
   type ReviewSyncResponse,
 } from "../contracts";
+
+export interface PdfDownloadResult {
+  localUri: string;
+  fileName: string;
+  pageHint: number | null;
+}
 
 export function normalizeBaseUrl(baseUrl: string) {
   const trimmed = baseUrl.trim().replace(/\/+$/, "");
@@ -121,6 +129,96 @@ export async function submitInboxItem(
     },
     token,
   );
+}
+
+export async function fetchMobilePapers(baseUrl: string, token: string) {
+  return requestJson<MobilePaperRecord[]>(
+    baseUrl,
+    `${MOBILE_API_PREFIX}/papers`,
+    {},
+    token,
+  );
+}
+
+export async function downloadCardPdf(
+  baseUrl: string,
+  token: string,
+  cardId: string,
+  destinationUri: string,
+) {
+  return downloadPdfFile(
+    baseUrl,
+    token,
+    `${MOBILE_API_PREFIX}/cards/${encodeURIComponent(cardId)}/pdf`,
+    destinationUri,
+  );
+}
+
+export async function downloadPaperPdf(
+  baseUrl: string,
+  token: string,
+  paperId: string,
+  destinationUri: string,
+) {
+  return downloadPdfFile(
+    baseUrl,
+    token,
+    `${MOBILE_API_PREFIX}/papers/${encodeURIComponent(paperId)}/pdf`,
+    destinationUri,
+  );
+}
+
+export async function downloadWorkspacePdf(
+  baseUrl: string,
+  token: string,
+  pdfId: string,
+  destinationUri: string,
+) {
+  return downloadPdfFile(
+    baseUrl,
+    token,
+    `${MOBILE_API_PREFIX}/workspace-pdfs/${encodeURIComponent(pdfId)}/pdf`,
+    destinationUri,
+  );
+}
+
+async function downloadPdfFile(
+  baseUrl: string,
+  token: string,
+  path: string,
+  destinationUri: string,
+): Promise<PdfDownloadResult> {
+  const url = `${normalizeBaseUrl(baseUrl)}${path}`;
+  const result = await FileSystem.downloadAsync(url, destinationUri, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  if (result.status < 200 || result.status >= 300) {
+    await FileSystem.deleteAsync(result.uri, { idempotent: true });
+    throw new Error(`PDF 下载失败：桌面端返回 ${result.status}`);
+  }
+  const headers = normalizeResponseHeaders(result.headers ?? {});
+  return {
+    localUri: result.uri,
+    fileName:
+      headers["x-ra-file-name"] ||
+      destinationUri.split("/").filter(Boolean).pop() ||
+      "document.pdf",
+    pageHint: parseHeaderNumber(headers["x-ra-pdf-page"]),
+  };
+}
+
+function normalizeResponseHeaders(headers: Record<string, string>) {
+  return Object.fromEntries(
+    Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]),
+  );
+}
+
+function parseHeaderNumber(value: string | undefined) {
+  if (!value) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
 export async function fetchChatThreads(baseUrl: string, token: string) {

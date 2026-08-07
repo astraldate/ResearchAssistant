@@ -39,7 +39,11 @@ extensions.configure(com.facebook.react.ReactSettingsExtension) { ex ->
           autolinkSnapshot.absolutePath,
         ]
       } else {
-        def autolinkingScript = new File(rootDir, "../node_modules/.bin/expo-modules-autolinking.CMD").absolutePath
+        def appAutolinkingScript = new File(rootDir, "../node_modules/.bin/expo-modules-autolinking.CMD")
+        def rootAutolinkingScript = new File(rootDir, "../../node_modules/.bin/expo-modules-autolinking.CMD")
+        def autolinkingScript = appAutolinkingScript.exists()
+          ? appAutolinkingScript.absolutePath
+          : rootAutolinkingScript.absolutePath
         expoAutolinkCommand = [
           "cmd",
           "/c",

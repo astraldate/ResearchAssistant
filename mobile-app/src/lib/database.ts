@@ -6,7 +6,20 @@ import {
   type ReviewRecord,
 } from "../contracts";
 
-type CardRow = Omit<MobileCardRecord, "pdfPage"> & { pdfPage: number | null };
+export type PdfSourceType = "card" | "paper" | "workspacePdf";
+export interface PdfDownloadRecord {
+  sourceType: PdfSourceType;
+  sourceId: string;
+  localUri: string;
+  fileName: string;
+  downloadedAt: string;
+  pageHint: number | null;
+}
+
+type CardRow = Omit<MobileCardRecord, "pdfPage" | "hasPdf"> & {
+  hasPdf?: number | null;
+  pdfPage: number | null;
+};
 type ReviewRow = {
   cardId: string;
   dueAt: string;
@@ -22,6 +35,14 @@ type ReviewRow = {
 type QueueRow = {
   eventId: string;
   payloadJson: string;
+};
+type PdfDownloadRow = {
+  sourceType: PdfSourceType;
+  sourceId: string;
+  localUri: string;
+  fileName: string;
+  downloadedAt: string;
+  pageHint: number | null;
 };
 
 let databasePromise: Promise<SQLiteDatabase> | null = null;
@@ -51,6 +72,7 @@ async function getDatabase() {
           sourceProvider TEXT,
           sourceStatus TEXT NOT NULL,
           lookupMode TEXT NOT NULL,
+          hasPdf INTEGER NOT NULL DEFAULT 0,
           pdfPath TEXT,
           pdfPage INTEGER
         );
@@ -70,11 +92,37 @@ async function getDatabase() {
           eventId TEXT PRIMARY KEY NOT NULL,
           payloadJson TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS pdf_downloads (
+          sourceType TEXT NOT NULL,
+          sourceId TEXT NOT NULL,
+          localUri TEXT NOT NULL,
+          fileName TEXT NOT NULL,
+          downloadedAt TEXT NOT NULL,
+          pageHint INTEGER,
+          PRIMARY KEY (sourceType, sourceId)
+        );
       `);
+      await ensureColumn(db, "cards", "hasPdf", "INTEGER NOT NULL DEFAULT 0");
       return db;
     });
   }
   return databasePromise;
+}
+
+async function ensureColumn(
+  db: SQLiteDatabase,
+  tableName: string,
+  columnName: string,
+  declaration: string,
+) {
+  const rows = await db.getAllAsync<{ name: string }>(
+    `PRAGMA table_info(${tableName})`,
+  );
+  if (!rows.some((row) => row.name === columnName)) {
+    await db.execAsync(
+      `ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${declaration};`,
+    );
+  }
 }
 
 export async function replaceCards(cards: MobileCardRecord[]) {
@@ -84,8 +132,8 @@ export async function replaceCards(cards: MobileCardRecord[]) {
     for (const card of cards) {
       await db.runAsync(
         `INSERT INTO cards (
-          id, term, title, createdAt, preview, markdown, sourceProvider, sourceStatus, lookupMode, pdfPath, pdfPage
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          id, term, title, createdAt, preview, markdown, sourceProvider, sourceStatus, lookupMode, hasPdf, pdfPath, pdfPage
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           card.id,
           card.term,
@@ -96,6 +144,7 @@ export async function replaceCards(cards: MobileCardRecord[]) {
           card.sourceProvider ?? null,
           card.sourceStatus,
           card.lookupMode,
+          card.hasPdf ? 1 : 0,
           card.pdfPath ?? null,
           typeof card.pdfPage === "number" ? card.pdfPage : null,
         ],
@@ -113,7 +162,7 @@ export async function listCards(searchText = "") {
     [searchText, searchText, searchText, searchText],
   );
 
-  return rows.map((row) => ({ ...row }));
+  return rows.map((row) => ({ ...row, hasPdf: Boolean(row.hasPdf) }));
 }
 
 export async function saveReviewRecords(records: ReviewRecord[]) {
@@ -143,7 +192,10 @@ export async function saveReviewRecords(records: ReviewRecord[]) {
 
 export async function getReviewRecord(cardId: string) {
   const db = await getDatabase();
-  const row = await db.getFirstAsync<ReviewRow>("SELECT * FROM review_records WHERE cardId = ?", [cardId]);
+  const row = await db.getFirstAsync<ReviewRow>(
+    "SELECT * FROM review_records WHERE cardId = ?",
+    [cardId],
+  );
   if (!row) return null;
   return {
     cardId: row.cardId,
@@ -161,7 +213,9 @@ export async function getReviewRecord(cardId: string) {
 
 export async function listDueReviewCards(nowIso: string) {
   const db = await getDatabase();
-  const rows = await db.getAllAsync<CardRow & Partial<ReviewRow> & { reviewCardId?: string | null }>(
+  const rows = await db.getAllAsync<
+    CardRow & Partial<ReviewRow> & { reviewCardId?: string | null }
+  >(
     `SELECT
        c.*,
        rr.cardId as reviewCardId,
@@ -192,6 +246,7 @@ export async function listDueReviewCards(nowIso: string) {
       sourceProvider: row.sourceProvider ?? null,
       sourceStatus: row.sourceStatus,
       lookupMode: row.lookupMode,
+      hasPdf: Boolean(row.hasPdf),
       pdfPath: row.pdfPath ?? null,
       pdfPage: row.pdfPage ?? null,
     } satisfies MobileCardRecord,
@@ -226,9 +281,13 @@ export async function enqueueReviewEvent(event: MobileReviewEvent) {
 
 export async function listQueuedReviewEvents() {
   const db = await getDatabase();
-  const rows = await db.getAllAsync<QueueRow>("SELECT * FROM queued_review_events ORDER BY rowid ASC");
+  const rows = await db.getAllAsync<QueueRow>(
+    "SELECT * FROM queued_review_events ORDER BY rowid ASC",
+  );
   return rows
-    .map((row) => parseJsonValue<MobileReviewEvent | null>(row.payloadJson, null))
+    .map((row) =>
+      parseJsonValue<MobileReviewEvent | null>(row.payloadJson, null),
+    )
     .filter((event): event is MobileReviewEvent => Boolean(event));
 }
 
@@ -237,9 +296,39 @@ export async function removeQueuedReviewEvents(eventIds: string[]) {
   const db = await getDatabase();
   await db.withTransactionAsync(async () => {
     for (const eventId of eventIds) {
-      await db.runAsync("DELETE FROM queued_review_events WHERE eventId = ?", [eventId]);
+      await db.runAsync("DELETE FROM queued_review_events WHERE eventId = ?", [
+        eventId,
+      ]);
     }
   });
+}
+
+export async function getPdfDownload(
+  sourceType: PdfSourceType,
+  sourceId: string,
+) {
+  const db = await getDatabase();
+  return db.getFirstAsync<PdfDownloadRow>(
+    "SELECT * FROM pdf_downloads WHERE sourceType = ? AND sourceId = ?",
+    [sourceType, sourceId],
+  );
+}
+
+export async function upsertPdfDownload(record: PdfDownloadRecord) {
+  const db = await getDatabase();
+  await db.runAsync(
+    `INSERT OR REPLACE INTO pdf_downloads (
+      sourceType, sourceId, localUri, fileName, downloadedAt, pageHint
+    ) VALUES (?, ?, ?, ?, ?, ?)`,
+    [
+      record.sourceType,
+      record.sourceId,
+      record.localUri,
+      record.fileName,
+      record.downloadedAt,
+      record.pageHint,
+    ],
+  );
 }
 
 export async function clearAllCachedData() {
@@ -248,5 +337,6 @@ export async function clearAllCachedData() {
     DELETE FROM cards;
     DELETE FROM review_records;
     DELETE FROM queued_review_events;
+    DELETE FROM pdf_downloads;
   `);
 }

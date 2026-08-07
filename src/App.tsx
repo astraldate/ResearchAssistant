@@ -2308,13 +2308,14 @@ function App() {
   const applyImportedWorkspace = async (
     imported: WorkspaceImportResult,
     successMessage?: string,
+    modeOverride?: IngestMode,
   ) => {
     setActiveSidebarTool("workspace");
     setWorkspacePath(imported.workspace_path);
     setFiles([imported.tree]);
     setActiveFilePath(null);
     showPersistentStatus("文件已导入工作空间，正在建立索引...");
-    await ingestWorkspacePath(imported.ingest_path);
+    await ingestWorkspacePath(imported.ingest_path, modeOverride);
     if (successMessage) showTemporaryStatus(successMessage);
   };
 
@@ -2354,6 +2355,7 @@ function App() {
     await applyImportedWorkspace(
       imported,
       `已导入 ${selectedPaths.length} 个项目到工作空间。`,
+      "incremental",
     );
   };
 

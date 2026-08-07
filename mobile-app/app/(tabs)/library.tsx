@@ -1,4 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useRouter } from "expo-router";
 import { useState } from "react";
 import {
   ActivityIndicator,
@@ -15,6 +16,7 @@ import { bootstrapSync } from "../../src/lib/sync";
 import { palette, spacing } from "../../src/theme";
 
 export default function LibraryScreen() {
+  const router = useRouter();
   const queryClient = useQueryClient();
   const [searchText, setSearchText] = useState("");
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
@@ -52,6 +54,19 @@ export default function LibraryScreen() {
     } finally {
       setIsRefreshing(false);
     }
+  };
+
+  const handleOpenPdf = () => {
+    if (!selectedCard?.hasPdf) return;
+    router.push({
+      pathname: "/pdf-reader",
+      params: {
+        sourceType: "card",
+        sourceId: selectedCard.id,
+        title: selectedCard.title || selectedCard.term,
+        page: selectedCard.pdfPage ? String(selectedCard.pdfPage) : undefined,
+      },
+    });
   };
 
   return (
@@ -100,9 +115,19 @@ export default function LibraryScreen() {
           ))}
           {selectedCard ? (
             <View style={styles.detailPanel}>
-              <Text style={styles.detailTitle}>
-                {selectedCard.title || selectedCard.term}
-              </Text>
+              <View style={styles.detailHeader}>
+                <Text style={styles.detailTitle}>
+                  {selectedCard.title || selectedCard.term}
+                </Text>
+                {selectedCard.hasPdf ? (
+                  <Pressable
+                    style={styles.openPdfButton}
+                    onPress={handleOpenPdf}
+                  >
+                    <Text style={styles.openPdfButtonText}>打开 PDF</Text>
+                  </Pressable>
+                ) : null}
+              </View>
               <Text style={styles.detailBody}>{selectedCard.markdown}</Text>
             </View>
           ) : null}
@@ -154,8 +179,24 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   detailTitle: {
+    flex: 1,
     color: palette.ink,
     fontSize: 18,
+    fontWeight: "800",
+  },
+  detailHeader: {
+    flexDirection: "row",
+    gap: spacing.sm,
+    alignItems: "center",
+  },
+  openPdfButton: {
+    borderRadius: 999,
+    backgroundColor: palette.primary,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+  },
+  openPdfButtonText: {
+    color: "#fff",
     fontWeight: "800",
   },
   detailBody: {

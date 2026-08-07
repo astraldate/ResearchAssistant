@@ -1507,14 +1507,9 @@ async fn import_paths_to_workspace(
     let workspace_root = workspace_root_dir(&app)?;
 
     let target_root = workspace_root.join("selected_imports");
-    let selected_mode = mode.unwrap_or_default();
-    if selected_mode == IngestMode::Overwrite && target_root.exists() {
-        if target_root.is_dir() {
-            std::fs::remove_dir_all(&target_root).map_err(|e| e.to_string())?;
-        } else {
-            std::fs::remove_file(&target_root).map_err(|e| e.to_string())?;
-        }
-    }
+    // The import mode is for Research Memory indexing. Ad-hoc file imports
+    // should accumulate in the workspace instead of deleting previous PDFs.
+    let _ = mode;
     if !target_root.exists() {
         std::fs::create_dir_all(&target_root).map_err(|e| e.to_string())?;
     }
