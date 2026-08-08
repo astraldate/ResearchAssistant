@@ -1,5 +1,5 @@
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   type LayoutChangeEvent,
@@ -35,11 +35,20 @@ export default function PdfReaderScreen() {
   }, [params.page]);
   const [localUri, setLocalUri] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(initialPage);
+  const [readerInitialPage, setReaderInitialPage] = useState(initialPage);
   const [pageCount, setPageCount] = useState<number | null>(null);
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
   const [pageAspectRatio, setPageAspectRatio] = useState<number | null>(null);
   const [statusText, setStatusText] = useState("正在准备 PDF...");
   const [errorText, setErrorText] = useState<string | null>(null);
+  const pageStateRef = useRef({
+    page: initialPage,
+    pageCount: null as number | null,
+  });
+  const pdfSource = useMemo(
+    () => (localUri ? { uri: localUri } : null),
+    [localUri],
+  );
 
   const readerFrame = useMemo(() => {
     if (containerSize.width <= 0 || containerSize.height <= 0) {
@@ -82,6 +91,12 @@ export default function PdfReaderScreen() {
         setStatusText("");
         return;
       }
+      setLocalUri(null);
+      setPageCount(null);
+      setPageAspectRatio(null);
+      setCurrentPage(initialPage);
+      setReaderInitialPage(initialPage);
+      pageStateRef.current = { page: initialPage, pageCount: null };
       setStatusText("正在检查本地缓存...");
       setErrorText(null);
       try {
@@ -92,8 +107,11 @@ export default function PdfReaderScreen() {
           pageHint: initialPage,
         });
         if (cancelled) return;
+        const startPage = cached.pageHint ?? initialPage;
         setLocalUri(cached.localUri);
-        setCurrentPage(cached.pageHint ?? initialPage);
+        setCurrentPage(startPage);
+        setReaderInitialPage(startPage);
+        pageStateRef.current = { page: startPage, pageCount: null };
         setStatusText("");
       } catch (error) {
         if (cancelled) return;
@@ -106,6 +124,47 @@ export default function PdfReaderScreen() {
       cancelled = true;
     };
   }, [initialPage, sourceId, sourceType, title]);
+
+  const handlePdfLoadComplete = useCallback(
+    (numberOfPages: number, size?: PdfPageSize) => {
+      setPageCount((current) =>
+        current === numberOfPages ? current : numberOfPages,
+      );
+      pageStateRef.current = {
+        ...pageStateRef.current,
+        pageCount: numberOfPages,
+      };
+      if (size?.width && size?.height) {
+        const nextRatio = size.width / size.height;
+        setPageAspectRatio((current) =>
+          current && Math.abs(current - nextRatio) < 0.001
+            ? current
+            : nextRatio,
+        );
+      }
+      setStatusText("");
+    },
+    [],
+  );
+
+  const handlePdfPageChanged = useCallback(
+    (page: number, numberOfPages: number) => {
+      const previous = pageStateRef.current;
+      if (previous.page === page && previous.pageCount === numberOfPages) {
+        return;
+      }
+      pageStateRef.current = { page, pageCount: numberOfPages };
+      setCurrentPage((current) => (current === page ? current : page));
+      setPageCount((current) =>
+        current === numberOfPages ? current : numberOfPages,
+      );
+    },
+    [],
+  );
+
+  const handlePdfError = useCallback((error: unknown) => {
+    setErrorText(String(error));
+  }, []);
 
   return (
     <ScreenShell
@@ -123,28 +182,13 @@ export default function PdfReaderScreen() {
     >
       <View style={styles.readerViewport} onLayout={handleReaderLayout}>
         <View style={[styles.readerPanel, readerFrame]}>
-          {localUri ? (
-            <Pdf
-              source={{ uri: localUri }}
-              page={currentPage}
-              enablePaging
-              spacing={0}
-              fitPolicy={2}
-              onLoadComplete={(numberOfPages, _path, size) => {
-                setPageCount(numberOfPages);
-                if (size?.width && size?.height) {
-                  setPageAspectRatio(size.width / size.height);
-                }
-                setStatusText("");
-              }}
-              onPageChanged={(page, numberOfPages) => {
-                setCurrentPage(page);
-                setPageCount(numberOfPages);
-              }}
-              onError={(error) => {
-                setErrorText(String(error));
-              }}
-              style={styles.pdf}
+          {pdfSource ? (
+            <StablePdfView
+              source={pdfSource}
+              initialPage={readerInitialPage}
+              onLoadComplete={handlePdfLoadComplete}
+              onPageChanged={handlePdfPageChanged}
+              onError={handlePdfError}
             />
           ) : (
             <View style={styles.centerState}>
@@ -166,6 +210,46 @@ export default function PdfReaderScreen() {
 function isPdfSourceType(value: unknown): value is PdfSourceType {
   return value === "card" || value === "paper" || value === "workspacePdf";
 }
+
+type PdfSource = {
+  uri: string;
+};
+
+type PdfPageSize = {
+  width?: number;
+  height?: number;
+};
+
+const StablePdfView = memo(function StablePdfView({
+  source,
+  initialPage,
+  onLoadComplete,
+  onPageChanged,
+  onError,
+}: {
+  source: PdfSource;
+  initialPage: number;
+  onLoadComplete: (numberOfPages: number, size?: PdfPageSize) => void;
+  onPageChanged: (page: number, numberOfPages: number) => void;
+  onError: (error: unknown) => void;
+}) {
+  return (
+    <Pdf
+      source={source}
+      page={initialPage}
+      enablePaging
+      enableAnnotationRendering={false}
+      spacing={0}
+      fitPolicy={2}
+      onLoadComplete={(numberOfPages, _path, size) => {
+        onLoadComplete(numberOfPages, size);
+      }}
+      onPageChanged={onPageChanged}
+      onError={onError}
+      style={styles.pdf}
+    />
+  );
+});
 
 const styles = StyleSheet.create({
   readerContent: {

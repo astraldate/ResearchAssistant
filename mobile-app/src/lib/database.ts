@@ -314,6 +314,13 @@ export async function getPdfDownload(
   );
 }
 
+export async function listPdfDownloads() {
+  const db = await getDatabase();
+  return db.getAllAsync<PdfDownloadRow>(
+    "SELECT * FROM pdf_downloads ORDER BY downloadedAt DESC",
+  );
+}
+
 export async function upsertPdfDownload(record: PdfDownloadRecord) {
   const db = await getDatabase();
   await db.runAsync(
@@ -329,6 +336,22 @@ export async function upsertPdfDownload(record: PdfDownloadRecord) {
       record.pageHint,
     ],
   );
+}
+
+export async function deletePdfDownload(
+  sourceType: PdfSourceType,
+  sourceId: string,
+) {
+  const db = await getDatabase();
+  await db.runAsync(
+    "DELETE FROM pdf_downloads WHERE sourceType = ? AND sourceId = ?",
+    [sourceType, sourceId],
+  );
+}
+
+export async function clearPdfDownloads() {
+  const db = await getDatabase();
+  await db.execAsync("DELETE FROM pdf_downloads;");
 }
 
 export async function clearAllCachedData() {

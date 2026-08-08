@@ -32,6 +32,7 @@ import {
 import { ChatInterface } from "./components/ChatInterface";
 import { ModelSelector } from "./components/ModelSelector";
 import { resolveMirrorModel } from "./utils/modelMirrors";
+import { formatLocalDateTime } from "./utils/time";
 import "./App.css";
 
 const CardLibrary = lazy(() =>
@@ -3298,8 +3299,10 @@ function App() {
               >
                 <strong>{device.deviceName}</strong>
                 <span>
-                  配对时间：{device.pairedAt}
-                  {device.lastSeenAt ? ` · 最后连接：${device.lastSeenAt}` : ""}
+                  配对时间：{formatLocalDateTime(device.pairedAt)}
+                  {device.lastSeenAt
+                    ? ` · 最后连接：${formatLocalDateTime(device.lastSeenAt)}`
+                    : ""}
                 </span>
               </div>
             ))}

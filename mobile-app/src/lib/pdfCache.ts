@@ -1,7 +1,11 @@
 import * as FileSystem from "expo-file-system/legacy";
 import { downloadCardPdf, downloadPaperPdf, downloadWorkspacePdf } from "./api";
 import {
+  clearPdfDownloads,
+  deletePdfDownload,
   getPdfDownload,
+  listPdfDownloads,
+  type PdfDownloadRecord,
   type PdfSourceType,
   upsertPdfDownload,
 } from "./database";
@@ -12,6 +16,11 @@ interface EnsurePdfOptions {
   sourceId: string;
   title: string;
   pageHint?: number | null;
+}
+
+export interface CachedPdfItem extends PdfDownloadRecord {
+  exists: boolean;
+  sizeBytes: number;
 }
 
 export async function ensurePdfCached({
@@ -53,6 +62,46 @@ export async function ensurePdfCached({
   };
   await upsertPdfDownload(record);
   return record;
+}
+
+export async function listCachedPdfs(): Promise<CachedPdfItem[]> {
+  const records = await listPdfDownloads();
+  const items = await Promise.all(
+    records.map(async (record) => {
+      const info = await FileSystem.getInfoAsync(record.localUri);
+      return {
+        ...record,
+        exists: info.exists,
+        sizeBytes: info.exists && typeof info.size === "number" ? info.size : 0,
+      };
+    }),
+  );
+  return items;
+}
+
+export async function deleteCachedPdf(item: PdfDownloadRecord) {
+  await FileSystem.deleteAsync(item.localUri, { idempotent: true });
+  await deletePdfDownload(item.sourceType, item.sourceId);
+}
+
+export async function clearCachedPdfs() {
+  const records = await listPdfDownloads();
+  await Promise.all(
+    records.map((record) =>
+      FileSystem.deleteAsync(record.localUri, { idempotent: true }),
+    ),
+  );
+  await clearPdfDownloads();
+}
+
+export function formatCacheSize(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(kb >= 100 ? 0 : 1)} KB`;
+  const mb = kb / 1024;
+  if (mb < 1024) return `${mb.toFixed(mb >= 100 ? 0 : 1)} MB`;
+  const gb = mb / 1024;
+  return `${gb.toFixed(gb >= 100 ? 0 : 1)} GB`;
 }
 
 async function downloadPdfBySourceType(

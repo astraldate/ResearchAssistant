@@ -1,9 +1,18 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
+import { useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { ScreenShell } from "../../src/components/ScreenShell";
 import { clearAllCachedData } from "../../src/lib/database";
+import {
+  clearCachedPdfs,
+  deleteCachedPdf,
+  formatCacheSize,
+  listCachedPdfs,
+  type CachedPdfItem,
+} from "../../src/lib/pdfCache";
 import { bootstrapSync } from "../../src/lib/sync";
+import { formatLocalDateTime } from "../../src/lib/time";
 import { persistSession, useSessionStore } from "../../src/store/session";
 import { palette, spacing } from "../../src/theme";
 
@@ -14,8 +23,20 @@ export default function SettingsScreen() {
   const isSyncing = useSessionStore((state) => state.isSyncing);
   const lastSyncAt = useSessionStore((state) => state.lastSyncAt);
   const lastSyncError = useSessionStore((state) => state.lastSyncError);
+  const [cacheMessage, setCacheMessage] = useState<string | null>(null);
+  const [isManagingCache, setIsManagingCache] = useState(false);
+  const pdfCacheQuery = useQuery({
+    queryKey: ["pdf-cache"],
+    queryFn: listCachedPdfs,
+  });
+  const cachedPdfs = pdfCacheQuery.data ?? [];
+  const totalCacheBytes = cachedPdfs.reduce(
+    (total, item) => total + item.sizeBytes,
+    0,
+  );
 
   const handleLogout = async () => {
+    await clearCachedPdfs();
     await persistSession(null);
     await clearAllCachedData();
     router.replace("/pair");
@@ -25,6 +46,38 @@ export default function SettingsScreen() {
     await bootstrapSync();
     await queryClient.invalidateQueries({ queryKey: ["cards"] });
     await queryClient.invalidateQueries({ queryKey: ["due-review-cards"] });
+  };
+
+  const handleDeletePdfCache = async (item: CachedPdfItem) => {
+    setIsManagingCache(true);
+    setCacheMessage(null);
+    try {
+      await deleteCachedPdf(item);
+      await pdfCacheQuery.refetch();
+      setCacheMessage("已删除该 PDF 缓存。");
+    } catch (error) {
+      setCacheMessage(
+        `删除失败：${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      setIsManagingCache(false);
+    }
+  };
+
+  const handleClearPdfCache = async () => {
+    setIsManagingCache(true);
+    setCacheMessage(null);
+    try {
+      await clearCachedPdfs();
+      await pdfCacheQuery.refetch();
+      setCacheMessage("已清空 PDF 离线缓存。");
+    } catch (error) {
+      setCacheMessage(
+        `清空失败：${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      setIsManagingCache(false);
+    }
   };
 
   return (
@@ -39,14 +92,14 @@ export default function SettingsScreen() {
         </Text>
         <Text style={styles.line}>桌面端：{session?.baseUrl || "未配对"}</Text>
         <Text style={styles.line}>
-          配对时间：{session?.pairedAt || "未配对"}
+          配对时间：{formatLocalDateTime(session?.pairedAt) || "未配对"}
         </Text>
       </View>
 
       <View style={styles.card}>
         <Text style={styles.sectionTitle}>同步</Text>
         <Text style={styles.line}>
-          最后成功同步：{lastSyncAt || "尚无记录"}
+          最后成功同步：{formatLocalDateTime(lastSyncAt) || "尚无记录"}
         </Text>
         <Text style={styles.line}>
           同步状态：{isSyncing ? "同步中" : "空闲"}
@@ -69,6 +122,76 @@ export default function SettingsScreen() {
       </View>
 
       <View style={styles.card}>
+        <Text style={styles.sectionTitle}>PDF 离线缓存</Text>
+        <Text style={styles.line}>
+          已缓存 {cachedPdfs.length} 个文件，占用{" "}
+          {formatCacheSize(totalCacheBytes)}
+        </Text>
+        {cacheMessage ? (
+          <Text
+            style={[
+              styles.line,
+              cacheMessage.includes("失败")
+                ? styles.errorText
+                : styles.successText,
+            ]}
+          >
+            {cacheMessage}
+          </Text>
+        ) : null}
+        {pdfCacheQuery.isLoading ? (
+          <Text style={styles.line}>正在读取缓存...</Text>
+        ) : cachedPdfs.length ? (
+          cachedPdfs.map((item) => (
+            <View
+              key={`${item.sourceType}:${item.sourceId}`}
+              style={styles.cacheRow}
+            >
+              <View style={styles.cacheText}>
+                <Text style={styles.cacheTitle} numberOfLines={1}>
+                  {item.fileName}
+                </Text>
+                <Text style={styles.cacheMeta}>
+                  {sourceTypeLabel(item.sourceType)} ·{" "}
+                  {formatCacheSize(item.sizeBytes)}
+                  {!item.exists ? " · 文件缺失" : ""}
+                </Text>
+                <Text style={styles.cacheMeta}>
+                  {formatLocalDateTime(item.downloadedAt)}
+                </Text>
+              </View>
+              <Pressable
+                style={[
+                  styles.smallDangerButton,
+                  isManagingCache ? styles.primaryButtonDisabled : null,
+                ]}
+                onPress={() => void handleDeletePdfCache(item)}
+                disabled={isManagingCache}
+              >
+                <Text style={styles.smallDangerButtonText}>删除</Text>
+              </Pressable>
+            </View>
+          ))
+        ) : (
+          <Text style={styles.line}>暂无 PDF 离线缓存。</Text>
+        )}
+        <Pressable
+          style={[
+            styles.ghostButton,
+            cachedPdfs.length === 0 || isManagingCache
+              ? styles.primaryButtonDisabled
+              : null,
+          ]}
+          onPress={() => void handleClearPdfCache()}
+          disabled={cachedPdfs.length === 0 || isManagingCache}
+        >
+          <Text style={styles.ghostButtonText}>
+            {isManagingCache ? "处理中..." : "清空 PDF 缓存"}
+          </Text>
+        </Pressable>
+      </View>
+
+      <View style={styles.card}>
         <Text style={styles.sectionTitle}>危险操作</Text>
         <Pressable
           style={styles.ghostButton}
@@ -79,6 +202,12 @@ export default function SettingsScreen() {
       </View>
     </ScreenShell>
   );
+}
+
+function sourceTypeLabel(value: string) {
+  if (value === "card") return "卡片 PDF";
+  if (value === "workspacePdf") return "工作区 PDF";
+  return "论文 PDF";
 }
 
 const styles = StyleSheet.create({
@@ -102,6 +231,9 @@ const styles = StyleSheet.create({
   errorText: {
     color: palette.danger,
     lineHeight: 22,
+  },
+  successText: {
+    color: palette.success,
   },
   primaryButton: {
     marginTop: spacing.sm,
@@ -128,6 +260,40 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
   },
   ghostButtonText: {
+    color: palette.danger,
+    fontWeight: "800",
+  },
+  cacheRow: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: palette.border,
+    backgroundColor: "#fffefb",
+    padding: spacing.md,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  cacheText: {
+    flex: 1,
+    gap: spacing.xs,
+  },
+  cacheTitle: {
+    color: palette.ink,
+    fontWeight: "800",
+  },
+  cacheMeta: {
+    color: palette.slate,
+    fontSize: 12,
+  },
+  smallDangerButton: {
+    borderRadius: 999,
+    backgroundColor: "#fff5f3",
+    borderWidth: 1,
+    borderColor: "#e7c9c3",
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },
+  smallDangerButtonText: {
     color: palette.danger,
     fontWeight: "800",
   },
