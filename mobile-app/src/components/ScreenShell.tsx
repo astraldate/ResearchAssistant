@@ -1,5 +1,12 @@
 import type { PropsWithChildren, ReactNode } from "react";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import {
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  type StyleProp,
+  type ViewStyle,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { palette, spacing } from "../theme";
 
@@ -8,17 +15,37 @@ interface ScreenShellProps extends PropsWithChildren {
   subtitle?: string;
   headerRight?: ReactNode;
   scroll?: boolean;
+  contentStyle?: StyleProp<ViewStyle>;
 }
 
-export function ScreenShell({ children, title, subtitle, headerRight, scroll = true }: ScreenShellProps) {
-  const content = scroll ? <ScrollView contentContainerStyle={styles.scrollContent}>{children}</ScrollView> : <View style={styles.fill}>{children}</View>;
+export function ScreenShell({
+  children,
+  title,
+  subtitle,
+  headerRight,
+  scroll = true,
+  contentStyle,
+}: ScreenShellProps) {
+  const content = scroll ? (
+    <ScrollView contentContainerStyle={[styles.scrollContent, contentStyle]}>
+      {children}
+    </ScrollView>
+  ) : (
+    <View style={[styles.fill, contentStyle]}>{children}</View>
+  );
 
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.header}>
         <View style={styles.headerCopy}>
-          <Text style={styles.title}>{title}</Text>
-          {subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
+          <Text style={styles.title} numberOfLines={1}>
+            {title}
+          </Text>
+          {subtitle ? (
+            <Text style={styles.subtitle} numberOfLines={2}>
+              {subtitle}
+            </Text>
+          ) : null}
         </View>
         {headerRight}
       </View>
@@ -59,7 +86,6 @@ const styles = StyleSheet.create({
     fontSize: 28,
     fontWeight: "800",
     color: palette.ink,
-    letterSpacing: -0.6,
   },
   subtitle: {
     color: palette.slate,

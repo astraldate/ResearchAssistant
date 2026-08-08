@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { ModelSelector } from "./ModelSelector";
 import { MarkdownRenderer } from "./MarkdownRenderer";
+import { ContextMenuPortal } from "./ContextMenuPortal";
 
 type StatusTone = "info" | "error";
 
@@ -439,7 +440,6 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
   const messagesListRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const selectionMenuRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const adjustInputHeight = useCallback(() => {
     const textarea = inputRef.current;
@@ -569,17 +569,6 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       element.scrollHeight - element.scrollTop - element.clientHeight;
     shouldAutoScrollRef.current = distanceToBottom <= 80;
   };
-
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (selectionMenuRef.current?.contains(event.target as Node)) {
-        return;
-      }
-      setSelectionMenu(null);
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
 
   useEffect(() => {
     const mentionQuery = extractActiveMentionQuery(
@@ -2346,43 +2335,44 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         </div>
       </div>
 
-      {selectionMenu && (
-        <div
-          ref={selectionMenuRef}
-          className="selection-menu context-menu"
-          style={{ left: selectionMenu.x, top: selectionMenu.y }}
-          onMouseDown={(event) => event.preventDefault()}
+      <ContextMenuPortal
+        open={Boolean(selectionMenu)}
+        anchor={
+          selectionMenu ? { x: selectionMenu.x, y: selectionMenu.y } : null
+        }
+        className="selection-menu context-menu"
+        onClose={() => setSelectionMenu(null)}
+        onMouseDown={(event) => event.preventDefault()}
+      >
+        <button
+          type="button"
+          className="context-menu-item"
+          onClick={handleExplainSelection}
         >
-          <button
-            type="button"
-            className="context-menu-item"
-            onClick={handleExplainSelection}
-          >
-            解释
-          </button>
-          <button
-            type="button"
-            className="context-menu-item"
-            onClick={() => void handleExpandRetrievalSelection()}
-          >
-            扩展检索
-          </button>
-          <button
-            type="button"
-            className="context-menu-item"
-            onClick={handleAddNoteFromSelection}
-          >
-            加入笔记
-          </button>
-          <button
-            type="button"
-            className="context-menu-item"
-            onClick={closeSelectionMenu}
-          >
-            关闭
-          </button>
-        </div>
-      )}
+          解释
+        </button>
+        <button
+          type="button"
+          className="context-menu-item"
+          onClick={() => void handleExpandRetrievalSelection()}
+        >
+          扩展检索
+        </button>
+        <button
+          type="button"
+          className="context-menu-item"
+          onClick={handleAddNoteFromSelection}
+        >
+          加入笔记
+        </button>
+        <button
+          type="button"
+          className="context-menu-item"
+          onClick={closeSelectionMenu}
+        >
+          关闭
+        </button>
+      </ContextMenuPortal>
 
       {shouldShowPaperMentionList &&
         filteredPaperOptions.length > 0 &&

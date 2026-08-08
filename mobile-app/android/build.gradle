@@ -20,5 +20,23 @@ allprojects {
   }
 }
 
+def androidCxxStdlibArgument = "-DCMAKE_CXX_STANDARD_LIBRARIES=-lc++_shared -latomic -lm"
+
+subprojects { subproject ->
+  ["com.android.application", "com.android.library"].each { pluginId ->
+    subproject.plugins.withId(pluginId) {
+      subproject.extensions.configure(com.android.build.gradle.BaseExtension) { androidExt ->
+        androidExt.defaultConfig {
+          externalNativeBuild {
+            cmake {
+              arguments androidCxxStdlibArgument
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 apply plugin: "expo-root-project"
 apply plugin: "com.facebook.react.rootproject"

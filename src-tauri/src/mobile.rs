@@ -1,7 +1,7 @@
 use axum::{
     body::{Body, Bytes},
     extract::{Path as AxumPath, State as AxumState},
-    http::{HeaderMap, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -22,6 +22,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use uuid::Uuid;
+use walkdir::WalkDir;
 
 use crate::cards::{self, KnowledgeCardDetail};
 use crate::chat_queue::{ChatPriority, LlmChatQueueState};
@@ -120,8 +121,20 @@ pub struct MobileCardRecord {
     pub source_provider: Option<String>,
     pub source_status: String,
     pub lookup_mode: String,
+    pub has_pdf: bool,
     pub pdf_path: Option<String>,
     pub pdf_page: Option<u32>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MobilePaperRecord {
+    pub paper_id: String,
+    pub title: String,
+    pub paper_type: String,
+    pub updated_at: String,
+    pub has_pdf: bool,
+    pub source_type: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -553,6 +566,19 @@ fn build_mobile_router(state: MobileRouterState) -> Router {
             post(axum_mobile_review_events),
         )
         .route("/api/mobile/v1/inbox/items", post(axum_mobile_inbox_item))
+        .route("/api/mobile/v1/papers", get(axum_mobile_papers))
+        .route(
+            "/api/mobile/v1/cards/{card_id}/pdf",
+            get(axum_mobile_card_pdf),
+        )
+        .route(
+            "/api/mobile/v1/papers/{paper_id}/pdf",
+            get(axum_mobile_paper_pdf),
+        )
+        .route(
+            "/api/mobile/v1/workspace-pdfs/{pdf_id}/pdf",
+            get(axum_mobile_workspace_pdf),
+        )
         .route("/api/mobile/v1/chat/threads", get(axum_list_chat_threads))
         .route(
             "/api/mobile/v1/chat/threads/{thread_id}",
@@ -631,6 +657,70 @@ async fn axum_mobile_inbox_item(
     match store_inbox_item(&state.app, &device.device_id, payload) {
         Ok(item) => (StatusCode::OK, Json(item)).into_response(),
         Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
+    }
+}
+
+async fn axum_mobile_papers(
+    AxumState(state): AxumState<MobileRouterState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(error) = authorize_headers(&state.app, &state.mobile_state, &headers) {
+        return (StatusCode::UNAUTHORIZED, error).into_response();
+    }
+    match load_mobile_papers(&state.app).await {
+        Ok(papers) => (StatusCode::OK, Json(papers)).into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
+    }
+}
+
+async fn axum_mobile_card_pdf(
+    AxumState(state): AxumState<MobileRouterState>,
+    AxumPath(card_id): AxumPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(error) = authorize_headers(&state.app, &state.mobile_state, &headers) {
+        return (StatusCode::UNAUTHORIZED, error).into_response();
+    }
+    match resolve_card_pdf_download(&state.app, &card_id) {
+        Ok(download) => match build_pdf_download_response(download) {
+            Ok(response) => response,
+            Err((status, error)) => (status, error).into_response(),
+        },
+        Err(error) => (StatusCode::NOT_FOUND, error).into_response(),
+    }
+}
+
+async fn axum_mobile_paper_pdf(
+    AxumState(state): AxumState<MobileRouterState>,
+    AxumPath(paper_id): AxumPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(error) = authorize_headers(&state.app, &state.mobile_state, &headers) {
+        return (StatusCode::UNAUTHORIZED, error).into_response();
+    }
+    match resolve_paper_pdf_download(&state.app, &paper_id).await {
+        Ok(download) => match build_pdf_download_response(download) {
+            Ok(response) => response,
+            Err((status, error)) => (status, error).into_response(),
+        },
+        Err(error) => (StatusCode::NOT_FOUND, error).into_response(),
+    }
+}
+
+async fn axum_mobile_workspace_pdf(
+    AxumState(state): AxumState<MobileRouterState>,
+    AxumPath(pdf_id): AxumPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(error) = authorize_headers(&state.app, &state.mobile_state, &headers) {
+        return (StatusCode::UNAUTHORIZED, error).into_response();
+    }
+    match resolve_workspace_pdf_download(&state.app, &pdf_id) {
+        Ok(download) => match build_pdf_download_response(download) {
+            Ok(response) => response,
+            Err((status, error)) => (status, error).into_response(),
+        },
+        Err(error) => (StatusCode::NOT_FOUND, error).into_response(),
     }
 }
 
@@ -1216,6 +1306,12 @@ fn load_mobile_cards(app: &AppHandle) -> Result<Vec<MobileCardRecord>, String> {
 }
 
 fn map_card_detail(detail: KnowledgeCardDetail) -> MobileCardRecord {
+    let has_pdf = detail
+        .meta
+        .pdf_path
+        .as_deref()
+        .map(has_existing_pdf)
+        .unwrap_or(false);
     MobileCardRecord {
         id: detail.meta.id,
         term: detail.meta.term,
@@ -1226,9 +1322,266 @@ fn map_card_detail(detail: KnowledgeCardDetail) -> MobileCardRecord {
         source_provider: detail.meta.source_provider,
         source_status: detail.meta.source_status,
         lookup_mode: lookup_mode_key(detail.meta.lookup_mode).to_string(),
-        pdf_path: detail.meta.pdf_path,
+        has_pdf,
+        pdf_path: None,
         pdf_page: detail.meta.pdf_page,
     }
+}
+
+async fn load_mobile_papers(app: &AppHandle) -> Result<Vec<MobilePaperRecord>, String> {
+    let papers = research_memory::list_research_papers(app)
+        .await
+        .map_err(|error| error.to_string())?;
+    let indexed_paths = papers
+        .iter()
+        .map(|paper| paper.path.clone())
+        .collect::<HashSet<_>>();
+    let mut result = papers
+        .into_iter()
+        .map(|paper| MobilePaperRecord {
+            paper_id: paper.paper_id,
+            title: paper.title,
+            paper_type: paper.paper_type,
+            updated_at: paper.updated_at,
+            has_pdf: has_existing_pdf(&paper.path),
+            source_type: "paper".to_string(),
+        })
+        .collect::<Vec<_>>();
+    result.extend(collect_workspace_pdf_records(app, &indexed_paths)?);
+    result.sort_by(|left, right| {
+        right
+            .updated_at
+            .cmp(&left.updated_at)
+            .then_with(|| left.title.cmp(&right.title))
+    });
+    Ok(result)
+}
+
+struct PdfDownload {
+    path: PathBuf,
+    file_name: String,
+    page_hint: Option<u32>,
+}
+
+fn resolve_card_pdf_download(app: &AppHandle, card_id: &str) -> Result<PdfDownload, String> {
+    let normalized_id = card_id.trim();
+    if normalized_id.is_empty() {
+        return Err("Card id must not be empty.".to_string());
+    }
+
+    let summary = cards::list_knowledge_cards(app)?
+        .into_iter()
+        .find(|card| card.id == normalized_id)
+        .ok_or_else(|| "Card was not found.".to_string())?;
+    let pdf_path = summary
+        .pdf_path
+        .as_deref()
+        .ok_or_else(|| "Card does not have an associated PDF.".to_string())?;
+    let path = resolve_existing_pdf_path(pdf_path)?;
+    Ok(PdfDownload {
+        path,
+        file_name: safe_pdf_file_name(&summary.title, normalized_id),
+        page_hint: summary.pdf_page,
+    })
+}
+
+async fn resolve_paper_pdf_download(
+    app: &AppHandle,
+    paper_id: &str,
+) -> Result<PdfDownload, String> {
+    let normalized_id = paper_id.trim();
+    if normalized_id.is_empty() {
+        return Err("Paper id must not be empty.".to_string());
+    }
+
+    let paper = research_memory::list_research_papers(app)
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|paper| paper.paper_id == normalized_id)
+        .ok_or_else(|| "Paper was not found.".to_string())?;
+    let path = resolve_existing_pdf_path(&paper.path)?;
+    Ok(PdfDownload {
+        path,
+        file_name: safe_pdf_file_name(&paper.title, normalized_id),
+        page_hint: None,
+    })
+}
+
+fn resolve_workspace_pdf_download(app: &AppHandle, pdf_id: &str) -> Result<PdfDownload, String> {
+    let normalized_id = pdf_id.trim();
+    if normalized_id.is_empty() {
+        return Err("Workspace PDF id must not be empty.".to_string());
+    }
+
+    let workspace_root = mobile_workspace_root_dir(app)?;
+    for entry in WalkDir::new(&workspace_root)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+    {
+        let path = entry.path();
+        if !entry.file_type().is_file() || !is_pdf_path(path.to_string_lossy().as_ref()) {
+            continue;
+        }
+        if workspace_pdf_id(path) == normalized_id {
+            let title = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or("document");
+            return Ok(PdfDownload {
+                path: path.to_path_buf(),
+                file_name: safe_pdf_file_name(title, normalized_id),
+                page_hint: None,
+            });
+        }
+    }
+
+    Err("Workspace PDF was not found.".to_string())
+}
+
+fn build_pdf_download_response(download: PdfDownload) -> Result<Response, (StatusCode, String)> {
+    let bytes = fs::read(&download.path).map_err(|error| {
+        (
+            StatusCode::NOT_FOUND,
+            format!("Failed to read PDF file: {}", error),
+        )
+    })?;
+    let mut builder = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/pdf")
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{}\"", download.file_name),
+        )
+        .header("x-ra-file-name", download.file_name);
+    if let Some(page) = download.page_hint {
+        builder = builder.header("x-ra-pdf-page", page.to_string());
+    }
+    builder
+        .body(Body::from(bytes))
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))
+}
+
+fn resolve_existing_pdf_path(value: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(value.trim());
+    if !is_pdf_path(path.to_string_lossy().as_ref()) {
+        return Err("Requested file is not a PDF.".to_string());
+    }
+    if !path.is_file() {
+        return Err("PDF file was not found.".to_string());
+    }
+    Ok(path)
+}
+
+fn is_pdf_path(value: &str) -> bool {
+    Path::new(value)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.eq_ignore_ascii_case("pdf"))
+        .unwrap_or(false)
+}
+
+fn has_existing_pdf(value: &str) -> bool {
+    let trimmed = value.trim();
+    is_pdf_path(trimmed) && Path::new(trimmed).is_file()
+}
+
+fn collect_workspace_pdf_records(
+    app: &AppHandle,
+    indexed_paths: &HashSet<String>,
+) -> Result<Vec<MobilePaperRecord>, String> {
+    let workspace_root = mobile_workspace_root_dir(app)?;
+    if !workspace_root.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut result = Vec::new();
+    for entry in WalkDir::new(&workspace_root)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+    {
+        let path = entry.path();
+        if !entry.file_type().is_file() || !is_pdf_path(path.to_string_lossy().as_ref()) {
+            continue;
+        }
+        let path_string = path.to_string_lossy().to_string();
+        if indexed_paths.contains(&path_string) {
+            continue;
+        }
+        let title = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("document")
+            .to_string();
+        result.push(MobilePaperRecord {
+            paper_id: workspace_pdf_id(path),
+            title,
+            paper_type: "workspace_pdf".to_string(),
+            updated_at: file_modified_iso(path),
+            has_pdf: true,
+            source_type: "workspacePdf".to_string(),
+        });
+    }
+    Ok(result)
+}
+
+fn mobile_workspace_root_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    Ok(app_data_dir.join("workspace"))
+}
+
+fn workspace_pdf_id(path: &Path) -> String {
+    format!(
+        "workspace_pdf_{}",
+        Uuid::new_v5(&Uuid::NAMESPACE_URL, path.to_string_lossy().as_bytes(),).simple()
+    )
+}
+
+fn file_modified_iso(path: &Path) -> String {
+    path.metadata()
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| unix_seconds_to_iso(duration.as_secs() as i64))
+        .unwrap_or_else(cards::current_timestamp_iso_utc)
+}
+
+fn safe_pdf_file_name(title: &str, fallback_id: &str) -> String {
+    let mut base = title
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric()
+                || character == '-'
+                || character == '_'
+                || character == '.'
+                || character == ' '
+            {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim()
+        .trim_matches('.')
+        .to_string();
+    if base.is_empty() || base.chars().all(|character| character == '_') {
+        base = fallback_id
+            .chars()
+            .filter(|character| character.is_ascii_alphanumeric())
+            .take(16)
+            .collect::<String>();
+    }
+    if base.is_empty() {
+        base = "document".to_string();
+    }
+    if !base.to_ascii_lowercase().ends_with(".pdf") {
+        base.push_str(".pdf");
+    }
+    base
 }
 
 fn lookup_mode_key(mode: TermLookupMode) -> &'static str {

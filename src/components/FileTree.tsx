@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, File, Folder } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { createPortal } from "react-dom";
+import { ContextMenuPortal } from "./ContextMenuPortal";
 
 export interface FileNode {
   id: string;
@@ -257,20 +257,8 @@ export const FileTree: React.FC<FileTreeProps> = ({
   const [inputValue, setInputValue] = useState("");
   const [dialogError, setDialogError] = useState<string | null>(null);
   const [isSubmittingDialog, setIsSubmittingDialog] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const nodes = data ?? [];
-
-  useEffect(() => {
-    const handleOutside = (event: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
-        setContextMenu(null);
-      }
-    };
-
-    document.addEventListener("mousedown", handleOutside);
-    return () => document.removeEventListener("mousedown", handleOutside);
-  }, []);
 
   useEffect(() => {
     if (!editDialog) return;
@@ -659,28 +647,23 @@ export const FileTree: React.FC<FileTreeProps> = ({
         />
       ))}
 
-      {contextMenu &&
-        menuActions.length > 0 &&
-        typeof document !== "undefined" &&
-        createPortal(
-          <div
-            ref={menuRef}
-            className="context-menu"
-            style={{ top: contextMenu.y, left: contextMenu.x }}
+      <ContextMenuPortal
+        open={Boolean(contextMenu && menuActions.length > 0)}
+        anchor={contextMenu ? { x: contextMenu.x, y: contextMenu.y } : null}
+        className="context-menu"
+        onClose={closeMenus}
+      >
+        {menuActions.map((action) => (
+          <button
+            key={action.key}
+            className="context-menu-item"
+            disabled={action.disabled}
+            onClick={() => void action.onClick()}
           >
-            {menuActions.map((action) => (
-              <button
-                key={action.key}
-                className="context-menu-item"
-                disabled={action.disabled}
-                onClick={() => void action.onClick()}
-              >
-                {action.label}
-              </button>
-            ))}
-          </div>,
-          document.body,
-        )}
+            {action.label}
+          </button>
+        ))}
+      </ContextMenuPortal>
 
       {editDialog && (
         <div

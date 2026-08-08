@@ -64,6 +64,19 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
+        name="papers"
+        options={{
+          title: "论文",
+          tabBarIcon: ({ color, focused }) => (
+            <TabIcon
+              name={focused ? "document-text" : "document-text-outline"}
+              color={color}
+              focused={focused}
+            />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="capture"
         options={{
           title: "\u91c7\u96c6",

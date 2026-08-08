@@ -72,8 +72,18 @@ export interface MobileCardRecord {
   sourceProvider?: string | null;
   sourceStatus: string;
   lookupMode: string;
+  hasPdf: boolean;
   pdfPath?: string | null;
   pdfPage?: number | null;
+}
+
+export interface MobilePaperRecord {
+  paperId: string;
+  title: string;
+  paperType: string;
+  updatedAt: string;
+  hasPdf: boolean;
+  sourceType: "paper" | "workspacePdf";
 }
 
 export interface ReviewHistoryEntry {

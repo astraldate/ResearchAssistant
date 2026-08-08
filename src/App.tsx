@@ -32,6 +32,7 @@ import {
 import { ChatInterface } from "./components/ChatInterface";
 import { ModelSelector } from "./components/ModelSelector";
 import { resolveMirrorModel } from "./utils/modelMirrors";
+import { formatLocalDateTime } from "./utils/time";
 import "./App.css";
 
 const CardLibrary = lazy(() =>
@@ -2308,13 +2309,14 @@ function App() {
   const applyImportedWorkspace = async (
     imported: WorkspaceImportResult,
     successMessage?: string,
+    modeOverride?: IngestMode,
   ) => {
     setActiveSidebarTool("workspace");
     setWorkspacePath(imported.workspace_path);
     setFiles([imported.tree]);
     setActiveFilePath(null);
     showPersistentStatus("文件已导入工作空间，正在建立索引...");
-    await ingestWorkspacePath(imported.ingest_path);
+    await ingestWorkspacePath(imported.ingest_path, modeOverride);
     if (successMessage) showTemporaryStatus(successMessage);
   };
 
@@ -2354,6 +2356,7 @@ function App() {
     await applyImportedWorkspace(
       imported,
       `已导入 ${selectedPaths.length} 个项目到工作空间。`,
+      "incremental",
     );
   };
 
@@ -3296,8 +3299,10 @@ function App() {
               >
                 <strong>{device.deviceName}</strong>
                 <span>
-                  配对时间：{device.pairedAt}
-                  {device.lastSeenAt ? ` · 最后连接：${device.lastSeenAt}` : ""}
+                  配对时间：{formatLocalDateTime(device.pairedAt)}
+                  {device.lastSeenAt
+                    ? ` · 最后连接：${formatLocalDateTime(device.lastSeenAt)}`
+                    : ""}
                 </span>
               </div>
             ))}
