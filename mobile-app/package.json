@@ -1,7 +1,7 @@
 {
   "name": "researchassistant-mobile",
   "private": true,
-  "version": "1.1.5",
+  "version": "1.1.6",
   "main": "expo-router/entry",
   "scripts": {
     "dev": "expo start",
