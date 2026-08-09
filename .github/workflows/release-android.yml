@@ -27,19 +27,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verify GitHub release token
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $repo = gh api "repos/${{ github.repository }}" | ConvertFrom-Json
-          $permissions = $repo.permissions
-          Write-Host "Token repository permissions: admin=$($permissions.admin) maintain=$($permissions.maintain) push=$($permissions.push)"
-          if (-not ($permissions.admin -or $permissions.maintain -or $permissions.push)) {
-            throw "Release token cannot write to ${{ github.repository }}. Recreate RELEASE_TOKEN with Contents: Read and write for this repository, then authorize organization SSO if this is an organization repository."
-          }
-
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
