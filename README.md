@@ -198,7 +198,7 @@ Gradle 原始产物路径：
 - 冲突标记、统一版本和 Prettier 检查
 - Web TypeScript 生产构建
 - 移动端 TypeScript 与聊天输入纯函数测试
-- Rust 格式与库测试
+- Rust 格式与库测试；Rust/Tauri 任务会用 `--ignore-scripts` 快速恢复 PDF.js 打包资源，避免 `cargo` 校验因缺少 `node_modules` 误报失败
 
 发布工作流不会重复完整 CI。它会校验 tag 与根包、共享协议、Tauri、Cargo、Expo 和 Android 版本一致，再恢复 pnpm、Rust、Gradle 与 Ollama 缓存并构建。第三方 Action 均固定到不可变提交 SHA；Windows 和 Android 产物分别附带 SHA-256 校验文件。
 

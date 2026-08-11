@@ -307,3 +307,7 @@
 - README、Design Specification 与 CHANGELOG 已补充 1.1.12 功能、MVP 快速门禁、并行 draft 发布、标签一致性和演示包边界。
 - 快速门禁通过：统一版本与 `v1.1.12` 标签校验、冲突标记、Web TypeScript、移动 TypeScript、移动快捷命令测试 2/2。
 - 复核 Git 历史确认此前完整产品改动已经由 `fc096d5 chore: release v1.1.12` 提交；当前工作区只剩本轮 CI/CD、文档、版本脚本和计划记录，适合单独提交。
+- 已创建 `7efe639 ci: 优化比赛演示发布流程`，并成功推送 `main` 与新标签 `v1.1.12`；推送前 Git hooks 的冲突检查、Prettier、双端 TypeScript 和本地缓存 Rust 检查均通过。
+- GitHub Rust 任务暴露 Tauri PDF.js 资源前置条件：纯 Cargo 环境没有根 `node_modules` 时 build script 会失败。已定点增加 pnpm `--ignore-scripts` 资源恢复步骤，不重复原生安装或发布构建。
+- CI 热修的跨文件补丁在计划表格处未命中，但前段工作流与说明文档已经成功写入；复核后只补齐缺少的错误与进度记录，没有重复修改已生效部分。
+- CI 热修快速校验通过，阶段 13 的实现、文档、标签与首次推送均已完成；最后只需提交并推送该定点修复到 `main`。

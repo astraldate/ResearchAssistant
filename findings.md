@@ -161,3 +161,4 @@
 - 卡片更新函数会保留原 frontmatter，并把请求 body 重新包成 `# 标题`；移动编辑器应展示剥离 frontmatter 与首个同名 H1 后的正文，避免保存后重复标题。
 - 手动卡片创建可把用户 Markdown 放入“通俗解释”区，后续编辑则使用通用 body；客户端成功后统一重新 bootstrap，不直接拼造本地记录。
 - Research Memory 已有按 Idea ID 更新与读取能力，删除可在同一模块事务中先删 `idea_paper_links` 再删 `idea_candidates`，随后发出图谱更新事件。
+- Tauri 的 build script 会在任何 `cargo check/test` 阶段验证 `tauri.conf.json` 中声明的 PDF.js 资源；独立 Rust CI 若不先恢复根 `node_modules`，会以“缺少 pdf.worker.min.js”失败。MVP 修复采用 pnpm `--ignore-scripts` 安装，只恢复资源树而不执行不必要的原生安装脚本。

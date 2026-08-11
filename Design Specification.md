@@ -214,7 +214,7 @@ Windows + monorepo + Expo / React Native 原生构建链，主要风险来自：
 当前流水线服务于 MVP 与比赛展示，目标是尽快发现会阻断演示的错误并稳定生成可安装包，不承担应用商店上架职责。
 
 - 常规 CI 将 Repository/Web、Mobile、Rust 拆成三个并行任务；Web 构建自身完成 TypeScript 编译，避免重复 typecheck。
-- 移动任务执行 TypeScript 检查和聊天输入纯函数测试；Rust 任务执行 rustfmt 与库测试，不运行耗时的全目标发布构建。
+- 移动任务执行 TypeScript 检查和聊天输入纯函数测试；Rust 任务先以 `--ignore-scripts` 恢复 Tauri 配置引用的 PDF.js 资源，再执行 rustfmt 与库测试，不运行耗时的全目标发布构建。
 - `scripts/check-release-version.mjs` 统一校验根包、共享协议、Tauri、Cargo、Expo、Gradle `versionName` 和 Android `versionCode`；标签发布额外要求 tag 等于 `v<版本>`。
 - 第三方 GitHub Action 固定到不可变提交 SHA，pnpm、Rust、Gradle 和 Ollama 继续使用缓存；所有任务设置超时，普通 CI 使用最小 `contents: read` 权限。
 - 标签发布先创建 draft release，再并行构建 Windows 与 Android，缩短总等待时间。Android 产物使用测试签名并命名为 `researchassistant-mobile-v<版本>-demo.apk`。
