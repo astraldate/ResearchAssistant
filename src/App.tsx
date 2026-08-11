@@ -1778,6 +1778,9 @@ function App() {
   useEffect(() => {
     if (translationModel.trim()) {
       localStorage.setItem(TRANSLATION_MODEL_KEY, translationModel.trim());
+      void invoke("set_mobile_translation_model", {
+        model: translationModel.trim(),
+      }).catch(() => undefined);
     } else {
       localStorage.removeItem(TRANSLATION_MODEL_KEY);
     }

@@ -16,6 +16,7 @@ interface EnsurePdfOptions {
   sourceId: string;
   title: string;
   pageHint?: number | null;
+  baseUrl?: string;
 }
 
 export interface CachedPdfItem extends PdfDownloadRecord {
@@ -28,6 +29,7 @@ export async function ensurePdfCached({
   sourceId,
   title,
   pageHint,
+  baseUrl,
 }: EnsurePdfOptions) {
   const existing = await getPdfDownload(sourceType, sourceId);
   if (existing) {
@@ -46,7 +48,7 @@ export async function ensurePdfCached({
   const destinationUri = `${directory}${safeFileStem(sourceId)}.pdf`;
   const result = await downloadPdfBySourceType(
     sourceType,
-    session.baseUrl,
+    baseUrl ?? session.baseUrl,
     session.deviceToken,
     sourceId,
     destinationUri,
@@ -62,6 +64,18 @@ export async function ensurePdfCached({
   };
   await upsertPdfDownload(record);
   return record;
+}
+
+export async function findCachedPdf(
+  sourceType: PdfSourceType,
+  sourceId: string,
+) {
+  const existing = await getPdfDownload(sourceType, sourceId);
+  if (!existing) return null;
+  const info = await FileSystem.getInfoAsync(existing.localUri);
+  if (info.exists) return existing;
+  await deletePdfDownload(sourceType, sourceId);
+  return null;
 }
 
 export async function listCachedPdfs(): Promise<CachedPdfItem[]> {

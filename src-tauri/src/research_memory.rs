@@ -280,6 +280,7 @@ pub struct DocumentResult {
 pub struct ResearchSearchScope<'a> {
     pub path: Option<&'a str>,
     pub paper_query: Option<&'a str>,
+    pub paper_id: Option<&'a str>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -521,6 +522,18 @@ pub struct ApplyReviewRequest {
 pub struct IdeaCandidate {
     pub id: String,
     pub rule_type: String,
+    #[serde(default)]
+    pub source_type: String,
+    #[serde(default)]
+    pub source_thread_id: Option<String>,
+    #[serde(default)]
+    pub source_message_id: Option<String>,
+    #[serde(default)]
+    pub concept_a: Option<String>,
+    #[serde(default)]
+    pub concept_b: Option<String>,
+    #[serde(default)]
+    pub answer_markdown: Option<String>,
     pub title: String,
     pub summary: String,
     pub confidence: f32,
@@ -529,6 +542,31 @@ pub struct IdeaCandidate {
     pub task_node_id: Option<String>,
     pub pipeline_node_id: Option<String>,
     pub evidence: Vec<EvidenceRef>,
+    #[serde(default)]
+    pub paper_links: Vec<IdeaPaperLink>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct IdeaPaperLink {
+    pub paper_id: String,
+    pub paper_title: String,
+    pub paper_path: String,
+    pub citation_label: String,
+    pub concept_role: String,
+    pub page_start: i64,
+    pub page_end: i64,
+    pub snippet: String,
+    pub similarity_score: Option<f32>,
+    pub content_hash: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct InnovationIdeaEvidence {
+    pub citation_label: String,
+    pub concept_role: String,
+    pub evidence: EvidenceRef,
+    pub similarity_score: Option<f32>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -2242,32 +2280,71 @@ pub async fn list_idea_candidates(app: &AppHandle) -> Result<Vec<IdeaCandidate>>
     initialize(app).await?;
     let conn = open_sqlite(app)?;
     let mut stmt = conn.prepare(
-        "SELECT idea_id, rule_type, title, summary, confidence, challenge_node_id, module_node_id, task_node_id, pipeline_node_id,
-                COALESCE(evidence_json, '[]')
+        "SELECT idea_id, rule_type, COALESCE(source_type, 'graph_rule'), source_thread_id, source_message_id,
+                concept_a, concept_b, answer_markdown, title, summary, confidence, challenge_node_id,
+                module_node_id, task_node_id, pipeline_node_id, COALESCE(evidence_json, '[]')
          FROM idea_candidates
          WHERE status = 'active'
          ORDER BY confidence DESC, created_at DESC",
     )?;
     let rows = stmt.query_map([], |row| {
-        let evidence_json: String = row.get(9)?;
+        let evidence_json: String = row.get(15)?;
         Ok(IdeaCandidate {
             id: row.get(0)?,
             rule_type: row.get(1)?,
-            title: row.get(2)?,
-            summary: row.get(3)?,
-            confidence: row.get(4)?,
-            challenge_node_id: row.get(5)?,
-            module_node_id: row.get(6)?,
-            task_node_id: row.get(7)?,
-            pipeline_node_id: row.get(8)?,
+            source_type: row.get(2)?,
+            source_thread_id: row.get(3)?,
+            source_message_id: row.get(4)?,
+            concept_a: row.get(5)?,
+            concept_b: row.get(6)?,
+            answer_markdown: row.get(7)?,
+            title: row.get(8)?,
+            summary: row.get(9)?,
+            confidence: row.get(10)?,
+            challenge_node_id: row.get(11)?,
+            module_node_id: row.get(12)?,
+            task_node_id: row.get(13)?,
+            pipeline_node_id: row.get(14)?,
             evidence: serde_json::from_str(&evidence_json).unwrap_or_default(),
+            paper_links: Vec::new(),
         })
     })?;
     let mut ideas = Vec::new();
     for row in rows {
-        ideas.push(row?);
+        let mut idea = row?;
+        idea.paper_links = load_idea_paper_links(&conn, &idea.id)?;
+        ideas.push(idea);
     }
     Ok(ideas)
+}
+
+fn load_idea_paper_links(conn: &SqliteConnection, idea_id: &str) -> Result<Vec<IdeaPaperLink>> {
+    let mut stmt = conn.prepare(
+        "SELECT paper_id, paper_title_snapshot, paper_path_snapshot, citation_label, concept_role,
+                page_start, page_end, snippet, similarity_score, content_hash
+         FROM idea_paper_links
+         WHERE idea_id = ?1
+         ORDER BY concept_role, citation_label, paper_title_snapshot",
+    )?;
+    let rows = stmt.query_map([idea_id], |row| {
+        Ok(IdeaPaperLink {
+            paper_id: row.get(0)?,
+            paper_title: row.get(1)?,
+            paper_path: row.get(2)?,
+            citation_label: row.get(3)?,
+            concept_role: row.get(4)?,
+            page_start: row.get(5)?,
+            page_end: row.get(6)?,
+            snippet: row.get(7)?,
+            similarity_score: row.get(8)?,
+            content_hash: row.get(9)?,
+        })
+    })?;
+    let mut links = Vec::new();
+    for row in rows {
+        links.push(row?);
+    }
+    Ok(links)
 }
 
 pub async fn update_idea_candidate(
@@ -2290,27 +2367,201 @@ pub async fn update_idea_candidate(
     }
 
     let mut stmt = conn.prepare(
-        "SELECT idea_id, rule_type, title, summary, confidence, challenge_node_id, module_node_id, task_node_id, pipeline_node_id,
-                COALESCE(evidence_json, '[]')
+        "SELECT idea_id, rule_type, COALESCE(source_type, 'graph_rule'), source_thread_id, source_message_id,
+                concept_a, concept_b, answer_markdown, title, summary, confidence, challenge_node_id,
+                module_node_id, task_node_id, pipeline_node_id, COALESCE(evidence_json, '[]')
          FROM idea_candidates
          WHERE idea_id = ?1",
     )?;
-    let idea = stmt.query_row([idea_id], |row| {
-        let evidence_json: String = row.get(9)?;
+    let mut idea = stmt.query_row([idea_id], |row| {
+        let evidence_json: String = row.get(15)?;
         Ok(IdeaCandidate {
             id: row.get(0)?,
             rule_type: row.get(1)?,
-            title: row.get(2)?,
-            summary: row.get(3)?,
-            confidence: row.get(4)?,
-            challenge_node_id: row.get(5)?,
-            module_node_id: row.get(6)?,
-            task_node_id: row.get(7)?,
-            pipeline_node_id: row.get(8)?,
+            source_type: row.get(2)?,
+            source_thread_id: row.get(3)?,
+            source_message_id: row.get(4)?,
+            concept_a: row.get(5)?,
+            concept_b: row.get(6)?,
+            answer_markdown: row.get(7)?,
+            title: row.get(8)?,
+            summary: row.get(9)?,
+            confidence: row.get(10)?,
+            challenge_node_id: row.get(11)?,
+            module_node_id: row.get(12)?,
+            task_node_id: row.get(13)?,
+            pipeline_node_id: row.get(14)?,
             evidence: serde_json::from_str(&evidence_json).unwrap_or_default(),
+            paper_links: Vec::new(),
         })
     })?;
+    idea.paper_links = load_idea_paper_links(&conn, &idea.id)?;
     Ok(idea)
+}
+
+pub async fn delete_idea_candidate(
+    app: &AppHandle,
+    idea_id: &str,
+) -> Result<(Option<String>, Option<String>)> {
+    initialize(app).await?;
+    let normalized_id = idea_id.trim();
+    if normalized_id.is_empty() {
+        return Err(anyhow!("Idea ID 不能为空"));
+    }
+    let mut conn = open_sqlite(app)?;
+    let source = conn
+        .query_row(
+            "SELECT source_thread_id, source_message_id FROM idea_candidates WHERE idea_id = ?1",
+            [normalized_id],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or_else(|| anyhow!("未找到要删除的创新点：{}", normalized_id))?;
+    let tx = conn.transaction()?;
+    tx.execute(
+        "DELETE FROM idea_paper_links WHERE idea_id = ?1",
+        [normalized_id],
+    )?;
+    tx.execute(
+        "DELETE FROM idea_candidates WHERE idea_id = ?1",
+        [normalized_id],
+    )?;
+    tx.commit()?;
+    let _ = app.emit(
+        "research-memory-ideas-updated",
+        json!({ "ideaId": normalized_id, "deleted": true }),
+    );
+    Ok(source)
+}
+
+pub async fn save_mobile_innovation_idea(
+    app: &AppHandle,
+    thread_id: &str,
+    message_id: &str,
+    concept_a: &str,
+    concept_b: &str,
+    answer_markdown: &str,
+    evidence: &[InnovationIdeaEvidence],
+) -> Result<IdeaCandidate> {
+    initialize(app).await?;
+    if evidence.is_empty() {
+        return Err(anyhow!("A+B 分析没有本地论文证据，不自动写入 Idea Map"));
+    }
+    let idea_id = stable_id(
+        "idea",
+        format!("mobile_ab:{}:{}", thread_id.trim(), message_id.trim()),
+    );
+    let concept_a = concept_a.trim();
+    let concept_b = concept_b.trim();
+    let title = format!("{} × {}：会话创新分析", concept_a, concept_b);
+    let summary = truncate_idea_summary(answer_markdown, 1_200);
+    let roles = evidence
+        .iter()
+        .map(|item| item.concept_role.trim().to_ascii_uppercase())
+        .collect::<HashSet<_>>();
+    let confidence = if roles.contains("A") && roles.contains("B") {
+        0.78
+    } else {
+        0.58
+    };
+    let evidence_refs = evidence
+        .iter()
+        .map(|item| item.evidence.clone())
+        .collect::<Vec<_>>();
+    let now = cards::current_timestamp_iso_utc();
+    {
+        let mut conn = open_sqlite(app)?;
+        let tx = conn.transaction()?;
+        tx.execute(
+            "INSERT INTO idea_candidates
+             (idea_id, rule_type, source_type, source_thread_id, source_message_id, concept_a, concept_b,
+              answer_markdown, title, summary, confidence, challenge_node_id, module_node_id, task_node_id,
+              pipeline_node_id, evidence_json, status, created_at, updated_at)
+             VALUES (?1, 'mobile_ab', 'mobile_innovation', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+                     NULL, NULL, NULL, NULL, ?10, 'active', ?11, ?11)
+             ON CONFLICT(idea_id) DO UPDATE SET
+                concept_a = excluded.concept_a,
+                concept_b = excluded.concept_b,
+                answer_markdown = excluded.answer_markdown,
+                title = excluded.title,
+                summary = excluded.summary,
+                confidence = excluded.confidence,
+                evidence_json = excluded.evidence_json,
+                status = 'active',
+                updated_at = excluded.updated_at",
+            params![
+                idea_id,
+                thread_id.trim(),
+                message_id.trim(),
+                concept_a,
+                concept_b,
+                answer_markdown.trim(),
+                title,
+                summary,
+                confidence,
+                serde_json::to_string(&evidence_refs)?,
+                now,
+            ],
+        )?;
+        tx.execute(
+            "DELETE FROM idea_paper_links WHERE idea_id = ?1",
+            [&idea_id],
+        )?;
+        for item in evidence {
+            let content_hash = tx
+                .query_row(
+                    "SELECT content_hash FROM papers WHERE paper_id = ?1",
+                    [&item.evidence.paper_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            tx.execute(
+                "INSERT OR REPLACE INTO idea_paper_links
+                 (idea_id, paper_id, paper_title_snapshot, paper_path_snapshot, citation_label,
+                  concept_role, page_start, page_end, snippet, similarity_score, content_hash)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    idea_id,
+                    item.evidence.paper_id,
+                    item.evidence.paper_title,
+                    item.evidence.paper_path,
+                    item.citation_label,
+                    item.concept_role,
+                    item.evidence.page_start,
+                    item.evidence.page_end,
+                    item.evidence.snippet,
+                    item.similarity_score,
+                    content_hash,
+                ],
+            )?;
+        }
+        tx.commit()?;
+    }
+    let idea = list_idea_candidates(app)
+        .await?
+        .into_iter()
+        .find(|item| item.id == idea_id)
+        .ok_or_else(|| anyhow!("已保存 A+B Idea，但无法重新读取：{}", idea_id))?;
+    let _ = app.emit(
+        "research-memory-ideas-updated",
+        json!({ "ideaId": idea.id, "sourceType": "mobile_innovation" }),
+    );
+    Ok(idea)
+}
+
+fn truncate_idea_summary(value: &str, limit: usize) -> String {
+    let normalized = value.trim();
+    if normalized.chars().count() <= limit {
+        return normalized.to_string();
+    }
+    let mut result = normalized.chars().take(limit).collect::<String>();
+    result.push('…');
+    result
 }
 
 pub async fn compare_papers(
@@ -2630,6 +2881,12 @@ fn create_schema(conn: &mut SqliteConnection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS idea_candidates (
             idea_id TEXT PRIMARY KEY,
             rule_type TEXT NOT NULL,
+            source_type TEXT NOT NULL DEFAULT 'graph_rule',
+            source_thread_id TEXT,
+            source_message_id TEXT,
+            concept_a TEXT,
+            concept_b TEXT,
+            answer_markdown TEXT,
             title TEXT NOT NULL,
             summary TEXT NOT NULL,
             confidence REAL NOT NULL,
@@ -2641,8 +2898,46 @@ fn create_schema(conn: &mut SqliteConnection) -> Result<()> {
             status TEXT NOT NULL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS idea_paper_links (
+            idea_id TEXT NOT NULL,
+            paper_id TEXT NOT NULL,
+            paper_title_snapshot TEXT NOT NULL,
+            paper_path_snapshot TEXT NOT NULL,
+            citation_label TEXT NOT NULL,
+            concept_role TEXT NOT NULL,
+            page_start INTEGER NOT NULL,
+            page_end INTEGER NOT NULL,
+            snippet TEXT NOT NULL,
+            similarity_score REAL,
+            content_hash TEXT,
+            PRIMARY KEY (idea_id, paper_id, citation_label)
         );",
     )?;
+    conn.execute(
+        "ALTER TABLE idea_candidates ADD COLUMN source_type TEXT NOT NULL DEFAULT 'graph_rule'",
+        [],
+    )
+    .ok();
+    conn.execute(
+        "ALTER TABLE idea_candidates ADD COLUMN source_thread_id TEXT",
+        [],
+    )
+    .ok();
+    conn.execute(
+        "ALTER TABLE idea_candidates ADD COLUMN source_message_id TEXT",
+        [],
+    )
+    .ok();
+    conn.execute("ALTER TABLE idea_candidates ADD COLUMN concept_a TEXT", [])
+        .ok();
+    conn.execute("ALTER TABLE idea_candidates ADD COLUMN concept_b TEXT", [])
+        .ok();
+    conn.execute(
+        "ALTER TABLE idea_candidates ADD COLUMN answer_markdown TEXT",
+        [],
+    )
+    .ok();
     conn.execute(
         "ALTER TABLE papers ADD COLUMN paper_type TEXT NOT NULL DEFAULT 'application'",
         [],
@@ -4255,7 +4550,10 @@ fn materialize_stats(conn: &SqliteConnection) -> Result<()> {
 }
 
 fn materialize_ideas(conn: &SqliteConnection) {
-    let _ = conn.execute("DELETE FROM idea_candidates", []);
+    let _ = conn.execute(
+        "DELETE FROM idea_candidates WHERE COALESCE(source_type, 'graph_rule') = 'graph_rule'",
+        [],
+    );
     let _ = materialize_rule1_ideas(conn);
     let _ = materialize_rule2_ideas(conn);
 }
@@ -7098,6 +7396,11 @@ fn related_graph_nodes_for_paper(
 }
 
 fn hit_matches_scope(hit: &ResearchSearchHit, scope: &ResearchSearchScope<'_>) -> bool {
+    if let Some(paper_id) = scope.paper_id {
+        if hit.paper_id != paper_id {
+            return false;
+        }
+    }
     if let Some(path) = scope.path {
         if hit.path != path {
             return false;
@@ -7139,6 +7442,11 @@ fn search_chunks_keyword(
         sql.push_str(" AND p.path = ?");
         sql.push_str(&(params_values.len() + 1).to_string());
         params_values.push(rusqlite::types::Value::from(path.to_string()));
+    }
+    if let Some(paper_id) = scope.paper_id {
+        sql.push_str(" AND c.paper_id = ?");
+        sql.push_str(&(params_values.len() + 1).to_string());
+        params_values.push(rusqlite::types::Value::from(paper_id.to_string()));
     }
     if let Some(paper_query) = scope.paper_query {
         let trimmed = paper_query.trim();
@@ -7256,7 +7564,7 @@ fn read_pdf_pages(path: &Path) -> Result<Vec<PageRecord>> {
     Ok(result)
 }
 
-fn read_pdf_page_text(path: &Path, page_number: i64) -> Result<String> {
+pub(crate) fn read_pdf_page_text(path: &Path, page_number: i64) -> Result<String> {
     let doc = lopdf::Document::load(path).map_err(|error| anyhow!(error.to_string()))?;
     let pages = doc.get_pages();
     let Some((page_number_ref, _)) = pages.iter().nth((page_number.max(1) - 1) as usize) else {

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useRouter } from "expo-router";
+import { type Href, useRouter } from "expo-router";
 import { useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -43,32 +43,35 @@ export default function PapersScreen() {
     const seen = new Set(
       onlinePapers.map((paper) => `${paper.sourceType}:${paper.paperId}`),
     );
-    const cachedPapers =
-      pdfCacheQuery.data
-        ?.filter(
-          (item) =>
-            item.exists &&
-            (item.sourceType === "paper" || item.sourceType === "workspacePdf"),
-        )
-        .filter((item) => !seen.has(`${item.sourceType}:${item.sourceId}`))
-        .map(
-          (item): DisplayPaperRecord => ({
-            paperId: item.sourceId,
-            title: stripPdfExtension(item.fileName),
-            paperType:
-              item.sourceType === "workspacePdf"
-                ? "workspace cached"
-                : "paper cached",
-            updatedAt: item.downloadedAt,
-            hasPdf: true,
-            sourceType:
-              item.sourceType === "workspacePdf" ? "workspacePdf" : "paper",
-            isCachedOnly: true,
-          }),
-        ) ?? [];
+    const shouldShowCachedOnly = !session || papersQuery.isError;
+    const cachedPapers = shouldShowCachedOnly
+      ? (pdfCacheQuery.data
+          ?.filter(
+            (item) =>
+              item.exists &&
+              (item.sourceType === "paper" ||
+                item.sourceType === "workspacePdf"),
+          )
+          .filter((item) => !seen.has(`${item.sourceType}:${item.sourceId}`))
+          .map(
+            (item): DisplayPaperRecord => ({
+              paperId: item.sourceId,
+              title: stripPdfExtension(item.fileName),
+              paperType:
+                item.sourceType === "workspacePdf"
+                  ? "workspace cached"
+                  : "paper cached",
+              updatedAt: item.downloadedAt,
+              hasPdf: true,
+              sourceType:
+                item.sourceType === "workspacePdf" ? "workspacePdf" : "paper",
+              isCachedOnly: true,
+            }),
+          ) ?? [])
+      : [];
 
     return [...onlinePapers, ...cachedPapers];
-  }, [papersQuery.data, pdfCacheQuery.data]);
+  }, [papersQuery.data, papersQuery.isError, pdfCacheQuery.data, session]);
   const isListLoading =
     !displayPapers.length && (papersQuery.isLoading || pdfCacheQuery.isLoading);
 
@@ -100,7 +103,7 @@ export default function PapersScreen() {
         sourceId: paper.paperId,
         title: paper.title,
       },
-    });
+    } as unknown as Href);
   };
 
   return (

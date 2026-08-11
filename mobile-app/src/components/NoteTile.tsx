@@ -1,37 +1,43 @@
 import { Ionicons } from "@expo/vector-icons";
 import { Pressable, StyleSheet, Text, View } from "react-native";
-import type { MobileCardRecord } from "../contracts";
+import type { MobileNoteRecord } from "../contracts";
 import { palette, spacing } from "../theme";
 
-interface CardTileProps {
-  card: MobileCardRecord;
+interface NoteTileProps {
+  note: MobileNoteRecord;
   selected?: boolean;
+  deleting?: boolean;
   onPress?: () => void;
   onDelete?: () => void;
-  deleting?: boolean;
 }
 
-export function CardTile({
-  card,
+export function NoteTile({
+  note,
   selected = false,
+  deleting = false,
   onPress,
   onDelete,
-  deleting = false,
-}: CardTileProps) {
+}: NoteTileProps) {
   return (
     <Pressable
       onPress={onPress}
       style={[styles.card, selected && styles.selected]}
     >
-      <View style={styles.row}>
-        <Text style={styles.term}>{card.term || card.title}</Text>
-        <View style={styles.badge}>
-          <Text style={styles.badgeText}>{card.lookupMode}</Text>
+      <View style={styles.header}>
+        <View style={styles.copy}>
+          <Text style={styles.title} numberOfLines={2}>
+            {note.title}
+          </Text>
+          {note.sourcePaper ? (
+            <Text style={styles.source} numberOfLines={1}>
+              来源：{note.sourcePaper}
+            </Text>
+          ) : null}
         </View>
         {onDelete ? (
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel={`删除知识卡片 ${card.title || card.term}`}
+            accessibilityLabel={`删除论文笔记 ${note.title}`}
             disabled={deleting}
             onPress={(event) => {
               event.stopPropagation();
@@ -43,12 +49,10 @@ export function CardTile({
           </Pressable>
         ) : null}
       </View>
-      <Text style={styles.preview} numberOfLines={selected ? undefined : 4}>
-        {card.preview || card.markdown}
+      <Text style={styles.preview} numberOfLines={selected ? undefined : 3}>
+        {note.preview || note.markdown}
       </Text>
-      <Text style={styles.meta}>
-        {card.sourceProvider || "本地卡片"} · {card.createdAt.slice(0, 10)}
-      </Text>
+      <Text style={styles.meta}>{note.createdAt.slice(0, 10)}</Text>
     </Pressable>
   );
 }
@@ -66,29 +70,16 @@ const styles = StyleSheet.create({
     borderColor: palette.primary,
     backgroundColor: "#f8fffe",
   },
-  row: {
+  header: {
     flexDirection: "row",
-    justifyContent: "space-between",
-    gap: spacing.sm,
     alignItems: "center",
+    gap: spacing.sm,
   },
-  term: {
-    flex: 1,
-    fontSize: 18,
-    fontWeight: "700",
-    color: palette.ink,
-  },
-  badge: {
-    borderRadius: 999,
-    backgroundColor: palette.secondarySoft,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-  },
-  badgeText: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: palette.secondary,
-  },
+  copy: { flex: 1, gap: 4 },
+  title: { color: palette.ink, fontSize: 17, fontWeight: "800" },
+  source: { color: palette.slate, fontSize: 12 },
+  preview: { color: palette.slate, lineHeight: 22 },
+  meta: { color: palette.slate, fontSize: 12 },
   deleteButton: {
     width: 44,
     height: 44,
@@ -97,15 +88,5 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: "#fff0ed",
   },
-  deleteDisabled: {
-    opacity: 0.5,
-  },
-  preview: {
-    color: palette.slate,
-    lineHeight: 22,
-  },
-  meta: {
-    color: palette.slate,
-    fontSize: 12,
-  },
+  deleteDisabled: { opacity: 0.5 },
 });

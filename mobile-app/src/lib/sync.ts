@@ -5,6 +5,8 @@ import {
   listQueuedReviewEvents,
   removeQueuedReviewEvents,
   replaceCards,
+  replaceNotes,
+  replaceReviewRecords,
   saveReviewRecords,
   upsertReviewRecord,
 } from "./database";
@@ -20,10 +22,20 @@ export async function bootstrapSync() {
 
   setSyncState({ isSyncing: true, lastSyncError: null });
   try {
-    const bootstrap = await fetchBootstrap(session.baseUrl, session.deviceToken);
+    const bootstrap = await fetchBootstrap(
+      session.baseUrl,
+      session.deviceToken,
+    );
     await replaceCards(bootstrap.cards);
-    await saveReviewRecords(bootstrap.reviewRecords);
-    setSyncState({ isSyncing: false, lastSyncAt: isoNow(), lastSyncError: null });
+    if (bootstrap.notes) {
+      await replaceNotes(bootstrap.notes);
+    }
+    await replaceReviewRecords(bootstrap.reviewRecords);
+    setSyncState({
+      isSyncing: false,
+      lastSyncAt: isoNow(),
+      lastSyncError: null,
+    });
     await flushQueuedReviewEvents();
     return bootstrap;
   } catch (error) {
@@ -62,8 +74,14 @@ export async function flushQueuedReviewEvents() {
   const events = await listQueuedReviewEvents();
   if (events.length === 0) return;
 
-  const response = await pushReviewEvents(session.baseUrl, session.deviceToken, { events });
+  const response = await pushReviewEvents(
+    session.baseUrl,
+    session.deviceToken,
+    { events },
+  );
   await saveReviewRecords(response.reviewRecords);
   await removeQueuedReviewEvents(response.acceptedEventIds);
-  useSessionStore.getState().setSyncState({ lastSyncAt: isoNow(), lastSyncError: null });
+  useSessionStore
+    .getState()
+    .setSyncState({ lastSyncAt: isoNow(), lastSyncError: null });
 }

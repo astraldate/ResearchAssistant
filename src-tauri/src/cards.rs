@@ -38,6 +38,8 @@ pub struct UpdateKnowledgeCardRequest {
     pub card_path: String,
     pub title: String,
     pub body: String,
+    #[serde(default)]
+    pub term: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -194,6 +196,48 @@ pub fn save_knowledge_card_from_explanation(
 
     let parsed = parse_card_file(&path)?;
     Ok(parsed.meta)
+}
+
+pub fn create_manual_knowledge_card(
+    app: &AppHandle,
+    term: &str,
+    title: &str,
+    body: &str,
+) -> Result<KnowledgeCardDetail, String> {
+    let term = term.trim();
+    let title = title.trim();
+    let body = body.replace("\r\n", "\n").trim().to_string();
+    if term.is_empty() {
+        return Err("知识卡片术语不能为空。".to_string());
+    }
+    if body.is_empty() {
+        return Err("知识卡片正文不能为空。".to_string());
+    }
+    let title = if title.is_empty() { term } else { title };
+    let settings = get_card_settings(app)?;
+    let root = PathBuf::from(&settings.active_root);
+    ensure_directory_writable(&root)?;
+    let id = Uuid::new_v4().simple().to_string();
+    let created_at = current_timestamp_iso_utc();
+    let file_name = format!(
+        "{}-{}-{}.md",
+        current_timestamp_file_tag(),
+        slugify(term),
+        &id[..8]
+    );
+    let path = root.join(file_name);
+    let markdown = format!(
+        "---\nid: {}\nterm: {}\ntitle: {}\ncreated_at: {}\nupdated_at: {}\npdf_path: null\npdf_page: null\nselected_text: \"\"\nsource_status: \"manual_mobile\"\nsource_title: null\nsource_url: null\nsource_provider: \"移动端手动创建\"\nsource_lang: null\nmodel: \"manual_mobile\"\nlookup_mode: \"popular_cn\"\ntags: []\n---\n\n# {}\n\n## 通俗解释\n{}\n",
+        render_yaml_string(&id),
+        render_yaml_string(term),
+        render_yaml_string(title),
+        render_yaml_string(&created_at),
+        render_yaml_string(&created_at),
+        title,
+        body
+    );
+    fs::write(&path, markdown).map_err(|error| format!("写入知识卡片失败：{error}"))?;
+    read_knowledge_card(path.to_string_lossy().to_string())
 }
 
 fn parse_card_file(path: &Path) -> Result<ParsedCard, String> {
@@ -370,8 +414,22 @@ fn render_updated_card_markdown(
         .filter(|value| !value.is_empty())
         .unwrap_or_else(current_timestamp_iso_utc);
     let updated_at = current_timestamp_iso_utc();
-    let term = request.title.trim();
-    let title = if term.is_empty() { "未命名" } else { term };
+    let requested_title = request.title.trim();
+    let title = if requested_title.is_empty() {
+        "未命名"
+    } else {
+        requested_title
+    };
+    let requested_term = request.term.as_deref().map(str::trim).unwrap_or_default();
+    let term = if requested_term.is_empty() {
+        values
+            .get("term")
+            .map(String::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or(title)
+    } else {
+        requested_term
+    };
     let pdf_path = parse_optional_string(values.get("pdf_path"));
     let pdf_page = values
         .get("pdf_page")
@@ -419,7 +477,7 @@ fn render_updated_card_markdown(
     format!(
         "---\nid: {}\nterm: {}\ntitle: {}\ncreated_at: {}\nupdated_at: {}\npdf_path: {}\npdf_page: {}\nselected_text: {}\nsource_status: {}\nsource_title: {}\nsource_url: {}\nsource_provider: {}\nsource_lang: {}\nmodel: {}\nlookup_mode: {}\ntags: {}\n---\n\n{}",
         render_yaml_string(&id),
-        render_yaml_string(title),
+        render_yaml_string(term),
         render_yaml_string(title),
         render_yaml_string(&created_at),
         render_yaml_string(&updated_at),

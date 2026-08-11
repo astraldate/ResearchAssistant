@@ -45,6 +45,7 @@ export default function SettingsScreen() {
   const handleFullSync = async () => {
     await bootstrapSync();
     await queryClient.invalidateQueries({ queryKey: ["cards"] });
+    await queryClient.invalidateQueries({ queryKey: ["notes"] });
     await queryClient.invalidateQueries({ queryKey: ["due-review-cards"] });
   };
 
@@ -81,10 +82,7 @@ export default function SettingsScreen() {
   };
 
   return (
-    <ScreenShell
-      title="设置"
-      subtitle="桌面端仍然是唯一权威节点，手机端只负责缓存、采集和离线复习。"
-    >
+    <ScreenShell title="设置" subtitle="管理桌面连接、资料同步与离线缓存。">
       <View style={styles.card}>
         <Text style={styles.sectionTitle}>当前设备</Text>
         <Text style={styles.line}>
@@ -192,6 +190,21 @@ export default function SettingsScreen() {
       </View>
 
       <View style={styles.card}>
+        <Text style={styles.sectionTitle}>数据与 AI</Text>
+        <Text style={styles.line}>
+          桌面端负责模型推理与主数据存储；手机端用于同步浏览、采集、对话、PDF
+          AI、创新分析与离线复习。
+        </Text>
+        <Text style={styles.noticeText}>
+          本应用提供科研辅助，不构成医疗、诊断或治疗建议。AI
+          翻译、解释、引用与创新假设可能存在遗漏或错误，请以论文原文、完整检索、专业判断和实验验证为准。
+        </Text>
+        <Text style={styles.line}>
+          数据是否离开设备，取决于桌面端启用的模型与外部资料服务。
+        </Text>
+      </View>
+
+      <View style={styles.card}>
         <Text style={styles.sectionTitle}>危险操作</Text>
         <Pressable
           style={styles.ghostButton}
@@ -234,6 +247,13 @@ const styles = StyleSheet.create({
   },
   successText: {
     color: palette.success,
+  },
+  noticeText: {
+    color: "#795500",
+    lineHeight: 22,
+    borderRadius: 14,
+    backgroundColor: palette.secondarySoft,
+    padding: spacing.md,
   },
   primaryButton: {
     marginTop: spacing.sm,

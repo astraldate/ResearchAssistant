@@ -6863,6 +6863,22 @@ textarea:focus {
   stroke-dasharray: 2 7;
 }
 
+.star-edge-flow.is-paper-support .star-edge-flow-line {
+  stroke: rgba(103, 232, 249, 0.42);
+  stroke-width: 1.1;
+  stroke-dasharray: 5 7;
+  filter: drop-shadow(0 0 8px rgba(34, 211, 238, 0.36));
+}
+
+.star-edge-flow.is-paper-support .star-edge-spark {
+  fill: rgba(165, 243, 252, 0.96);
+}
+
+.star-edge-flow.is-paper-support .star-edge-label {
+  fill: rgba(165, 243, 252, 0.94);
+  text-shadow: 0 0 7px rgba(34, 211, 238, 0.72);
+}
+
 .star-edge-label {
   fill: rgba(253, 230, 138, 0.82);
   font-size: 9px;

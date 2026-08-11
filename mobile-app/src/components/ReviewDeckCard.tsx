@@ -1,5 +1,6 @@
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import type { MobileCardRecord } from "../contracts";
+import { MobileMarkdown } from "./MobileMarkdown";
 import { palette, spacing } from "../theme";
 
 interface ReviewDeckCardProps {
@@ -8,15 +9,29 @@ interface ReviewDeckCardProps {
   onReveal: () => void;
 }
 
-export function ReviewDeckCard({ card, revealed, onReveal }: ReviewDeckCardProps) {
+export function ReviewDeckCard({
+  card,
+  revealed,
+  onReveal,
+}: ReviewDeckCardProps) {
   return (
     <View style={styles.card}>
       <View style={styles.labelRow}>
         <Text style={styles.label}>{revealed ? "背面" : "正面"}</Text>
-        <Text style={styles.smallMeta}>{card.sourceProvider || "Research Assistant"}</Text>
+        <Text style={styles.smallMeta}>
+          {card.sourceProvider || "Research Assistant"}
+        </Text>
       </View>
-      <Text style={styles.headline}>{revealed ? card.title || card.term : card.term || card.title}</Text>
-      <Text style={styles.body}>{revealed ? card.markdown : "先回忆术语含义，再展开查看正文摘要和来源。"}</Text>
+      <Text style={styles.headline}>
+        {revealed ? card.title || card.term : card.term || card.title}
+      </Text>
+      {revealed ? (
+        <MobileMarkdown content={card.markdown} compact />
+      ) : (
+        <Text style={styles.body}>
+          先回忆术语含义，再展开查看正文摘要和来源。
+        </Text>
+      )}
       {!revealed ? (
         <Pressable onPress={onReveal} style={styles.revealButton}>
           <Text style={styles.revealText}>显示答案</Text>

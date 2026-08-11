@@ -28,6 +28,7 @@ extensions.configure(com.facebook.react.ReactSettingsExtension) { ex ->
   } else {
     def appProjectRoot = new File(rootDir, "..").absolutePath
     def appNodeModules = new File(rootDir, "../node_modules").absolutePath
+    def workspaceNodeModules = new File(rootDir, "../../node_modules").absolutePath
     def expoAutolinkCommand = expoAutolinking.rnConfigCommand
     def autolinkSnapshot = new File(rootDir, "autolink-node-modules.json")
     if (org.gradle.internal.os.OperatingSystem.current().isWindows()) {
@@ -55,10 +56,16 @@ extensions.configure(com.facebook.react.ReactSettingsExtension) { ex ->
           "--project-root",
           appProjectRoot,
           appNodeModules,
+          workspaceNodeModules,
         ]
       }
     } else {
-      expoAutolinkCommand = expoAutolinkCommand + ["--project-root", appProjectRoot, appNodeModules]
+      expoAutolinkCommand = expoAutolinkCommand + [
+        "--project-root",
+        appProjectRoot,
+        appNodeModules,
+        workspaceNodeModules,
+      ]
     }
     ex.autolinkLibrariesFromCommand(expoAutolinkCommand)
   }

@@ -1,4 +1,5 @@
 ﻿import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import cytoscape, {
   type Core as CytoscapeCore,
   type ElementDefinition,
@@ -18,6 +19,7 @@ type GraphNodeKind =
   | "module"
   | "challenge"
   | "insight"
+  | "paper"
   | "idea";
 type ReviewFilter =
   | "all"
@@ -119,6 +121,7 @@ interface ResearchGraphNode {
 interface ResearchGraphEdge {
   id: string;
   edgeType: string;
+  label?: string;
   from: string;
   to: string;
   supportCount: number;
@@ -190,6 +193,12 @@ interface ReviewRecord {
 interface IdeaCandidate {
   id: string;
   ruleType: string;
+  sourceType?: string;
+  sourceThreadId?: string | null;
+  sourceMessageId?: string | null;
+  conceptA?: string | null;
+  conceptB?: string | null;
+  answerMarkdown?: string | null;
   title: string;
   summary: string;
   confidence: number;
@@ -198,6 +207,20 @@ interface IdeaCandidate {
   taskNodeId?: string | null;
   pipelineNodeId?: string | null;
   evidence: EvidenceRef[];
+  paperLinks?: IdeaPaperLink[];
+}
+
+interface IdeaPaperLink {
+  paperId: string;
+  paperTitle: string;
+  paperPath: string;
+  citationLabel: string;
+  conceptRole: string;
+  pageStart: number;
+  pageEnd: number;
+  snippet: string;
+  similarityScore?: number | null;
+  contentHash?: string | null;
 }
 
 interface ResearchPaperRecord {
@@ -244,6 +267,7 @@ const graphLaneDefinitions: Record<
     { kind: "insight", label: "Insight" },
   ],
   idea: [
+    { kind: "paper", label: "Paper" },
     { kind: "challenge", label: "Challenge" },
     { kind: "insight", label: "Insight" },
     { kind: "task", label: "Task" },
@@ -259,6 +283,7 @@ const graphKindLabels: Record<GraphNodeKind, string> = {
   module: "Module",
   challenge: "Challenge",
   insight: "Insight",
+  paper: "Paper",
   idea: "Idea",
 };
 
@@ -299,6 +324,7 @@ const graphKindColors: Record<GraphNodeKind, string> = {
   module: "#22c67f",
   challenge: "#ff5f9f",
   insight: "#8a7bff",
+  paper: "#5f7fa3",
   idea: "#fbbf24",
 };
 
@@ -308,6 +334,7 @@ const graphKindCodes: Record<GraphNodeKind, string> = {
   module: "MOD",
   challenge: "CHAL",
   insight: "INS",
+  paper: "PAPER",
   idea: "IDEA",
 };
 
@@ -331,7 +358,24 @@ const resolveIdeaSourceKind = (idea: IdeaCandidate, sourceId: string) => {
 };
 
 const ideaEdgeTypeForKind = (kind: GraphNodeKind) =>
-  kind === "challenge" ? "resolves" : "inspired_by";
+  kind === "paper"
+    ? "supports_idea"
+    : kind === "challenge"
+      ? "resolves"
+      : "inspired_by";
+
+const ideaPaperNodeId = (paperId: string) => `paper:${paperId}`;
+
+const ideaPaperLinkToEvidence = (link: IdeaPaperLink): EvidenceRef => ({
+  paperId: link.paperId,
+  paperTitle: link.paperTitle,
+  paperPath: link.paperPath,
+  pageStart: link.pageStart,
+  pageEnd: link.pageEnd,
+  chunkId: null,
+  snippet: link.snippet,
+  sourceType: "mobile_ab",
+});
 
 const buildGraphElements = (
   graph: ResearchGraph,
@@ -420,6 +464,7 @@ const buildGraphElements = (
         source: edge.from,
         target: edge.to,
         edgeType: edge.edgeType,
+        label: edge.label,
         supportCount: edge.supportCount,
       },
       classes: "graph-edge",
@@ -555,6 +600,12 @@ export function ResearchMemoryPanel({
   const [ideaSourceIndex, setIdeaSourceIndex] = useState<
     Record<string, ResearchGraphNodeDetail>
   >({});
+  const [ideaPaperIndex, setIdeaPaperIndex] = useState<
+    Record<string, IdeaPaperLink[]>
+  >({});
+  const [ideaPaperEdgeIndex, setIdeaPaperEdgeIndex] = useState<
+    Record<string, IdeaPaperLink>
+  >({});
   const [selectedIdea, setSelectedIdea] = useState<IdeaCandidate | null>(null);
   const [ideaDraft, setIdeaDraft] = useState({ title: "", summary: "" });
   const [isIdeaEditing, setIsIdeaEditing] = useState(false);
@@ -597,6 +648,9 @@ export function ResearchMemoryPanel({
   const isStarDraggingRef = useRef(false);
   const starEntranceTimersRef = useRef<number[]>([]);
   const starSpinTimersRef = useRef<number[]>([]);
+  const loadIdeaGraphRef = useRef<(force?: boolean) => Promise<void>>(
+    async () => {},
+  );
 
   const activeGraph = graphCache[graphView] ?? null;
   const orphanNodes = useMemo(
@@ -817,11 +871,14 @@ export function ResearchMemoryPanel({
           const c2x = target.x - curve;
           const c2y = target.y + lift;
           const edgeType = String(edge.data("edgeType") ?? "");
-          const isIdea = edgeType === "inspired_by" || edgeType === "resolves";
+          const isIdea =
+            edgeType === "inspired_by" ||
+            edgeType === "resolves" ||
+            edgeType === "supports_idea";
           return {
             id: edge.id(),
             edgeType,
-            label: edgeType,
+            label: String(edge.data("label") ?? edgeType),
             isIdea,
             from,
             to,
@@ -1177,6 +1234,17 @@ export function ResearchMemoryPanel({
   }, [graphView]);
 
   useEffect(() => {
+    let dispose: (() => void) | undefined;
+    void listen("research-memory-ideas-updated", () => {
+      void invoke<IdeaCandidate[]>("list_idea_candidates").then(setIdeas);
+      void loadIdeaGraphRef.current(true);
+    }).then((unlisten) => {
+      dispose = unlisten;
+    });
+    return () => dispose?.();
+  }, []);
+
+  useEffect(() => {
     if (!isGraphCanvasOpen || !graphCanvasRef.current || !activeGraph) return;
 
     const usePresetLayout = activeGraph.edges.length === 0;
@@ -1286,6 +1354,12 @@ export function ResearchMemoryPanel({
           },
         },
         {
+          selector: "node.graph-node-paper",
+          style: {
+            "underlay-color": "rgba(95, 127, 163, 0.36)",
+          },
+        },
+        {
           selector:
             "node.graph-node-task.graph-selected, node.graph-node-task.graph-hovered",
           style: {
@@ -1311,6 +1385,13 @@ export function ResearchMemoryPanel({
             "node.graph-node-idea.graph-selected, node.graph-node-idea.graph-hovered",
           style: {
             "underlay-color": "rgba(251, 191, 36, 0.44)",
+          },
+        },
+        {
+          selector:
+            "node.graph-node-paper.graph-selected, node.graph-node-paper.graph-hovered",
+          style: {
+            "underlay-color": "rgba(125, 211, 252, 0.46)",
           },
         },
         {
@@ -1677,6 +1758,8 @@ export function ResearchMemoryPanel({
       setIdeaSourceIndex(sourceIndex);
 
       const ideaIndex: Record<string, IdeaCandidate> = {};
+      const paperIndex: Record<string, IdeaPaperLink[]> = {};
+      const paperEdgeIndex: Record<string, IdeaPaperLink> = {};
       const nodesById = new Map<string, ResearchGraphNode>();
       const edges: ResearchGraphEdge[] = [];
 
@@ -1736,6 +1819,45 @@ export function ResearchMemoryPanel({
           });
           ideaNode.isOrphan = false;
         });
+
+        (idea.paperLinks ?? []).forEach((paperLink) => {
+          const paperNodeId = ideaPaperNodeId(paperLink.paperId);
+          const paperLinks = paperIndex[paperNodeId] ?? [];
+          paperLinks.push(paperLink);
+          paperIndex[paperNodeId] = paperLinks;
+          if (!nodesById.has(paperNodeId)) {
+            nodesById.set(paperNodeId, {
+              id: paperNodeId,
+              kind: "paper",
+              label: paperLink.paperTitle,
+              aliases: [],
+              paperCount: 1,
+              supportCount: 1,
+              inDegree: 0,
+              outDegree: 1,
+              isOrphan: false,
+            });
+          } else {
+            const paperNode = nodesById.get(paperNodeId);
+            if (paperNode) {
+              paperNode.supportCount += 1;
+              paperNode.outDegree += 1;
+            }
+          }
+          const edgeId = `idea_paper_edge_${paperLink.paperId}_${idea.id}_${paperLink.citationLabel}`;
+          paperEdgeIndex[edgeId] = paperLink;
+          edges.push({
+            id: edgeId,
+            edgeType: "supports_idea",
+            label: `[${paperLink.citationLabel}]`,
+            from: paperNodeId,
+            to: nodeId,
+            supportCount: 1,
+          });
+          ideaNode.inDegree += 1;
+          ideaNode.paperCount += 1;
+          ideaNode.isOrphan = false;
+        });
       });
 
       const ideaGraph: ResearchGraph = {
@@ -1745,6 +1867,8 @@ export function ResearchMemoryPanel({
       };
 
       setIdeaNodeIndex(ideaIndex);
+      setIdeaPaperIndex(paperIndex);
+      setIdeaPaperEdgeIndex(paperEdgeIndex);
       setGraphCache((current) => ({ ...current, idea: ideaGraph }));
       setSelectedGraphNodeId(null);
       setSelectedGraphEdgeId(null);
@@ -1761,6 +1885,8 @@ export function ResearchMemoryPanel({
     }
   }
 
+  loadIdeaGraphRef.current = loadIdeaGraph;
+
   async function handleSelectGraphNode(nodeId: string) {
     const idea = graphView === "idea" ? ideaNodeIndex[nodeId] : null;
     if (idea) {
@@ -1772,6 +1898,36 @@ export function ResearchMemoryPanel({
       setSelectedGraphEdgeId(null);
       setSelectedGraphNodeDetail(null);
       setSelectedGraphEdgeDetail(null);
+      setModuleTooltip(null);
+      setIsGraphDetailLoading(false);
+      return;
+    }
+    const paperLinks = graphView === "idea" ? ideaPaperIndex[nodeId] : null;
+    if (paperLinks?.length) {
+      const first = paperLinks[0];
+      setSelectedGraphNodeId(nodeId);
+      setSelectedGraphEdgeId(null);
+      setSelectedIdea(null);
+      setIsIdeaEditing(false);
+      setIdeaSaveError(null);
+      setSelectedGraphEdgeDetail(null);
+      setSelectedGraphNodeDetail({
+        nodeId,
+        kind: "paper",
+        label: first.paperTitle,
+        aliases: [],
+        description: `该论文通过 ${paperLinks.map((item) => `[${item.citationLabel}]`).join("、")} 支持会话创新点。`,
+        supportCount: paperLinks.length,
+        evidence: paperLinks.map(ideaPaperLinkToEvidence),
+        relatedPapers: [
+          {
+            paperId: first.paperId,
+            title: first.paperTitle,
+            path: first.paperPath,
+          },
+        ],
+        adjacentNodes: [],
+      });
       setModuleTooltip(null);
       setIsGraphDetailLoading(false);
       return;
@@ -1816,10 +1972,31 @@ export function ResearchMemoryPanel({
 
   async function handleSelectGraphEdge(edgeId: string) {
     if (graphView === "idea") {
-      setSelectedGraphEdgeId(null);
+      const paperLink = ideaPaperEdgeIndex[edgeId];
+      setSelectedGraphEdgeId(paperLink ? edgeId : null);
       setSelectedGraphNodeId(null);
       setSelectedGraphNodeDetail(null);
-      setSelectedGraphEdgeDetail(null);
+      setSelectedGraphEdgeDetail(
+        paperLink
+          ? {
+              edgeId,
+              edgeType: "supports_idea",
+              fromNodeId: ideaPaperNodeId(paperLink.paperId),
+              fromLabel: paperLink.paperTitle,
+              toNodeId: "idea",
+              toLabel: `创新点 · [${paperLink.citationLabel}]`,
+              supportCount: 1,
+              evidence: [ideaPaperLinkToEvidence(paperLink)],
+              relatedPapers: [
+                {
+                  paperId: paperLink.paperId,
+                  title: paperLink.paperTitle,
+                  path: paperLink.paperPath,
+                },
+              ],
+            }
+          : null,
+      );
       setSelectedIdea(null);
       setIsIdeaEditing(false);
       setIdeaSaveError(null);
@@ -2795,6 +2972,9 @@ export function ResearchMemoryPanel({
                           const className = [
                             "star-edge-flow",
                             edge.isIdea ? "is-idea" : "",
+                            edge.edgeType === "supports_idea"
+                              ? "is-paper-support"
+                              : "",
                             isRevealed ? "is-revealed" : "",
                             isSelected ? "is-selected" : "",
                           ]
@@ -2808,7 +2988,13 @@ export function ResearchMemoryPanel({
                                 onClick={(event) => {
                                   event.preventDefault();
                                   event.stopPropagation();
-                                  if (graphView === "idea" || edge.isIdea) {
+                                  if (
+                                    graphView === "idea" &&
+                                    edge.edgeType !== "supports_idea"
+                                  ) {
+                                    return;
+                                  }
+                                  if (graphView !== "idea" && edge.isIdea) {
                                     return;
                                   }
                                   void handleSelectGraphEdge(edge.id);
@@ -3006,6 +3192,21 @@ export function ResearchMemoryPanel({
                           {selectedIdea.evidence.length} evidence refs
                         </span>
                       </div>
+                      {selectedIdea.sourceType === "mobile_innovation" && (
+                        <div className="research-tag-row">
+                          <span className="research-chip">移动会话 A+B</span>
+                          {selectedIdea.conceptA && (
+                            <span className="research-chip">
+                              A · {selectedIdea.conceptA}
+                            </span>
+                          )}
+                          {selectedIdea.conceptB && (
+                            <span className="research-chip">
+                              B · {selectedIdea.conceptB}
+                            </span>
+                          )}
+                        </div>
+                      )}
                       {!isIdeaEditing && (
                         <div className="support-item-text">
                           {trimText(selectedIdea.summary, 280)}
@@ -3024,6 +3225,38 @@ export function ResearchMemoryPanel({
                                 }
                               >
                                 {graphKindLabels[node.kind]}: {node.label}
+                              </button>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                      {(selectedIdea.paperLinks?.length ?? 0) > 0 && (
+                        <>
+                          <div className="research-section-title">
+                            Supporting Papers
+                          </div>
+                          <div className="research-evidence-list">
+                            {selectedIdea.paperLinks?.map((link) => (
+                              <button
+                                key={`${selectedIdea.id}:${link.paperId}:${link.citationLabel}`}
+                                className="research-evidence-item"
+                                onClick={() =>
+                                  void handleOpenFile(
+                                    link.paperPath,
+                                    link.pageStart,
+                                    link.snippet,
+                                  )
+                                }
+                              >
+                                <div className="research-meta-row">
+                                  <strong>[{link.citationLabel}]</strong>
+                                  <span>
+                                    {pageLabel(link.pageStart, link.pageEnd)}
+                                  </span>
+                                </div>
+                                <div className="support-item-text">
+                                  {link.paperTitle}
+                                </div>
                               </button>
                             ))}
                           </div>

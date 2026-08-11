@@ -2,6 +2,7 @@ import { openDatabaseAsync, type SQLiteDatabase } from "expo-sqlite";
 import {
   MOBILE_DB_NAME,
   type MobileCardRecord,
+  type MobileNoteRecord,
   type MobileReviewEvent,
   type ReviewRecord,
 } from "../contracts";
@@ -20,6 +21,7 @@ type CardRow = Omit<MobileCardRecord, "pdfPage" | "hasPdf"> & {
   hasPdf?: number | null;
   pdfPage: number | null;
 };
+type NoteRow = MobileNoteRecord;
 type ReviewRow = {
   cardId: string;
   dueAt: string;
@@ -87,6 +89,14 @@ async function getDatabase() {
           lastRating TEXT,
           lastReviewedAt TEXT,
           historyJson TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS paper_notes (
+          id TEXT PRIMARY KEY NOT NULL,
+          title TEXT NOT NULL,
+          createdAt TEXT NOT NULL,
+          sourcePaper TEXT,
+          preview TEXT NOT NULL,
+          markdown TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS queued_review_events (
           eventId TEXT PRIMARY KEY NOT NULL,
@@ -165,12 +175,98 @@ export async function listCards(searchText = "") {
   return rows.map((row) => ({ ...row, hasPdf: Boolean(row.hasPdf) }));
 }
 
+export async function replaceNotes(notes: MobileNoteRecord[]) {
+  const db = await getDatabase();
+  await db.withTransactionAsync(async () => {
+    await db.execAsync("DELETE FROM paper_notes;");
+    for (const note of notes) {
+      await db.runAsync(
+        `INSERT INTO paper_notes (
+          id, title, createdAt, sourcePaper, preview, markdown
+        ) VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          note.id,
+          note.title,
+          note.createdAt,
+          note.sourcePaper ?? null,
+          note.preview,
+          note.markdown,
+        ],
+      );
+    }
+  });
+}
+
+export async function listNotes(searchText = "") {
+  const db = await getDatabase();
+  return db.getAllAsync<NoteRow>(
+    `SELECT * FROM paper_notes
+     WHERE (? = '' OR lower(title) LIKE '%' || lower(?) || '%' OR lower(preview) LIKE '%' || lower(?) || '%')
+     ORDER BY createdAt DESC`,
+    [searchText, searchText, searchText],
+  );
+}
+
+export async function deleteLocalNote(noteId: string) {
+  const db = await getDatabase();
+  await db.runAsync("DELETE FROM paper_notes WHERE id = ?", [noteId]);
+}
+
+export async function deleteLocalCard(cardId: string) {
+  const db = await getDatabase();
+  const queuedRows = await db.getAllAsync<QueueRow>(
+    "SELECT * FROM queued_review_events",
+  );
+  const queuedEventIds = queuedRows
+    .filter(
+      (row) =>
+        parseJsonValue<MobileReviewEvent | null>(row.payloadJson, null)
+          ?.cardId === cardId,
+    )
+    .map((row) => row.eventId);
+  await db.withTransactionAsync(async () => {
+    await db.runAsync("DELETE FROM cards WHERE id = ?", [cardId]);
+    await db.runAsync("DELETE FROM review_records WHERE cardId = ?", [cardId]);
+    for (const eventId of queuedEventIds) {
+      await db.runAsync("DELETE FROM queued_review_events WHERE eventId = ?", [
+        eventId,
+      ]);
+    }
+  });
+}
+
 export async function saveReviewRecords(records: ReviewRecord[]) {
   const db = await getDatabase();
   await db.withTransactionAsync(async () => {
     for (const record of records) {
       await db.runAsync(
         `INSERT OR REPLACE INTO review_records (
+          cardId, dueAt, intervalDays, easeFactor, lapses, consecutiveSuccesses, totalReviews, lastRating, lastReviewedAt, historyJson
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          record.cardId,
+          record.dueAt,
+          record.intervalDays,
+          record.easeFactor,
+          record.lapses,
+          record.consecutiveSuccesses,
+          record.totalReviews,
+          record.lastRating ?? null,
+          record.lastReviewedAt ?? null,
+          JSON.stringify(record.history),
+        ],
+      );
+    }
+  });
+}
+
+export async function replaceReviewRecords(records: ReviewRecord[]) {
+  const db = await getDatabase();
+  await db.withTransactionAsync(async () => {
+    await db.execAsync("DELETE FROM review_records;");
+    for (const record of records) {
+      await db.runAsync(
+        `INSERT INTO review_records (
           cardId, dueAt, intervalDays, easeFactor, lapses, consecutiveSuccesses, totalReviews, lastRating, lastReviewedAt, historyJson
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
@@ -358,6 +454,7 @@ export async function clearAllCachedData() {
   const db = await getDatabase();
   await db.execAsync(`
     DELETE FROM cards;
+    DELETE FROM paper_notes;
     DELETE FROM review_records;
     DELETE FROM queued_review_events;
     DELETE FROM pdf_downloads;

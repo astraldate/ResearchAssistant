@@ -202,6 +202,8 @@ pub struct ExplainPdfSelectionRequest {
     pub page: u32,
     pub model: String,
     #[serde(default)]
+    pub context: Option<String>,
+    #[serde(default)]
     pub mode: TermLookupMode,
 }
 
@@ -385,6 +387,7 @@ impl InferenceSettingsState {
 }
 
 const MAX_PDF_PAGE_TEXT_CACHE_ENTRIES: usize = 128;
+const MAX_PDF_AI_CACHE_ENTRIES: usize = 128;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PdfPageTextCacheSignature {
@@ -399,8 +402,23 @@ struct PdfPageTextCacheEntry {
     last_access_tick: u64,
 }
 
+#[derive(Clone, Debug)]
+enum PdfAiCacheValue {
+    Explanation(ExplainPdfSelectionResult),
+    SelectionTranslation(TranslatePdfSelectionResult),
+    PageTranslation(TranslatePdfPageResult),
+}
+
+#[derive(Clone, Debug)]
+struct PdfAiCacheEntry {
+    signature: PdfPageTextCacheSignature,
+    value: PdfAiCacheValue,
+    last_access_tick: u64,
+}
+
 struct PdfPageTextCacheInner {
     entries: HashMap<String, PdfPageTextCacheEntry>,
+    ai_entries: HashMap<String, PdfAiCacheEntry>,
     next_access_tick: u64,
 }
 
@@ -413,6 +431,7 @@ impl PdfPageTextCacheState {
         Self {
             inner: Mutex::new(PdfPageTextCacheInner {
                 entries: HashMap::new(),
+                ai_entries: HashMap::new(),
                 next_access_tick: 1,
             }),
         }
@@ -495,6 +514,54 @@ impl PdfPageTextCacheState {
             inner.entries.remove(&oldest_key);
         }
 
+        Ok(())
+    }
+
+    fn get_ai(&self, path: &str, key: &str) -> Result<Option<PdfAiCacheValue>, String> {
+        let signature = Self::read_signature(path)?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| format!("无法锁定 PDF AI 缓存：{e}"))?;
+        let cached = match inner.ai_entries.get(key) {
+            Some(entry) if entry.signature == signature => Some(entry.value.clone()),
+            _ => None,
+        };
+        if cached.is_some() {
+            let tick = Self::next_tick(&mut inner);
+            if let Some(entry) = inner.ai_entries.get_mut(key) {
+                entry.last_access_tick = tick;
+            }
+        }
+        Ok(cached)
+    }
+
+    fn insert_ai(&self, path: &str, key: String, value: PdfAiCacheValue) -> Result<(), String> {
+        let signature = Self::read_signature(path)?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| format!("无法锁定 PDF AI 缓存：{e}"))?;
+        let tick = Self::next_tick(&mut inner);
+        inner.ai_entries.insert(
+            key,
+            PdfAiCacheEntry {
+                signature,
+                value,
+                last_access_tick: tick,
+            },
+        );
+        while inner.ai_entries.len() > MAX_PDF_AI_CACHE_ENTRIES {
+            let Some(oldest_key) = inner
+                .ai_entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_access_tick)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            inner.ai_entries.remove(&oldest_key);
+        }
         Ok(())
     }
 }
@@ -1689,6 +1756,7 @@ async fn write_text_file(path: String, content: String) -> Result<(), String> {
 }
 
 const MAX_PDF_SELECTION_TRANSLATE_CHARS: usize = 2400;
+const MAX_PDF_EXPLANATION_TERM_CHARS: usize = 120;
 const LONG_SELECTION_THRESHOLD_CHARS: usize = 220;
 const TRANSLATION_OUTPUT_SENTINEL: &str = "[[[TRANSLATION]]]";
 const TRANSLATION_PROMPT_V3_WITH_HINTS_JSON: &str = "v3_with_hints_json";
@@ -2946,6 +3014,7 @@ async fn query_knowledge_base(
         research_memory::ResearchSearchScope {
             path: scope_path.as_deref(),
             paper_query: scope_paper.as_deref(),
+            paper_id: None,
         },
     )
     .await
@@ -2968,6 +3037,7 @@ async fn search_research_memory(
         research_memory::ResearchSearchScope {
             path: scope_path.as_deref(),
             paper_query: scope_paper.as_deref(),
+            paper_id: None,
         },
     )
     .await
@@ -3281,10 +3351,8 @@ fn normalize_optional_path(value: Option<String>) -> Option<String> {
 }
 
 fn build_page_context_snippet(text: &str, term: &str) -> Option<String> {
-    let normalized = text.trim();
-    if normalized.is_empty() {
-        return None;
-    }
+    let cleaned = sanitize_pdf_context(text)?;
+    let normalized = cleaned.trim();
 
     let chars: Vec<char> = normalized.chars().collect();
     if let Some(byte_index) = normalized.find(term) {
@@ -3297,6 +3365,95 @@ fn build_page_context_snippet(text: &str, term: &str) -> Option<String> {
 
     let take = chars.len().min(800);
     Some(chars[..take].iter().collect::<String>())
+}
+
+fn sanitize_pdf_context(text: &str) -> Option<String> {
+    let mut cleaned_lines = Vec::new();
+    for line in text.lines() {
+        let total = line.chars().count();
+        if total == 0 {
+            continue;
+        }
+        let replacement_count = line
+            .chars()
+            .filter(|character| *character == '\u{fffd}')
+            .count();
+        if replacement_count >= 2 && replacement_count.saturating_mul(50) >= total.max(1) {
+            continue;
+        }
+        let cleaned = line
+            .chars()
+            .filter_map(|character| {
+                if character == '\u{fffd}' {
+                    None
+                } else if character.is_control() && character != '\t' {
+                    Some(' ')
+                } else {
+                    Some(character)
+                }
+            })
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        if !cleaned.is_empty() {
+            cleaned_lines.push(cleaned);
+        }
+    }
+    let cleaned = cleaned_lines.join("\n");
+    if cleaned.chars().count() < 3 {
+        None
+    } else {
+        Some(truncate_chars(&cleaned, 1400))
+    }
+}
+
+fn selection_translation_context_or_none(result: Result<String, String>) -> Option<String> {
+    match result {
+        Ok(context) => Some(context),
+        Err(error) => {
+            println!(
+                "PDF page context extraction failed for selection translation; continuing with selected text only: {}",
+                error
+            );
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod pdf_context_tests {
+    use super::{
+        build_page_context_snippet, sanitize_pdf_context, selection_translation_context_or_none,
+    };
+
+    #[test]
+    fn 页面上下文会移除替换字符并丢弃严重乱码行() {
+        let context = "PUBLISHED\n��September����\nGraph neural networks support diagnosis.";
+        let cleaned = sanitize_pdf_context(context).expect("应保留可读文本");
+        assert!(!cleaned.contains('\u{fffd}'));
+        assert!(cleaned.contains("Graph neural networks"));
+        assert!(!cleaned.contains("September"));
+    }
+
+    #[test]
+    fn 页面上下文片段围绕术语且不返回乱码() {
+        let context = "前文\n��doi����\nAlzheimer disease can be analysed with GNN.\n后文";
+        let snippet = build_page_context_snippet(context, "GNN").expect("应生成片段");
+        assert!(snippet.contains("GNN"));
+        assert!(!snippet.contains('\u{fffd}'));
+    }
+
+    #[test]
+    fn 划词翻译在页面文本提取失败时保留降级路径() {
+        let context =
+            selection_translation_context_or_none(Err("failed parsing ToUnicode CMap".to_string()));
+        assert!(context.is_none());
+        assert_eq!(
+            selection_translation_context_or_none(Ok("page context".to_string())).as_deref(),
+            Some("page context")
+        );
+    }
 }
 
 fn truncate_chars(text: &str, limit: usize) -> String {
@@ -4536,7 +4693,7 @@ async fn summarize_term_for_beginner(
         "If the term is clearly a technical concept in the paper, explain the concept first, then connect it to the current page context."
     };
     let user_prompt = format!(
-        "You are given a selected term from an academic PDF. The external encyclopedia extract may be unrelated because of homonyms, for example songs, movies, entertainers, or other pop-culture entries. If you judge that the encyclopedia extract is unrelated to academic, scientific, computer-science, or bioinformatics context, ignore it completely.\n\n{generic_word_hint}\n\nWrite the answer in Chinese only. Keep it short, plain, and useful for a beginner researcher. If the selected term is just a common English word such as different, make, or the, give the Chinese translation directly and briefly explain its role in the current sentence. Do not force a research interpretation. Do not use bullet points. Do not invent results that are not in the page context.\n\nSelected term:\n{term}\n\nExternal encyclopedia extract:\n{reference_block}\n\nPDF page context:\n{context_block}"
+        "You are given a selected term from an academic PDF. The external encyclopedia extract may be unrelated because of homonyms, for example songs, movies, entertainers, or other pop-culture entries. If you judge that the encyclopedia extract is unrelated to academic, scientific, computer-science, or bioinformatics context, ignore it completely.\n\n{generic_word_hint}\n\nWrite the answer in Chinese only. Keep it short, plain, and useful for a beginner researcher. For a technical concept, first use your stable domain knowledge to give a clear definition and core mechanism, then explain its meaning in this page context. The page context is evidence about this paper, not the boundary of your general concept knowledge. Do not invent paper-specific experiments, results, numbers, or claims that are absent from the context. If the selected term is just a common English word such as different, make, or the, give the Chinese translation directly and briefly explain its role in the current sentence. Do not force a research interpretation. Do not use bullet points.\n\nSelected term:\n{term}\n\nExternal encyclopedia extract:\n{reference_block}\n\nPDF page context:\n{context_block}"
     );
 
     run_ollama_chat(
@@ -4665,24 +4822,78 @@ fn should_ignore_reference_for_term(term: &str, reference: &encyclopedia::Refere
     is_plain_ascii_lowercase_word(term) && is_likely_entertainment_reference(reference)
 }
 
-#[tauri::command]
-async fn explain_pdf_selection(
+pub(crate) async fn explain_pdf_selection_with_cache(
     request: ExplainPdfSelectionRequest,
-    cache: State<'_, PdfPageTextCacheState>,
+    cache: &PdfPageTextCacheState,
 ) -> Result<ExplainPdfSelectionResult, String> {
     let term = request.term.trim().to_string();
     if term.is_empty() {
         return Err("Term must not be empty.".to_string());
     }
+    if term.chars().count() > MAX_PDF_EXPLANATION_TERM_CHARS {
+        return Err("术语过长，请将解释内容限制在 120 个字符以内。".to_string());
+    }
 
-    let page_text = extract_pdf_page_text_cached(&request.pdf_path, request.page, &cache)?;
-    let context_snippet = build_page_context_snippet(&page_text, &term);
+    let context_snippet = request
+        .context
+        .as_deref()
+        .and_then(|context| build_page_context_snippet(context, &term))
+        .or_else(|| {
+            extract_pdf_page_text_cached(&request.pdf_path, request.page, cache)
+                .ok()
+                .and_then(|page_text| build_page_context_snippet(&page_text, &term))
+        });
+    let cache_key = format!(
+        "explain-v3::{}::{:?}::{}::{}::{}",
+        request.page,
+        request.mode,
+        request.model,
+        term,
+        context_snippet.as_deref().unwrap_or("")
+    );
+    if let Some(PdfAiCacheValue::Explanation(result)) =
+        cache.get_ai(&request.pdf_path, &cache_key)?
+    {
+        return Ok(result);
+    }
     let treat_as_plain_english_word = is_common_everyday_english_word(&term);
-    let mut reference = if treat_as_plain_english_word {
-        None
-    } else {
-        encyclopedia::lookup_term(&term, request.mode).await?
+    let lookup_term = term.clone();
+    let lookup_mode = request.mode;
+    let reference_future = async move {
+        if treat_as_plain_english_word {
+            return None;
+        }
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            encyclopedia::lookup_term(&lookup_term, lookup_mode),
+        )
+        .await
+        {
+            Ok(Ok(reference)) => reference,
+            Ok(Err(error)) => {
+                println!(
+                    "Encyclopedia lookup failed for term '{}'; continuing with model only: {}",
+                    lookup_term, error
+                );
+                None
+            }
+            Err(_) => {
+                println!(
+                    "Encyclopedia lookup timed out for term '{}'; continuing with model only.",
+                    lookup_term
+                );
+                None
+            }
+        }
     };
+    let model_future = summarize_term_for_beginner(
+        &term,
+        context_snippet.as_deref(),
+        None,
+        &request.model,
+        treat_as_plain_english_word,
+    );
+    let (model_result, mut reference) = tokio::join!(model_future, reference_future);
     if let Some(entry) = reference.as_ref() {
         if should_ignore_reference_for_term(&term, entry) {
             println!(
@@ -4692,16 +4903,6 @@ async fn explain_pdf_selection(
             reference = None;
         }
     }
-    let reference_extract = reference.as_ref().map(|entry| entry.extract.as_str());
-    let model_result = summarize_term_for_beginner(
-        &term,
-        context_snippet.as_deref(),
-        reference_extract,
-        &request.model,
-        treat_as_plain_english_word,
-    )
-    .await;
-
     let (plain_summary, source_status) = match (model_result, reference.as_ref()) {
         (Ok(summary), Some(_)) => {
             if summary.trim().is_empty() {
@@ -4729,7 +4930,7 @@ async fn explain_pdf_selection(
         (Err(error), None) => return Err(error),
     };
 
-    Ok(ExplainPdfSelectionResult {
+    let result = ExplainPdfSelectionResult {
         term,
         plain_summary,
         source_title: reference.as_ref().map(|entry| entry.title.clone()),
@@ -4741,13 +4942,26 @@ async fn explain_pdf_selection(
         source_status,
         generated_at: cards::current_timestamp_iso_utc(),
         lookup_mode: request.mode,
-    })
+    };
+    cache.insert_ai(
+        &request.pdf_path,
+        cache_key,
+        PdfAiCacheValue::Explanation(result.clone()),
+    )?;
+    Ok(result)
 }
 
 #[tauri::command]
-async fn translate_pdf_selection(
-    request: TranslatePdfSelectionRequest,
+async fn explain_pdf_selection(
+    request: ExplainPdfSelectionRequest,
     cache: State<'_, PdfPageTextCacheState>,
+) -> Result<ExplainPdfSelectionResult, String> {
+    explain_pdf_selection_with_cache(request, &cache).await
+}
+
+pub(crate) async fn translate_pdf_selection_with_cache(
+    request: TranslatePdfSelectionRequest,
+    cache: &PdfPageTextCacheState,
 ) -> Result<TranslatePdfSelectionResult, String> {
     let original_text = request.text.trim().to_string();
     if original_text.is_empty() {
@@ -4758,19 +4972,92 @@ async fn translate_pdf_selection(
         return Err("选中文本过长，请使用“翻译本页”。".to_string());
     }
 
-    let page_context = extract_pdf_page_text_cached(&request.pdf_path, request.page, &cache).ok();
+    let cache_key = format!(
+        "selection-v2::{}::{}::{}",
+        request.page, request.model, original_text
+    );
+    if let Some(PdfAiCacheValue::SelectionTranslation(result)) =
+        cache.get_ai(&request.pdf_path, &cache_key)?
+    {
+        return Ok(result);
+    }
+
+    let page_context = selection_translation_context_or_none(extract_pdf_page_text_cached(
+        &request.pdf_path,
+        request.page,
+        cache,
+    ));
     let (translated_text, prompt_version_used) =
         translate_pdf_selection_text_v2(&original_text, page_context.as_deref(), &request.model)
             .await?;
 
-    Ok(TranslatePdfSelectionResult {
+    let result = TranslatePdfSelectionResult {
         original_text,
         translated_text,
         page: request.page,
         generated_at: cards::current_timestamp_iso_utc(),
         model_used: request.model,
         prompt_version_used,
-    })
+    };
+    cache.insert_ai(
+        &request.pdf_path,
+        cache_key,
+        PdfAiCacheValue::SelectionTranslation(result.clone()),
+    )?;
+    Ok(result)
+}
+
+#[tauri::command]
+async fn translate_pdf_selection(
+    request: TranslatePdfSelectionRequest,
+    cache: State<'_, PdfPageTextCacheState>,
+) -> Result<TranslatePdfSelectionResult, String> {
+    translate_pdf_selection_with_cache(request, &cache).await
+}
+
+pub(crate) async fn translate_pdf_page_with_cache(
+    request: TranslatePdfPageRequest,
+    cache: &PdfPageTextCacheState,
+) -> Result<TranslatePdfPageResult, String> {
+    let cache_key = format!("page-v2::{}::{}", request.page, request.model);
+    if let Some(PdfAiCacheValue::PageTranslation(result)) =
+        cache.get_ai(&request.pdf_path, &cache_key)?
+    {
+        return Ok(result);
+    }
+    let page_text = extract_pdf_page_text_cached(&request.pdf_path, request.page, cache)?;
+    let source_text_length = page_text.chars().count();
+
+    if page_text.trim().is_empty() {
+        let result = TranslatePdfPageResult {
+            page: request.page,
+            translated_markdown: "当前页没有可翻译文本，OCR 后可重试。".to_string(),
+            source_text_length: 0,
+            generated_at: cards::current_timestamp_iso_utc(),
+            model_used: request.model,
+        };
+        cache.insert_ai(
+            &request.pdf_path,
+            cache_key,
+            PdfAiCacheValue::PageTranslation(result.clone()),
+        )?;
+        return Ok(result);
+    }
+
+    let translated_markdown = translate_pdf_page_markdown_v2(&page_text, &request.model).await?;
+    let result = TranslatePdfPageResult {
+        page: request.page,
+        translated_markdown,
+        source_text_length,
+        generated_at: cards::current_timestamp_iso_utc(),
+        model_used: request.model,
+    };
+    cache.insert_ai(
+        &request.pdf_path,
+        cache_key,
+        PdfAiCacheValue::PageTranslation(result.clone()),
+    )?;
+    Ok(result)
 }
 
 #[tauri::command]
@@ -4778,27 +5065,7 @@ async fn translate_pdf_page(
     request: TranslatePdfPageRequest,
     cache: State<'_, PdfPageTextCacheState>,
 ) -> Result<TranslatePdfPageResult, String> {
-    let page_text = extract_pdf_page_text_cached(&request.pdf_path, request.page, &cache)?;
-    let source_text_length = page_text.chars().count();
-
-    if page_text.trim().is_empty() {
-        return Ok(TranslatePdfPageResult {
-            page: request.page,
-            translated_markdown: "当前页没有可翻译文本，OCR 后可重试。".to_string(),
-            source_text_length: 0,
-            generated_at: cards::current_timestamp_iso_utc(),
-            model_used: request.model,
-        });
-    }
-
-    let translated_markdown = translate_pdf_page_markdown_v2(&page_text, &request.model).await?;
-    Ok(TranslatePdfPageResult {
-        page: request.page,
-        translated_markdown,
-        source_text_length,
-        generated_at: cards::current_timestamp_iso_utc(),
-        model_used: request.model,
-    })
+    translate_pdf_page_with_cache(request, &cache).await
 }
 
 fn normalize_lookup_text(value: &str) -> String {
@@ -4932,6 +5199,7 @@ async fn build_brief_context(
     let scope = research_memory::ResearchSearchScope {
         path: Some(paper.path.as_str()),
         paper_query: None,
+        paper_id: Some(paper.paper_id.as_str()),
     };
 
     let mut unique_hits = HashMap::<String, ResearchSearchHit>::new();
@@ -5067,6 +5335,7 @@ async fn build_paper_command_context(
     let scope = research_memory::ResearchSearchScope {
         path: Some(paper.path.as_str()),
         paper_query: None,
+        paper_id: Some(paper.paper_id.as_str()),
     };
     let mut unique_hits = HashMap::<String, ResearchSearchHit>::new();
     let mut section_blocks = Vec::new();
@@ -5318,9 +5587,10 @@ fn validate_note_draft_path(app: &AppHandle, path: &str) -> Result<PathBuf, Stri
     Ok(target)
 }
 
-#[tauri::command]
-async fn list_paper_note_drafts(app: AppHandle) -> Result<Vec<PaperDraftSummary>, String> {
-    let notes_dir = draft_directory_path(&app, "note_draft")?;
+pub(crate) fn list_paper_note_drafts_shared(
+    app: &AppHandle,
+) -> Result<Vec<PaperDraftSummary>, String> {
+    let notes_dir = draft_directory_path(app, "note_draft")?;
     let mut drafts = Vec::new();
     let entries = std::fs::read_dir(notes_dir).map_err(|e| e.to_string())?;
     for entry in entries {
@@ -5338,8 +5608,15 @@ async fn list_paper_note_drafts(app: AppHandle) -> Result<Vec<PaperDraftSummary>
 }
 
 #[tauri::command]
-async fn read_paper_note_draft(app: AppHandle, path: String) -> Result<PaperDraftDetail, String> {
-    let path = validate_note_draft_path(&app, &path)?;
+async fn list_paper_note_drafts(app: AppHandle) -> Result<Vec<PaperDraftSummary>, String> {
+    list_paper_note_drafts_shared(&app)
+}
+
+pub(crate) fn read_paper_note_draft_shared(
+    app: &AppHandle,
+    path: &str,
+) -> Result<PaperDraftDetail, String> {
+    let path = validate_note_draft_path(app, path)?;
     let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
     Ok(PaperDraftDetail {
         kind: "note_draft".to_string(),
@@ -5353,16 +5630,29 @@ async fn read_paper_note_draft(app: AppHandle, path: String) -> Result<PaperDraf
 }
 
 #[tauri::command]
+async fn read_paper_note_draft(app: AppHandle, path: String) -> Result<PaperDraftDetail, String> {
+    read_paper_note_draft_shared(&app, &path)
+}
+
+#[tauri::command]
 async fn update_paper_note_draft(
     app: AppHandle,
     request: UpdatePaperDraftRequest,
 ) -> Result<PaperDraftDetail, String> {
-    let path = validate_note_draft_path(&app, &request.path)?;
-    if request.content.trim().is_empty() {
+    update_paper_note_draft_shared(&app, &request.path, &request.content)
+}
+
+pub(crate) fn update_paper_note_draft_shared(
+    app: &AppHandle,
+    path: &str,
+    content: &str,
+) -> Result<PaperDraftDetail, String> {
+    let path = validate_note_draft_path(app, path)?;
+    if content.trim().is_empty() {
         return Err("笔记内容不能为空。".to_string());
     }
-    std::fs::write(&path, request.content.as_bytes()).map_err(|e| e.to_string())?;
-    read_paper_note_draft(app, path.to_string_lossy().to_string()).await
+    std::fs::write(&path, content.as_bytes()).map_err(|e| e.to_string())?;
+    read_paper_note_draft_shared(app, &path.to_string_lossy())
 }
 
 #[tauri::command]
@@ -5370,15 +5660,23 @@ async fn create_manual_paper_note_draft(
     app: AppHandle,
     request: CreatePaperDraftRequest,
 ) -> Result<PaperDraftDetail, String> {
-    let title = request.title.trim();
+    create_manual_paper_note_draft_shared(&app, &request.title, &request.content)
+}
+
+pub(crate) fn create_manual_paper_note_draft_shared(
+    app: &AppHandle,
+    title: &str,
+    content: &str,
+) -> Result<PaperDraftDetail, String> {
+    let title = title.trim();
     if title.is_empty() {
         return Err("笔记标题不能为空。".to_string());
     }
-    let content = request.content.trim();
+    let content = content.trim();
     if content.is_empty() {
         return Err("笔记内容不能为空。".to_string());
     }
-    let directory = draft_directory_path(&app, "note_draft")?;
+    let directory = draft_directory_path(app, "note_draft")?;
     let path = directory.join(format!(
         "{}-{}-note.md",
         current_timestamp_file_tag(),
@@ -5391,13 +5689,44 @@ async fn create_manual_paper_note_draft(
         content = content
     );
     std::fs::write(&path, markdown.as_bytes()).map_err(|e| e.to_string())?;
-    read_paper_note_draft(app, path.to_string_lossy().to_string()).await
+    read_paper_note_draft_shared(app, &path.to_string_lossy())
+}
+
+pub(crate) fn update_mobile_paper_note_draft_shared(
+    app: &AppHandle,
+    path: &str,
+    title: &str,
+    body: &str,
+) -> Result<PaperDraftDetail, String> {
+    let path = validate_note_draft_path(app, path)?;
+    let current = std::fs::read_to_string(&path).map_err(|error| error.to_string())?;
+    let title = title.replace(['\r', '\n'], " ").trim().to_string();
+    let body = body.replace("\r\n", "\n").trim().to_string();
+    if title.is_empty() {
+        return Err("笔记标题不能为空。".to_string());
+    }
+    if body.is_empty() {
+        return Err("笔记内容不能为空。".to_string());
+    }
+    let created_at = extract_markdown_frontmatter_value(&current, "created_at")
+        .unwrap_or_else(cards::current_timestamp_iso_utc);
+    let source_paper = extract_markdown_frontmatter_value(&current, "source_paper")
+        .unwrap_or_default()
+        .replace(['\r', '\n'], " ");
+    let markdown = format!(
+        "---\nkind: paper_note_draft\ntitle: {title}\nsource_paper: {source_paper}\ncreated_at: {created_at}\nmodel: manual_mobile\nuser_instruction: manual_mobile\n---\n\n# {title}\n\n{body}\n"
+    );
+    update_paper_note_draft_shared(app, &path.to_string_lossy(), &markdown)
+}
+
+pub(crate) fn delete_paper_note_draft_shared(app: &AppHandle, path: &str) -> Result<(), String> {
+    let path = validate_note_draft_path(app, path)?;
+    std::fs::remove_file(path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn delete_paper_note_draft(app: AppHandle, path: String) -> Result<(), String> {
-    let path = validate_note_draft_path(&app, &path)?;
-    std::fs::remove_file(path).map_err(|e| e.to_string())
+    delete_paper_note_draft_shared(&app, &path)
 }
 
 fn build_note_draft_markdown(
@@ -5766,6 +6095,11 @@ async fn set_mobile_chat_model(app: AppHandle, model: String) -> Result<(), Stri
 }
 
 #[tauri::command]
+async fn set_mobile_translation_model(app: AppHandle, model: String) -> Result<(), String> {
+    mobile::set_mobile_translation_model(&app, &model)
+}
+
+#[tauri::command]
 async fn list_mobile_chat_threads(
     app: AppHandle,
 ) -> Result<Vec<mobile::MobileChatThreadSummary>, String> {
@@ -5941,6 +6275,7 @@ pub fn run() {
             list_mobile_inbox_items,
             set_mobile_inbox_item_status,
             set_mobile_chat_model,
+            set_mobile_translation_model,
             list_mobile_chat_threads,
             read_mobile_chat_thread,
             delete_mobile_chat_thread,

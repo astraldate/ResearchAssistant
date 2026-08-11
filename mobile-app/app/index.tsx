@@ -16,7 +16,7 @@ export default function IndexScreen() {
     );
   }
 
-  return <Redirect href={session ? "/(tabs)/review" : "/pair"} />;
+  return <Redirect href={session ? "/(tabs)/library?view=review" : "/pair"} />;
 }
 
 const styles = StyleSheet.create({

@@ -2,6 +2,8 @@ import * as FileSystem from "expo-file-system/legacy";
 import {
   MOBILE_API_PREFIX,
   type MobileBootstrapResponse,
+  type MobileCardRecord,
+  type MobileCardWriteRequest,
   type MobileChatSendRequest,
   type MobileChatStreamEvent,
   type MobileChatThread,
@@ -9,9 +11,22 @@ import {
   type MobileHealthResponse,
   type MobileInboxItem,
   type MobileInboxItemInput,
+  type MobileInnovationIntent,
+  type MobileInnovationIntentRequest,
+  type MobileNoteRecord,
+  type MobileNoteWriteRequest,
   type MobilePaperRecord,
   type MobilePairRequest,
   type MobilePairResponse,
+  type MobilePdfExplainSelectionRequest,
+  type MobilePdfExplainSelectionResult,
+  type MobilePdfSaveExplanationCardRequest,
+  type MobilePdfSaveExplanationCardResult,
+  type MobilePdfSource,
+  type MobilePdfTranslatePageRequest,
+  type MobilePdfTranslatePageResult,
+  type MobilePdfTranslateSelectionRequest,
+  type MobilePdfTranslateSelectionResult,
   type ReviewSyncRequest,
   type ReviewSyncResponse,
 } from "../contracts";
@@ -80,6 +95,63 @@ export async function checkDesktopService(baseUrl: string) {
   );
 }
 
+export async function selectFastestDesktopBaseUrl(baseUrl: string) {
+  const current = normalizeBaseUrl(baseUrl);
+  const initial = await probeDesktopHealth(current, 3_000).catch(() => null);
+  if (!initial) return current;
+  const candidates = Array.from(
+    new Set([
+      current,
+      ...(initial.health.baseUrls ?? [])
+        .map(normalizeBaseUrl)
+        .filter(
+          (value) =>
+            value &&
+            !/^https?:\/\/(?:127\.0\.0\.1|localhost)(?::|\/|$)/i.test(value),
+        ),
+    ]),
+  );
+  const results = await Promise.all(
+    candidates.map((candidate) =>
+      probeDesktopHealth(candidate, 1_500).catch(() => null),
+    ),
+  );
+  const available = results.filter((result): result is DesktopHealthProbe =>
+    Boolean(result?.health.running && result.health.apiVersion),
+  );
+  available.sort((left, right) => left.elapsedMs - right.elapsedMs);
+  return available[0]?.baseUrl ?? current;
+}
+
+interface DesktopHealthProbe {
+  baseUrl: string;
+  elapsedMs: number;
+  health: MobileHealthResponse;
+}
+
+async function probeDesktopHealth(
+  baseUrl: string,
+  timeoutMs: number,
+): Promise<DesktopHealthProbe> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const startedAt = Date.now();
+  try {
+    const health = await requestJson<MobileHealthResponse>(
+      baseUrl,
+      `${MOBILE_API_PREFIX}/health`,
+      { signal: controller.signal },
+    );
+    return {
+      baseUrl: normalizeBaseUrl(baseUrl),
+      elapsedMs: Date.now() - startedAt,
+      health,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function pairDesktopService(
   baseUrl: string,
   payload: MobilePairRequest,
@@ -136,6 +208,163 @@ export async function fetchMobilePapers(baseUrl: string, token: string) {
     baseUrl,
     `${MOBILE_API_PREFIX}/papers`,
     {},
+    token,
+  );
+}
+
+export async function deleteMobileCard(
+  baseUrl: string,
+  token: string,
+  cardId: string,
+) {
+  return requestJson<{ id: string; deleted: boolean }>(
+    baseUrl,
+    `${MOBILE_API_PREFIX}/cards/${encodeURIComponent(cardId)}`,
+    { method: "DELETE" },
+    token,
+  );
+}
+
+export async function createMobileCard(
+  baseUrl: string,
+  token: string,
+  payload: MobileCardWriteRequest,
+) {
+  return requestJson<MobileCardRecord>(
+    baseUrl,
+    `${MOBILE_API_PREFIX}/cards`,
+    { method: "POST", body: JSON.stringify(payload) },
+    token,
+  );
+}
+
+export async function updateMobileCard(
+  baseUrl: string,
+  token: string,
+  cardId: string,
+  payload: MobileCardWriteRequest,
+) {
+  return requestJson<MobileCardRecord>(
+    baseUrl,
+    `${MOBILE_API_PREFIX}/cards/${encodeURIComponent(cardId)}`,
+    { method: "PATCH", body: JSON.stringify(payload) },
+    token,
+  );
+}
+
+export async function deleteMobileNote(
+  baseUrl: string,
+  token: string,
+  noteId: MobileNoteRecord["id"],
+) {
+  return requestJson<{ id: string; deleted: boolean }>(
+    baseUrl,
+    `${MOBILE_API_PREFIX}/notes/${encodeURIComponent(noteId)}`,
+    { method: "DELETE" },
+    token,
+  );
+}
+
+export async function createMobileNote(
+  baseUrl: string,
+  token: string,
+  payload: MobileNoteWriteRequest,
+) {
+  return requestJson<MobileNoteRecord>(
+    baseUrl,
+    `${MOBILE_API_PREFIX}/notes`,
+    { method: "POST", body: JSON.stringify(payload) },
+    token,
+  );
+}
+
+export async function updateMobileNote(
+  baseUrl: string,
+  token: string,
+  noteId: string,
+  payload: MobileNoteWriteRequest,
+) {
+  return requestJson<MobileNoteRecord>(
+    baseUrl,
+    `${MOBILE_API_PREFIX}/notes/${encodeURIComponent(noteId)}`,
+    { method: "PATCH", body: JSON.stringify(payload) },
+    token,
+  );
+}
+
+export function buildMobilePdfViewerUrl(
+  baseUrl: string,
+  source: MobilePdfSource,
+) {
+  const query = new URLSearchParams({
+    sourceType: source.sourceType,
+    sourceId: source.sourceId,
+    page: String(source.page),
+  });
+  return `${normalizeBaseUrl(baseUrl)}${MOBILE_API_PREFIX}/pdf-viewer?${query.toString()}`;
+}
+
+export async function translateMobilePdfSelection(
+  baseUrl: string,
+  token: string,
+  payload: MobilePdfTranslateSelectionRequest,
+) {
+  return requestJson<MobilePdfTranslateSelectionResult>(
+    baseUrl,
+    `${MOBILE_API_PREFIX}/pdf/translate-selection`,
+    { method: "POST", body: JSON.stringify(payload) },
+    token,
+  );
+}
+
+export async function translateMobilePdfPage(
+  baseUrl: string,
+  token: string,
+  payload: MobilePdfTranslatePageRequest,
+) {
+  return requestJson<MobilePdfTranslatePageResult>(
+    baseUrl,
+    `${MOBILE_API_PREFIX}/pdf/translate-page`,
+    { method: "POST", body: JSON.stringify(payload) },
+    token,
+  );
+}
+
+export async function explainMobilePdfSelection(
+  baseUrl: string,
+  token: string,
+  payload: MobilePdfExplainSelectionRequest,
+) {
+  return requestJson<MobilePdfExplainSelectionResult>(
+    baseUrl,
+    `${MOBILE_API_PREFIX}/pdf/explain-selection`,
+    { method: "POST", body: JSON.stringify(payload) },
+    token,
+  );
+}
+
+export async function saveMobilePdfExplanationCard(
+  baseUrl: string,
+  token: string,
+  payload: MobilePdfSaveExplanationCardRequest,
+) {
+  return requestJson<MobilePdfSaveExplanationCardResult>(
+    baseUrl,
+    `${MOBILE_API_PREFIX}/pdf/save-explanation-card`,
+    { method: "POST", body: JSON.stringify(payload) },
+    token,
+  );
+}
+
+export async function detectInnovationIntent(
+  baseUrl: string,
+  token: string,
+  payload: MobileInnovationIntentRequest,
+) {
+  return requestJson<MobileInnovationIntent>(
+    baseUrl,
+    `${MOBILE_API_PREFIX}/chat/innovation-intent`,
+    { method: "POST", body: JSON.stringify(payload) },
     token,
   );
 }
@@ -251,6 +480,33 @@ export async function deleteChatThread(
   return requestJson<Record<string, never>>(
     baseUrl,
     `${MOBILE_API_PREFIX}/chat/threads/${encodeURIComponent(threadId)}`,
+    { method: "DELETE" },
+    token,
+  );
+}
+
+export async function deleteMobileInnovationResult(
+  baseUrl: string,
+  token: string,
+  threadId: string,
+  messageId: string,
+) {
+  return requestJson<MobileChatThread>(
+    baseUrl,
+    `${MOBILE_API_PREFIX}/chat/threads/${encodeURIComponent(threadId)}/innovation-results/${encodeURIComponent(messageId)}`,
+    { method: "DELETE" },
+    token,
+  );
+}
+
+export async function deleteMobileIdea(
+  baseUrl: string,
+  token: string,
+  ideaId: string,
+) {
+  return requestJson<{ id: string; deleted: boolean }>(
+    baseUrl,
+    `${MOBILE_API_PREFIX}/ideas/${encodeURIComponent(ideaId)}`,
     { method: "DELETE" },
     token,
   );

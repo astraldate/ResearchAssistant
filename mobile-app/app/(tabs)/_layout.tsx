@@ -40,20 +40,13 @@ export default function TabLayout() {
       <Tabs.Screen
         name="review"
         options={{
-          title: "\u590d\u4e60",
-          tabBarIcon: ({ color, focused }) => (
-            <TabIcon
-              name={focused ? "refresh-circle" : "refresh-circle-outline"}
-              color={color}
-              focused={focused}
-            />
-          ),
+          href: null,
         }}
       />
       <Tabs.Screen
         name="library"
         options={{
-          title: "\u5361\u7247\u5e93",
+          title: "知识",
           tabBarIcon: ({ color, focused }) => (
             <TabIcon
               name={focused ? "albums" : "albums-outline"}
@@ -79,14 +72,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="capture"
         options={{
-          title: "\u91c7\u96c6",
-          tabBarIcon: ({ color, focused }) => (
-            <TabIcon
-              name={focused ? "scan-circle" : "scan-circle-outline"}
-              color={color}
-              focused={focused}
-            />
-          ),
+          href: null,
         }}
       />
       <Tabs.Screen
