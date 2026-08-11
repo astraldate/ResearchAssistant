@@ -133,6 +133,19 @@
 - 原解释提示词含“不要生成页面上下文中没有的结果”，虽然本意是阻止伪造论文结论，但会让模型把 Context 误当作概念知识边界；应改为允许稳定领域知识定义，同时只禁止虚构该论文的实验、数字和结论。
 - 版本残留检查中的 `1.1.11` 仅属于 `pin-project` 与 `pin-project-internal` 第三方 crate；应用 `researchassistant` 锁文件版本已经更新为 1.1.12。
 - 1.1.12 桌面与 Android 正式包均已构建，但本轮环境的提升权限自动审批额度耗尽，无法覆盖受保护分发目录或安装目录；可直接使用构建目录中的已核验安装包完成手动升级。
+
+## 1.1.12 发布与 CI/CD 发现
+
+- 当前 `main` 尚无 `v1.1.12` 标签，已有最高标签为 `v1.1.6`；本轮需要将此前已暂存的 1.1.7–1.1.12 累积功能作为一次明确的 1.1.12 发布提交交付。
+- 现有 CI 把 Web 与移动端检查串行放在同一任务中，Rust 仅执行 `cargo check`，尚未执行 `cargo fmt --check`、Rust 单元测试、移动快捷命令测试和版本一致性校验。
+- 桌面标签发布没有在构建前校验 Git 标签与根包、Tauri、移动包和 Android 版本是否一致，错误标签仍可能产出语义不一致的安装包。
+- 工作流已经使用 pnpm、Rust、Gradle 和 Ollama 缓存；本轮优化应保留这些有效缓存，并通过任务拆分、超时限制、最小权限和发布前门禁提高反馈速度与可靠性。
+- 手动 Android 发布接收目标 `tag`，但 `actions/checkout` 没有设置 `ref`，当前会从默认分支构建再上传到指定旧标签，存在“标签代码与 APK 内容不一致”的实际风险。
+- 标签触发的 Android 任务当前依赖桌面任务。虽然这会增加总时长，但桌面 Tauri Action 负责创建 draft release；直接并行可能让两个任务竞争创建同一 Release，因此本轮保留该依赖，只优化各任务内部步骤。
+- 发布产物目前只有通用名 `app-release.apk` 且没有随包上传 SHA-256；改为带标签的稳定文件名并附加校验文件，可以降低人工下载和分发时的版本混淆。
+- 已通过各 Action 官方 GitHub 仓库的公开引用取得当前大版本提交，可将 `checkout`、pnpm、Node、Rust、cache、Tauri、Java 与 release 上传 Action 全部固定到不可变 SHA，并以行尾版本注释保留升级线索。
+- `packages/contracts/package.json` 仍为 1.1.5，而根应用、Tauri、Cargo、Expo、移动包与 Gradle 已为 1.1.12；统一版本门禁会暴露该历史漂移，需要在发布前同步修正。
+- Android Gradle 已支持 `mobile-app/android/keystore.properties`。CI/CD 可以从加密 Secrets 临时生成 keystore 与属性文件，并在 Secrets 未配置时明确标记为内部测试签名，而不是把 debug 签名误称为正式分发签名。
 - 聊天页当前菜单过滤直接读取整段 input，且候选选择只替换输入末尾；修复需要引入独立 `composerSelectionRef` 与基于 caret 的触发区间解析。
 - 创新历史卡目前没有操作区，引用卡对空 snippet 也没有降级提示；两者可以在现有卡片结构中直接补按钮和中文质量提示，不改变页面导航。
 - `mobile.rs` 已有协议兼容与检索选择测试模块，可直接加入正常中英/希腊字符、替换字符、NUL 和 mojibake 样本，验证乱码门禁不会误伤科研符号。

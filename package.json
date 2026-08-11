@@ -14,6 +14,7 @@
     "research-eval:scaffold": "cargo run --manifest-path src-tauri/Cargo.toml --bin research_memory_eval -- scaffold --output research_memory_eval_samples.json --limit 3",
     "research-eval:run": "cargo run --manifest-path src-tauri/Cargo.toml --bin research_memory_eval -- run --input research_memory_eval_samples.json --output research_memory_eval_report.json",
     "check:conflicts": "node scripts/check-conflict-markers.mjs",
+    "check:release-version": "node scripts/check-release-version.mjs",
     "tauri": "tauri",
     "prepare": "husky"
   },

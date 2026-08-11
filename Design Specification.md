@@ -1,6 +1,6 @@
 # ResearchAssistant 设计规范
 
-更新日期：2026-08-10
+更新日期：2026-08-11
 
 ## 1. 目标
 
@@ -201,13 +201,25 @@ Windows + monorepo + Expo / React Native 原生构建链，主要风险来自：
 ### 5.4 构建产物与图标
 
 - 原始路径：`mobile-app/android/app/build/outputs/apk/release/app-release.apk`
-- 未配置私有 `keystore.properties` 时，release APK 会回退使用 debug keystore，只适合本地安装测试。
+- 比赛演示构建使用测试 keystore，GitHub Release 产物固定带 `-demo.apk` 后缀，避免误认为应用商店正式签名包。
 - 移动端图标以 `dist/icon.svg` 为源，派生到：
   - `mobile-app/assets/icon.png`
   - `mobile-app/assets/adaptive-icon.png`
   - `mobile-app/assets/splash-icon.png`
   - `mobile-app/android/app/src/main/res/mipmap-*`
 - 桌面端图标同样以 `dist/icon.svg` 为源，派生到 `src-tauri/icons/*` 中 Tauri 配置实际引用的 `32x32.png`、`128x128.png`、`128x128@2x.png`、`icon.ico` 和 `icon.icns`。
+
+### 5.5 比赛演示 CI/CD
+
+当前流水线服务于 MVP 与比赛展示，目标是尽快发现会阻断演示的错误并稳定生成可安装包，不承担应用商店上架职责。
+
+- 常规 CI 将 Repository/Web、Mobile、Rust 拆成三个并行任务；Web 构建自身完成 TypeScript 编译，避免重复 typecheck。
+- 移动任务执行 TypeScript 检查和聊天输入纯函数测试；Rust 任务执行 rustfmt 与库测试，不运行耗时的全目标发布构建。
+- `scripts/check-release-version.mjs` 统一校验根包、共享协议、Tauri、Cargo、Expo、Gradle `versionName` 和 Android `versionCode`；标签发布额外要求 tag 等于 `v<版本>`。
+- 第三方 GitHub Action 固定到不可变提交 SHA，pnpm、Rust、Gradle 和 Ollama 继续使用缓存；所有任务设置超时，普通 CI 使用最小 `contents: read` 权限。
+- 标签发布先创建 draft release，再并行构建 Windows 与 Android，缩短总等待时间。Android 产物使用测试签名并命名为 `researchassistant-mobile-v<版本>-demo.apk`。
+- 手动 Android 重发必须检出输入 tag 后再构建，不能从当前默认分支生成旧标签产物。
+- Windows 与 Android 产物分别上传 SHA-256 校验文件，便于比赛设备快速确认文件未混淆或损坏。
 
 ## 6. Research Memory 设计
 
@@ -471,8 +483,13 @@ Graph Canvas 采用 Cytoscape + SVG/React overlay：
 ## 8. 验收基线
 
 - `pnpm install --force`
+- `pnpm check:conflicts`
+- `pnpm check:release-version`
 - `pnpm exec tsc --noEmit`
 - `pnpm --dir mobile-app exec tsc --noEmit`
+- `pnpm --dir mobile-app test:chat-composer`
+- `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`
+- `cargo test --locked --manifest-path src-tauri/Cargo.toml --lib`
 - `cargo check --manifest-path src-tauri/Cargo.toml`
 - `pnpm build`
 - `cd mobile-app/android && .\gradlew.bat assembleRelease --console=plain --no-daemon`
@@ -488,7 +505,7 @@ Graph Canvas 采用 Cytoscape + SVG/React overlay：
 
 - 若系统级 Windows 长路径策略未开启，构建日志仍可能出现 CMake 路径 warning，但当前已不阻断 release 构建。
 - `mobile-app/android/autolink-*.json` 含有本机绝对路径，因此只作为本地缓存，不入库。
-- 没有 `keystore.properties` 时，release 仍使用 debug keystore，本质上是“可安装 release 包”，不是可对外分发的正式签名包。
+- Android 发布产物是比赛演示用测试签名 APK；当前不生成 AAB，不配置应用商店正式签名、渠道分发、商店元数据或自动上架。
 - Tailscale 访问依赖本机 Tailscale 客户端和 tailnet 策略；自动 TCP Serve 失败时仍可退回局域网地址。
 - 移动端流式体验受本地 Ollama 队列影响；如果桌面端已有长生成任务，手机端会显示排队状态。
 - 在线 PDF AI 阅读依赖桌面端连接；离线模式只负责阅读已缓存文件，不提供翻译和解释。

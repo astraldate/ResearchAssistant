@@ -148,7 +148,7 @@ pnpm --dir mobile-app dev
 
 ## Android Release APK
 
-在仓库内构建正式 APK：
+当前项目用于比赛演示，不以应用商店上架为目标。在仓库内构建可安装的演示 APK：
 
 ```bash
 pnpm --dir mobile-app android:apk:release
@@ -165,7 +165,8 @@ Gradle 原始产物路径：
 注意：
 
 - `mobile-app/dist/` 被 `.gitignore` 忽略，APK 只作为本机构建产物保存，不提交入库。
-- 如果没有 `mobile-app/android/keystore.properties`，release 会回退使用 debug keystore，仅适合本地安装测试。
+- GitHub Release 中的 Android 文件命名为 `researchassistant-mobile-v<版本>-demo.apk`，使用测试签名，只适合比赛设备和内部演示。
+- 本阶段不配置应用商店正式签名、AAB、渠道包、商店元数据或自动上架。
 
 ## Windows 下 Android 构建约束
 
@@ -188,17 +189,20 @@ Gradle 原始产物路径：
 
 仓库当前包含三条 GitHub Actions 流水线：
 
-- `CI`：在推送到 `main` / `master` 和发起 PR 时运行，负责 Web、Mobile、Rust/Tauri 的常规检查。
-- `Release Desktop`：推送 `v*` tag 时运行，负责构建 Windows 桌面版，并在桌面产物完成后附加 Android APK。
-- `Release Android`：手动触发，用于把 Android APK 重新上传到指定已有 release tag。
+- `CI`：在推送到 `main` / `master` 和发起 PR 时运行。Repository/Web、Mobile、Rust 三个任务并行执行，优先给出失败反馈。
+- `Release Desktop`：推送 `v*` tag 时运行。先创建 draft release，再并行构建 Windows 桌面包与 Android 演示 APK。
+- `Release Android`：手动触发，检出指定的已有 tag 后重新构建并上传 Android 演示 APK，不会用当前 `main` 冒充旧标签代码。
 
-`Release Desktop` 不重复跑常规检查，它只保留发布必需步骤：
+常规 CI 的快速门禁包括：
 
-- 安装 Node.js、pnpm、Rust
-- 恢复 pnpm 与 Rust 缓存
-- 安装依赖
-- 调用 Tauri Action 构建并发布 Windows 安装包
-- 构建并上传 Android APK
+- 冲突标记、统一版本和 Prettier 检查
+- Web TypeScript 生产构建
+- 移动端 TypeScript 与聊天输入纯函数测试
+- Rust 格式与库测试
+
+发布工作流不会重复完整 CI。它会校验 tag 与根包、共享协议、Tauri、Cargo、Expo 和 Android 版本一致，再恢复 pnpm、Rust、Gradle 与 Ollama 缓存并构建。第三方 Action 均固定到不可变提交 SHA；Windows 和 Android 产物分别附带 SHA-256 校验文件。
+
+Android 流水线面向比赛演示，固定生成测试签名的 `-demo.apk`，不包含应用商店上架流程。
 
 ### 发布桌面版
 
@@ -212,15 +216,22 @@ Gradle 原始产物路径：
    - [src-tauri/Cargo.toml](./src-tauri/Cargo.toml)
    - [packages/contracts/package.json](./packages/contracts/package.json)
    - 如果移动端也要同步发版，再更新 [mobile-app/package.json](./mobile-app/package.json)、[mobile-app/app.json](./mobile-app/app.json) 和 [mobile-app/android/app/build.gradle](./mobile-app/android/app/build.gradle)；Android `versionCode` 必须递增。
-4. 创建并推送 tag，例如：
+4. 执行统一版本校验：
 
 ```bash
-git tag v1.1.7
-git push origin v1.1.7
+pnpm check:release-version
 ```
 
-5. GitHub 会自动触发 `Release Desktop`，生成一个 draft release。
-6. 在 GitHub Releases 页面检查安装包、版本号和发布说明，确认后再手动发布 draft。
+5. 创建并推送 tag，例如：
+
+```bash
+git tag -a v1.1.12 -m "release: v1.1.12"
+git push origin main
+git push origin v1.1.12
+```
+
+6. GitHub 会自动触发 `Release Desktop`，生成一个 draft release。
+7. 在 GitHub Releases 页面检查安装包、版本号、Android 的 `-demo` 标识和 SHA-256，确认后再手动发布 draft。
 
 ### 回滚或重发
 
@@ -231,5 +242,6 @@ git push origin v1.1.7
 ## 相关文档
 
 - [设计规范](./Design%20Specification.md)
+- [版本变更记录](./CHANGELOG.md)
 - [scripts/README.md](./scripts/README.md)
 - [COPYRIGHT_NOTICE.md](./COPYRIGHT_NOTICE.md)

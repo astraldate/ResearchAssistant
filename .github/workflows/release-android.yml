@@ -7,45 +7,54 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing release tag to upload the APK to, for example v1.0.4"
+        description: "要重新构建并上传 APK 的已有发布标签，例如 v1.1.12"
         required: true
-        default: "v1.0.4"
+        default: "v1.1.12"
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-android-${{ github.event.inputs.tag }}
+  group: release-android-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
   android-apk-release:
     name: Build And Upload Android APK
     runs-on: windows-latest
+    timeout-minutes: 90
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout requested tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
         with:
           version: 10
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Validate release version
+        run: node scripts/check-release-version.mjs --tag "${{ inputs.tag }}"
 
       - name: Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
           distribution: temurin
           java-version: 17
           cache: gradle
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --prefer-offline
 
       - name: Generate Android autolink snapshot
         shell: pwsh
@@ -56,7 +65,7 @@ jobs:
             exit $LASTEXITCODE
           }
 
-      - name: Create temporary Android debug keystore
+      - name: Configure demo signing
         working-directory: mobile-app/android/app
         shell: pwsh
         run: |
@@ -69,11 +78,26 @@ jobs:
         working-directory: mobile-app/android
         run: .\gradlew.bat assembleRelease --console=plain --no-daemon
 
-      - name: Upload Android APK to GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Prepare Android release assets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $source = "mobile-app\android\app\build\outputs\apk\release\app-release.apk"
+          if (-not (Test-Path $source)) {
+            throw "未找到 Android release APK。"
+          }
+          $asset = "mobile-app\android\app\build\outputs\apk\release\researchassistant-mobile-${{ inputs.tag }}-demo.apk"
+          Copy-Item -LiteralPath $source -Destination $asset -Force
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $asset).Hash.ToLowerInvariant()
+          "$hash  $([IO.Path]::GetFileName($asset))" | Set-Content -Encoding utf8 "SHA256SUMS-android.txt"
+
+      - name: Upload Android assets
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          tag_name: ${{ github.event.inputs.tag }}
+          tag_name: ${{ inputs.tag }}
           draft: true
-          files: mobile-app/android/app/build/outputs/apk/release/*.apk
+          files: |
+            mobile-app/android/app/build/outputs/apk/release/researchassistant-mobile-*.apk
+            SHA256SUMS-android.txt
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}

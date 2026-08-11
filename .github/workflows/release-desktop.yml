@@ -16,38 +16,73 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  prepare-release:
+    name: Prepare Draft Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate release version
+        run: node scripts/check-release-version.mjs --tag "${{ github.ref_name }}"
+
+      - name: Create draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "Draft release ${GITHUB_REF_NAME} already exists."
+          else
+            gh release create "${GITHUB_REF_NAME}" --draft --title "ResearchAssistant ${GITHUB_REF_NAME}" --notes "ResearchAssistant ${GITHUB_REF_NAME} 自动构建产物。请核对签名类型和 SHA-256 后再发布。"
+          fi
+
   windows-tauri-release:
     name: Build And Release Windows Desktop
     runs-on: windows-latest
+    timeout-minutes: 90
+    needs: prepare-release
     env:
       OLLAMA_VERSION: v0.17.7
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout release tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
         with:
           version: 10
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Validate release version
+        run: node scripts/check-release-version.mjs --tag "${{ github.ref_name }}"
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
 
       - name: Cache Rust build artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           workspaces: |
             src-tauri -> target
+          cache-on-failure: true
 
       - name: Cache Ollama sidecar
         id: cache-ollama-sidecar
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: src-tauri/binaries/ollama-x86_64-pc-windows-msvc.exe
           key: ollama-sidecar-windows-amd64-${{ env.OLLAMA_VERSION }}
@@ -73,48 +108,81 @@ jobs:
           Copy-Item $sourceExe "src-tauri\binaries\ollama-x86_64-pc-windows-msvc.exe" -Force
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --prefer-offline
 
       - name: Build and publish Tauri release
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@fce9c6108b31ea247710505d3aaaa893ee6768d4 # v0
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: ResearchAssistant ${{ github.ref_name }}
           releaseBody: |
-            Automated desktop and mobile builds for ${{ github.ref_name }}.
+            ResearchAssistant ${{ github.ref_name }} 自动构建产物。
+
+            请在发布 draft 前核对 Windows 安装包、Android 签名类型和 SHA-256 校验文件。
           releaseDraft: true
           prerelease: false
+
+      - name: Generate Windows checksums
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = Get-ChildItem "src-tauri\target\release\bundle\nsis" -File | Where-Object { $_.Extension -eq ".exe" }
+          if (-not $files) {
+            throw "未找到 Windows NSIS 安装包。"
+          }
+          $lines = foreach ($file in $files) {
+            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash.ToLowerInvariant()
+            "$hash  $($file.Name)"
+          }
+          $lines | Set-Content -Encoding utf8 "SHA256SUMS-windows.txt"
+
+      - name: Upload Windows checksums
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          draft: true
+          files: SHA256SUMS-windows.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
 
   android-apk-release:
     name: Build And Release Android APK
     runs-on: windows-latest
-    needs: windows-tauri-release
+    timeout-minutes: 90
+    needs: prepare-release
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout release tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
         with:
           version: 10
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Validate release version
+        run: node scripts/check-release-version.mjs --tag "${{ github.ref_name }}"
 
       - name: Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
           distribution: temurin
           java-version: 17
           cache: gradle
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --prefer-offline
 
       - name: Generate Android autolink snapshot
         shell: pwsh
@@ -125,7 +193,7 @@ jobs:
             exit $LASTEXITCODE
           }
 
-      - name: Create temporary Android debug keystore
+      - name: Configure demo signing
         working-directory: mobile-app/android/app
         shell: pwsh
         run: |
@@ -138,11 +206,26 @@ jobs:
         working-directory: mobile-app/android
         run: .\gradlew.bat assembleRelease --console=plain --no-daemon
 
-      - name: Upload Android APK to GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Prepare Android release assets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $source = "mobile-app\android\app\build\outputs\apk\release\app-release.apk"
+          if (-not (Test-Path $source)) {
+            throw "未找到 Android release APK。"
+          }
+          $asset = "mobile-app\android\app\build\outputs\apk\release\researchassistant-mobile-${{ github.ref_name }}-demo.apk"
+          Copy-Item -LiteralPath $source -Destination $asset -Force
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $asset).Hash.ToLowerInvariant()
+          "$hash  $([IO.Path]::GetFileName($asset))" | Set-Content -Encoding utf8 "SHA256SUMS-android.txt"
+
+      - name: Upload Android assets
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ github.ref_name }}
           draft: true
-          files: mobile-app/android/app/build/outputs/apk/release/*.apk
+          files: |
+            mobile-app/android/app/build/outputs/apk/release/researchassistant-mobile-*.apk
+            SHA256SUMS-android.txt
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
