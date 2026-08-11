@@ -86,7 +86,11 @@ if (expoVersionCode !== gradleVersionCode) {
   ]);
 }
 
-const requestedTag = argumentValue("--tag") ?? process.env.GITHUB_REF_NAME;
+const requestedTag =
+  argumentValue("--tag") ??
+  (process.env.GITHUB_REF_TYPE === "tag"
+    ? process.env.GITHUB_REF_NAME
+    : undefined);
 if (requestedTag && requestedTag !== `v${expectedVersion}`) {
   mismatches.push(["Git 标签", `${requestedTag}，预期 v${expectedVersion}`]);
 }

@@ -311,3 +311,7 @@
 - GitHub Rust 任务暴露 Tauri PDF.js 资源前置条件：纯 Cargo 环境没有根 `node_modules` 时 build script 会失败。已定点增加 pnpm `--ignore-scripts` 资源恢复步骤，不重复原生安装或发布构建。
 - CI 热修的跨文件补丁在计划表格处未命中，但前段工作流与说明文档已经成功写入；复核后只补齐缺少的错误与进度记录，没有重复修改已生效部分。
 - CI 热修快速校验通过，阶段 13 的实现、文档、标签与首次推送均已完成；最后只需提交并推送该定点修复到 `main`。
+- GitHub Repository Guard 发现版本脚本错误读取普通分支的 `GITHUB_REF_NAME=main`；已限制环境变量标签校验只在 `GITHUB_REF_TYPE=tag` 时启用，发布工作流继续显式传入 `--tag`。
+- 推送 `351f7be` 时本地 pre-push hooks 超过工具 120 秒上限，结果未知；修复版本脚本后将先查询远端 HEAD，避免重复或错误报告推送状态。
+- 已确认远端 `origin/main` 实际到达 `351f7be`，因此未重复推送该提交。
+- 版本脚本三路回归通过：普通 `main` 分支不做标签校验、`v1.1.12` 标签通过、错误标签 `v0.0.0` 被按预期拒绝；相关 Prettier 检查通过。
