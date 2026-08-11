@@ -19,3 +19,6 @@
 - 修复手动 Android 重发未检出目标 tag 的问题。
 - 让 Windows 与 Android 在 draft release 建立后并行构建，并随产物上传 SHA-256。
 - 明确 Android 产物为比赛展示用 `-demo.apk`，不包含应用商店上架准备。
+- 修复 Windows runner 因 CRLF/LF 差异触发的 Prettier 全仓误报。
+- 移除比赛发布任务的 90 分钟限制，并支持指定已有 tag 手动重跑桌面与 Android 构建。
+- 用 GitHub CLI 的可重入退避重试替代 Tauri/softprops 的 Release 创建与上传路径，降低 GitHub API 5xx 对长构建的影响。

@@ -4,7 +4,10 @@ export function isoNow() {
   return new Date().toISOString();
 }
 
-export function buildInitialReviewRecord(cardId: string, nowIso = isoNow()): ReviewRecord {
+export function buildInitialReviewRecord(
+  cardId: string,
+  nowIso = isoNow(),
+): ReviewRecord {
   return {
     cardId,
     dueAt: nowIso,
@@ -25,8 +28,12 @@ function addDays(iso: string, days: number) {
   return date.toISOString();
 }
 
-export function applyReviewEvent(current: ReviewRecord | null | undefined, event: MobileReviewEvent): ReviewRecord {
-  const base = current ?? buildInitialReviewRecord(event.cardId, event.reviewedAt);
+export function applyReviewEvent(
+  current: ReviewRecord | null | undefined,
+  event: MobileReviewEvent,
+): ReviewRecord {
+  const base =
+    current ?? buildInitialReviewRecord(event.cardId, event.reviewedAt);
   let easeFactor = base.easeFactor || 2.5;
   let intervalDays = base.intervalDays || 0;
   let lapses = base.lapses;
@@ -41,16 +48,28 @@ export function applyReviewEvent(current: ReviewRecord | null | undefined, event
       break;
     case "hard":
       easeFactor = Math.max(1.3, easeFactor - 0.15);
-      intervalDays = base.totalReviews === 0 ? 1 : Math.max(1, Math.round(Math.max(1, intervalDays) * 1.2));
+      intervalDays =
+        base.totalReviews === 0
+          ? 1
+          : Math.max(1, Math.round(Math.max(1, intervalDays) * 1.2));
       consecutiveSuccesses += 1;
       break;
     case "good":
-      intervalDays = base.totalReviews === 0 ? 1 : Math.max(2, Math.round(Math.max(1, intervalDays) * easeFactor));
+      intervalDays =
+        base.totalReviews === 0
+          ? 1
+          : Math.max(2, Math.round(Math.max(1, intervalDays) * easeFactor));
       consecutiveSuccesses += 1;
       break;
     case "easy":
       easeFactor += 0.15;
-      intervalDays = base.totalReviews === 0 ? 3 : Math.max(4, Math.round(Math.max(1, intervalDays) * easeFactor * 1.3));
+      intervalDays =
+        base.totalReviews === 0
+          ? 3
+          : Math.max(
+              4,
+              Math.round(Math.max(1, intervalDays) * easeFactor * 1.3),
+            );
       consecutiveSuccesses += 1;
       break;
   }

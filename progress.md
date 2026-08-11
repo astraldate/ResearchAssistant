@@ -317,3 +317,14 @@
 - 版本脚本三路回归通过：普通 `main` 分支不做标签校验、`v1.1.12` 标签通过、错误标签 `v0.0.0` 被按预期拒绝；相关 Prettier 检查通过。
 - `8fcbe8f fix(ci): 区分分支与发布标签` 已推送到 `origin/main`，工作区随后确认干净。
 - 尝试读取 GitHub Actions 实时状态时发现本机没有 `gh`；遵循 MVP 约束未安装额外工具，推送成功和远端提交更新已经由 Git 返回值确认。
+
+### 阶段 14：Windows CI 与比赛发布稳定性修复
+
+- **状态：** 进行中
+- 已根据用户提供日志定位三类独立问题：Windows CRLF 引发 Prettier 全仓误报、桌面冷编译超过 90 分钟被取消、GitHub Release API 5xx 使 `softprops` 重试耗尽。
+- 已确定发布重构方案：工作流直接执行 Tauri 构建，GitHub CLI 负责确保 draft 与上传产物，并使用最多 6 次指数退避；桌面与 Android 发布任务移除显式超时。
+- 已完成 Release 工作流重构：移除 `tauri-action`、`softprops` 和全部发布任务 `timeout-minutes`；桌面使用 `pnpm tauri build`，draft 与两端资产使用 GitHub CLI 可重入上传。
+- 已增加桌面发布 `workflow_dispatch`，可从 `main` 输入 `v1.1.12`，检出原标签代码并使用最新工作流重试，无需移动标签。
+- `.gitattributes` 与 Prettier `endOfLine=auto` 已消除 Windows 换行误报；首次完整检查从 75 个警告收敛为 5 个真实格式差异，机械格式化后完整检查通过。
+- 快速门禁通过：冲突检查、版本一致性、完整 Prettier、Web TypeScript、移动 TypeScript 和 `git diff --check`。
+- 按用户要求未在本地重复执行 NSIS 或 Android 构建；新工作流可从 Actions 手动输入 `v1.1.12` 重跑，并允许冷编译超过 90 分钟。

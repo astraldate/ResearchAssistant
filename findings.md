@@ -162,3 +162,11 @@
 - 手动卡片创建可把用户 Markdown 放入“通俗解释”区，后续编辑则使用通用 body；客户端成功后统一重新 bootstrap，不直接拼造本地记录。
 - Research Memory 已有按 Idea ID 更新与读取能力，删除可在同一模块事务中先删 `idea_paper_links` 再删 `idea_candidates`，随后发出图谱更新事件。
 - Tauri 的 build script 会在任何 `cargo check/test` 阶段验证 `tauri.conf.json` 中声明的 PDF.js 资源；独立 Rust CI 若不先恢复根 `node_modules`，会以“缺少 pdf.worker.min.js”失败。MVP 修复采用 pnpm `--ignore-scripts` 安装，只恢复资源树而不执行不必要的原生安装脚本。
+
+## Windows CI 与比赛发布失败发现
+
+- Windows runner 检出文本为 CRLF，而 Prettier 默认会按 LF 比较；因此一次性报告 75 个文件并不代表 75 处源码格式错误，核心是跨平台换行策略缺失。
+- Windows 桌面构建的冷 Rust 编译已经超过 90 分钟，工作流的 `timeout-minutes: 90` 会主动取消仍在正常编译的任务；比赛发布不应设置该任务级限制。
+- `softprops/action-gh-release` 在 GitHub Release API 连续返回 502/500 后耗尽内置重试，导致已经完成或接近完成的构建无法上传；发布元数据与资产上传需要独立、可重入的退避重试。
+- 当前 `v1.1.12` 标签已经存在，单纯修改 tag 触发工作流无法修复该次发布；桌面发布需要新增 `workflow_dispatch`，从 `main` 使用新工作流但检出指定旧 tag 构建。
+- 用户提供的 Node 20 信息明确说明 runner 已默认以 Node 24 执行；它是迁移提示而不是此次失败原因。移除 `softprops` 和 `tauri-action` 后可减少第三方 JavaScript Action 路径，但无需启用不安全的 Node 20 回退变量。

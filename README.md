@@ -190,7 +190,7 @@ Gradle 原始产物路径：
 仓库当前包含三条 GitHub Actions 流水线：
 
 - `CI`：在推送到 `main` / `master` 和发起 PR 时运行。Repository/Web、Mobile、Rust 三个任务并行执行，优先给出失败反馈。
-- `Release Desktop`：推送 `v*` tag 时运行。先创建 draft release，再并行构建 Windows 桌面包与 Android 演示 APK。
+- `Release Desktop`：推送 `v*` tag 或手动指定已有 tag 时运行。先确保 draft release 存在，再并行构建 Windows 桌面包与 Android 演示 APK。
 - `Release Android`：手动触发，检出指定的已有 tag 后重新构建并上传 Android 演示 APK，不会用当前 `main` 冒充旧标签代码。
 
 常规 CI 的快速门禁包括：
@@ -200,7 +200,11 @@ Gradle 原始产物路径：
 - 移动端 TypeScript 与聊天输入纯函数测试
 - Rust 格式与库测试；Rust/Tauri 任务会用 `--ignore-scripts` 快速恢复 PDF.js 打包资源，避免 `cargo` 校验因缺少 `node_modules` 误报失败
 
-发布工作流不会重复完整 CI。它会校验 tag 与根包、共享协议、Tauri、Cargo、Expo 和 Android 版本一致，再恢复 pnpm、Rust、Gradle 与 Ollama 缓存并构建。第三方 Action 均固定到不可变提交 SHA；Windows 和 Android 产物分别附带 SHA-256 校验文件。
+发布工作流不会重复完整 CI。它会校验 tag 与根包、共享协议、Tauri、Cargo、Expo 和 Android 版本一致，再恢复 pnpm、Rust、Gradle 与 Ollama 缓存并构建。第三方基础 Action 均固定到不可变提交 SHA；Windows 和 Android 产物分别附带 SHA-256 校验文件。
+
+比赛用 Windows 冷构建可能超过 90 分钟，因此 Release 任务不设置额外的任务级超时，使用 GitHub runner 自身上限。draft 创建和产物上传改由 GitHub CLI 执行，遇到 5xx 时最多进行 6 次指数退避；重复执行会复用已有 release 并用 `--clobber` 更新同名产物。
+
+Windows runner 与其他平台可能使用不同换行符。仓库以 `.gitattributes` 固定文本入库规范，并让 Prettier 的 `endOfLine` 使用 `auto`，因此格式门禁继续检查真实代码风格，但不再把 CRLF/LF 差异误报成数十个文件的格式问题。
 
 Android 流水线面向比赛演示，固定生成测试签名的 `-demo.apk`，不包含应用商店上架流程。
 
@@ -232,6 +236,8 @@ git push origin v1.1.12
 
 6. GitHub 会自动触发 `Release Desktop`，生成一个 draft release。
 7. 在 GitHub Releases 页面检查安装包、版本号、Android 的 `-demo` 标识和 SHA-256，确认后再手动发布 draft。
+
+如果 GitHub API 暂时返回 5xx，或 runner 在冷编译中断，可从 Actions 手动运行 `Release Desktop` 并输入同一 tag。工作流会检出该 tag、复用已有 draft，并覆盖上传同名产物，不需要移动或重建 Git 标签。
 
 ### 回滚或重发
 

@@ -10,7 +10,11 @@ interface SessionState {
   isSyncing: boolean;
   setHydrated: (value: boolean) => void;
   setSession: (session: MobileSession | null) => void;
-  setSyncState: (next: Partial<Pick<SessionState, "lastSyncAt" | "lastSyncError" | "isSyncing">>) => void;
+  setSyncState: (
+    next: Partial<
+      Pick<SessionState, "lastSyncAt" | "lastSyncError" | "isSyncing">
+    >,
+  ) => void;
 }
 
 export const useSessionStore = create<SessionState>((set) => ({

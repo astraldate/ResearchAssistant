@@ -7,13 +7,18 @@ interface AppRuntimeBoundaryState {
   message: string;
 }
 
-class AppRuntimeBoundary extends React.Component<React.PropsWithChildren, AppRuntimeBoundaryState> {
+class AppRuntimeBoundary extends React.Component<
+  React.PropsWithChildren,
+  AppRuntimeBoundaryState
+> {
   public state: AppRuntimeBoundaryState = {
     hasError: false,
     message: "",
   };
 
-  public static getDerivedStateFromError(error: Error): AppRuntimeBoundaryState {
+  public static getDerivedStateFromError(
+    error: Error,
+  ): AppRuntimeBoundaryState {
     return {
       hasError: true,
       message: error.message || "应用运行时发生错误。",

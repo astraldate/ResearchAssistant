@@ -216,10 +216,12 @@ Windows + monorepo + Expo / React Native 原生构建链，主要风险来自：
 - 常规 CI 将 Repository/Web、Mobile、Rust 拆成三个并行任务；Web 构建自身完成 TypeScript 编译，避免重复 typecheck。
 - 移动任务执行 TypeScript 检查和聊天输入纯函数测试；Rust 任务先以 `--ignore-scripts` 恢复 Tauri 配置引用的 PDF.js 资源，再执行 rustfmt 与库测试，不运行耗时的全目标发布构建。
 - `scripts/check-release-version.mjs` 统一校验根包、共享协议、Tauri、Cargo、Expo、Gradle `versionName` 和 Android `versionCode`；标签发布额外要求 tag 等于 `v<版本>`。
-- 第三方 GitHub Action 固定到不可变提交 SHA，pnpm、Rust、Gradle 和 Ollama 继续使用缓存；所有任务设置超时，普通 CI 使用最小 `contents: read` 权限。
-- 标签发布先创建 draft release，再并行构建 Windows 与 Android，缩短总等待时间。Android 产物使用测试签名并命名为 `researchassistant-mobile-v<版本>-demo.apk`。
-- 手动 Android 重发必须检出输入 tag 后再构建，不能从当前默认分支生成旧标签产物。
+- 第三方基础 GitHub Action 固定到不可变提交 SHA，pnpm、Rust、Gradle 和 Ollama 继续使用缓存；普通 CI 设置短超时并使用最小 `contents: read` 权限，发布构建不设置额外任务级超时。
+- 标签发布先确保 draft release 存在，再并行构建 Windows 与 Android，缩短总等待时间。Android 产物使用测试签名并命名为 `researchassistant-mobile-v<版本>-demo.apk`。
+- 桌面发布和 Android 重发都支持手动输入已有 tag；任务必须检出输入 tag 后再构建，不能从当前默认分支生成旧标签产物。
+- Release 创建与产物上传使用 GitHub CLI，遇到 5xx 时最多执行 6 次指数退避；重复执行复用现有 draft，并以 `--clobber` 覆盖同名资产。
 - Windows 与 Android 产物分别上传 SHA-256 校验文件，便于比赛设备快速确认文件未混淆或损坏。
+- `.gitattributes` 统一文本入库换行，Prettier 使用 `endOfLine=auto`，避免 Windows runner 将 CRLF/LF 差异误报为全仓格式失败。
 
 ## 6. Research Memory 设计
 

@@ -1,8 +1,5 @@
 name: Release Android
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 on:
   workflow_dispatch:
     inputs:
@@ -18,17 +15,19 @@ concurrency:
   group: release-android-${{ inputs.tag }}
   cancel-in-progress: false
 
+env:
+  RELEASE_TAG: ${{ inputs.tag }}
+
 jobs:
   android-apk-release:
     name: Build And Upload Android APK
     runs-on: windows-latest
-    timeout-minutes: 90
 
     steps:
       - name: Checkout requested tag
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
 
       - name: Setup pnpm
@@ -44,7 +43,7 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
 
       - name: Validate release version
-        run: node scripts/check-release-version.mjs --tag "${{ inputs.tag }}"
+        run: node scripts/check-release-version.mjs --tag "${{ env.RELEASE_TAG }}"
 
       - name: Setup Java
         uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
@@ -78,26 +77,34 @@ jobs:
         working-directory: mobile-app/android
         run: .\gradlew.bat assembleRelease --console=plain --no-daemon
 
-      - name: Prepare Android release assets
+      - name: Upload Android assets with retry
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
           $source = "mobile-app\android\app\build\outputs\apk\release\app-release.apk"
           if (-not (Test-Path $source)) {
             throw "未找到 Android release APK。"
           }
-          $asset = "mobile-app\android\app\build\outputs\apk\release\researchassistant-mobile-${{ inputs.tag }}-demo.apk"
+
+          $asset = "mobile-app\android\app\build\outputs\apk\release\researchassistant-mobile-$($env:RELEASE_TAG)-demo.apk"
           Copy-Item -LiteralPath $source -Destination $asset -Force
           $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $asset).Hash.ToLowerInvariant()
           "$hash  $([IO.Path]::GetFileName($asset))" | Set-Content -Encoding utf8 "SHA256SUMS-android.txt"
 
-      - name: Upload Android assets
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
-        with:
-          tag_name: ${{ inputs.tag }}
-          draft: true
-          files: |
-            mobile-app/android/app/build/outputs/apk/release/researchassistant-mobile-*.apk
-            SHA256SUMS-android.txt
-        env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+          $assets = @((Resolve-Path $asset).Path, (Resolve-Path "SHA256SUMS-android.txt").Path)
+          $arguments = @("release", "upload", $env:RELEASE_TAG) + $assets + @("--repo", $env:GITHUB_REPOSITORY, "--clobber")
+          $ErrorActionPreference = 'Continue'
+          for ($attempt = 1; $attempt -le 6; $attempt++) {
+            & gh @arguments
+            if ($LASTEXITCODE -eq 0) {
+              return
+            }
+            if ($attempt -lt 6) {
+              $delay = [Math]::Min(60, 5 * [Math]::Pow(2, $attempt - 1))
+              Write-Warning "Android 产物上传第 $attempt 次失败，$delay 秒后重试。"
+              Start-Sleep -Seconds $delay
+            }
+          }
+          throw "连续 6 次无法上传 Android 产物。"
