@@ -14,6 +14,21 @@
 - Research Memory 的搜索命中已包含 paper_id、标题、页码、片段和分数，可用于 A/B 分侧检索与证据卡片。
 - 用户确认：Android 优先；PDF 使用在线 PDF.js 与离线原生阅读混合模式；A+B 自动识别并确认；仅本地论文，缺论文时模型可继续但不得引用。
 
+## Rust 应用级 OCR 基线
+
+- 相邻 OCR 工程已经验证 PP-OCRv6、逐页缓存、断点续跑、旋转坐标和千页 PDF 低内存处理，但其 Python 版本只有 OCR 行框，没有可靠版面区域与阅读顺序。
+- 旧方案向 PDF 写入隐藏文字对象，选区仍会受字体 advance、ToUnicode 和查看器命中测试影响；应用级 OCR 应改为结构化 Sidecar，并由阅读器直接绘制 Token 选择层。
+- 本机 PaddleOCR 3.7 提供 LayoutDetection，但 ResearchAssistant 将采用 Rust + ONNX Runtime，不依赖 Python/Paddle 运行环境。
+- 版面区域必须区分 body、caption、visual、furniture 和 unknown；只有 body 与 caption 进入 Research Memory。
+- 当前 Research Memory 的 paper_id 由原文件路径生成，OCR 派生结果不能作为新 PDF 导入，否则会产生重复论文和分裂的 Idea 引用。
+- 当前 Windows 桌面发布只支持 x86_64，并已采用 Tauri resource/sidecar 打包；OCR 第一版可针对 Windows x64 管理 PDFium、ONNX Runtime 与模型资源。
+- 当前未提交的 `src-tauri/src/ocr/` 已包含类型、预检、版面排序、运行库清单、SQLite 存储和 Sidecar 读写，但没有模块入口，也未在 `lib.rs` 注册，因此此前的 `cargo check` 与 `cargo test` 实际没有编译这些文件。
+- 移动聊天现有取消实现会把非法 `clientRequestId` 静默替换为服务端 UUID，重复活动 ID 也会订阅同一取消通道；两者都需要在路由注册阶段显式拒绝。
+- 移动聊天任务在消息落盘后遇到检索或事件发送错误时，外层只尝试发送错误事件，没有统一持久化终态，存在会话长期停留在 `streaming` 的风险。
+- 本增量完成后，移动生成使用严格校验的唯一请求 ID；提前取消、活动 ID 冲突、断线、模型错误和桌面重启均会收敛到持久化终态，线程不再遗留 `streaming`。
+- OCR 基础模块现已进入 Rust 模块树和 Tauri 启动流程；运行库管理、PDF 预检、版面排序、SQLite 任务恢复、源签名失效和 Sidecar 读写均由无模型测试覆盖。
+- PDFium、ONNX Runtime 和版面模型最初因缺少可信 SHA-256 保持禁用；用户随后明确要求取消该门禁，本轮没有自动下载运行库或调用模型。
+
 ## 初步发现
 
 - 仓库为 pnpm workspace，包含 React/Vite/Tauri 桌面端、Rust 后端、Expo/React Native 移动端，以及共享协议包。
@@ -170,3 +185,26 @@
 - `softprops/action-gh-release` 在 GitHub Release API 连续返回 502/500 后耗尽内置重试，导致已经完成或接近完成的构建无法上传；发布元数据与资产上传需要独立、可重入的退避重试。
 - 当前 `v1.1.12` 标签已经存在，单纯修改 tag 触发工作流无法修复该次发布；桌面发布需要新增 `workflow_dispatch`，从 `main` 使用新工作流但检出指定旧 tag 构建。
 - 用户提供的 Node 20 信息明确说明 runner 已默认以 Node 24 执行；它是迁移提示而不是此次失败原因。移除 `softprops` 和 `tauri-action` 后可减少第三方 JavaScript Action 路径，但无需启用不安全的 Node 20 回退变量。
+
+## OCR 参考项目与移动横屏发现
+
+- `E:\Projects\OCR` 的可迁移价值主要是逐页释放内存、OCR 与版面缓存分离、独立断点、失败页重试、指定页处理和旋转坐标处理，而不是其 Python/PaddleOCR/PyMuPDF 技术栈。
+- ResearchAssistant 必须继续采用 Rust + ONNX Runtime 的应用级 Sidecar 路线，原 PDF 永不覆盖；隐藏文字层会再次引入字体 advance、ToUnicode 和查看器命中测试导致的选区漂移。
+- 参考项目的 `ocr/page_XXXXXX.json` 与 `layout/page_XXXXXX.json` 分层适合迁移为原始识别缓存和规范化版面 Sidecar，使识别、版面排序与索引各自可恢复。
+- PP-OCRv6 检测、识别和字典原本带 SHA-256，PDFium、ONNX Runtime 与版面模型缺少校验值；用户随后明确要求删除全部 OCR SHA-256 校验，不再以此阻止下载。
+- 当前 Rust OCR 已具备 PDF 预检、结构化版面、SQLite 任务、Sidecar 原子写入、启动恢复和运行库管理，但尚无页面渲染、ONNX 推理和作业执行器。
+- 本轮即使无法安全完成真实模型推理，也应先落地可恢复作业管线、严格的页面引擎接口、缓存隔离和失败页重试；不得把占位实现表述为已完成 OCR 推理。
+- 移动端当前被 `app.json` 和 Android Manifest 双重锁定为竖屏，必须同时解除；Manifest 已声明完整的方向与尺寸 `configChanges`，旋转不需要重建 Activity。
+- 响应式判定应同时使用方向与短边：短边至少 600dp 才视为平板；典型 `915×412dp` 横屏手机仍走紧凑布局，`1024×600dp` 及更大平板进入双栏。
+- 平板横屏 PDF 阅读器采用“左侧文档 + 右侧 300–340dp 工具区”，PDF 继续使用现有容器测量，不给 WebView 或原生 PDF 组件添加随方向变化的 `key`，避免旋转后重建和页码丢失。
+- 平板横屏可将 Tabs 移到左侧；手机与平板竖屏保留底部栏。根栈 PDF 阅读器必须处理四边安全区，尤其是 Android 平板左右手势区。
+- 论文页 expanded 布局使用两列、large 在单卡仍不小于 340dp 时使用三列；加载、离线和空状态必须占满整行。
+- 横竖屏切换必须保持当前页、缓存任务、AI 结果、当前会话和流式停止能力；PDF 文字层重新排版后旧选区应清空，不能继续使用失效坐标。
+- OCR 作业执行器采用同一进程内的 `OcrBackend` trait，每次只持有一页输出；原始识别缓存先落到 `cache/ocr/<assetId>`，规范化版面再原子写入 `sidecars/<assetId>`，只有 Sidecar 成功后才提交完成页。
+- 单页每次执行最多尝试三次；失败次数累计持久化，但恢复任务会获得新一轮三次尝试，避免失败页永久无法继续。
+- 坐标契约已经固定为“裁切区内未旋转像素 → 应用 `/Rotate` 后视觉页 → 左上原点 `[0,1]`”，并覆盖 0、90、180、270 度和越界裁切测试。
+- 本轮没有开放 `start_pdf_ocr`，原因是 PDFium 解包和 ONNX 推理后端尚未实现，而不再是 SHA-256 门禁；作业接口仍由 Fake backend 完整测试。
+- 用户明确取消 OCR 运行库的 SHA-256 门禁后，下载器改为允许清单内全部资产，只保留 HTTPS 来源、固定文件名、非空文件、HTTP Content-Length 和可选预期大小检查。
+- OCR 源文件签名和资产 ID 也从 SHA-256 改为非加密 FNV-1a 64 位指纹；这会让旧 OCR Sidecar 在首次启动时失效并重新生成，但不会修改原 PDF。
+- `usable` 现在只表示文件存在且通过基础文件检查，不代表下载内容经过密码学完整性或发布者真实性验证。
+- 平板横屏阅读布局已经实装：Tabs 左置，PDF 文档区和 320dp 工具区并排，AI 结果改为右侧抽屉；旋转不会改变 PDF/WebView 的 `key`，只清除已经失效的文字层选择。

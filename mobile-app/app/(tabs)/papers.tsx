@@ -12,6 +12,7 @@ import { ScreenShell } from "../../src/components/ScreenShell";
 import type { MobilePaperRecord } from "../../src/contracts";
 import { fetchMobilePapers } from "../../src/lib/api";
 import { listCachedPdfs } from "../../src/lib/pdfCache";
+import { useResponsiveLayout } from "../../src/lib/responsiveLayout";
 import { formatLocalDate } from "../../src/lib/time";
 import { useSessionStore } from "../../src/store/session";
 import { palette, spacing } from "../../src/theme";
@@ -23,6 +24,7 @@ type DisplayPaperRecord = MobilePaperRecord & {
 export default function PapersScreen() {
   const router = useRouter();
   const session = useSessionStore((state) => state.session);
+  const layout = useResponsiveLayout();
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshMessage, setRefreshMessage] = useState<string | null>(null);
   const papersQuery = useQuery({
@@ -74,6 +76,18 @@ export default function PapersScreen() {
   }, [papersQuery.data, papersQuery.isError, pdfCacheQuery.data, session]);
   const isListLoading =
     !displayPapers.length && (papersQuery.isLoading || pdfCacheQuery.isLoading);
+  const gridColumns =
+    layout.size === "large" ? 3 : layout.isTabletLandscape ? 2 : 1;
+  const navigationWidth = layout.isTabletLandscape
+    ? layout.size === "large"
+      ? 96
+      : 88
+    : 0;
+  const contentWidth = Math.min(layout.width - navigationWidth - 56, 1200);
+  const paperCardWidth =
+    gridColumns === 1
+      ? "100%"
+      : (contentWidth - spacing.md * (gridColumns - 1)) / gridColumns;
 
   const handleRefresh = async () => {
     if (!session) return;
@@ -138,33 +152,35 @@ export default function PapersScreen() {
           <ActivityIndicator color={palette.primary} />
         </View>
       ) : displayPapers.length ? (
-        displayPapers.map((paper) => (
-          <View
-            key={`${paper.sourceType}:${paper.paperId}`}
-            style={styles.paperCard}
-          >
-            <View style={styles.paperText}>
-              <Text style={styles.paperTitle}>{paper.title}</Text>
-              <Text style={styles.paperMeta}>
-                {paper.paperType || "paper"} ·{" "}
-                {formatLocalDate(paper.updatedAt)}
-                {paper.isCachedOnly ? " · 离线缓存" : ""}
-              </Text>
-            </View>
-            <Pressable
-              style={[
-                styles.openButton,
-                !paper.hasPdf ? styles.openButtonDisabled : null,
-              ]}
-              onPress={() => handleOpenPdf(paper)}
-              disabled={!paper.hasPdf}
+        <View style={styles.paperGrid}>
+          {displayPapers.map((paper) => (
+            <View
+              key={`${paper.sourceType}:${paper.paperId}`}
+              style={[styles.paperCard, { width: paperCardWidth }]}
             >
-              <Text style={styles.openButtonText}>
-                {paper.hasPdf ? "打开" : "无 PDF"}
-              </Text>
-            </Pressable>
-          </View>
-        ))
+              <View style={styles.paperText}>
+                <Text style={styles.paperTitle}>{paper.title}</Text>
+                <Text style={styles.paperMeta}>
+                  {paper.paperType || "paper"} ·{" "}
+                  {formatLocalDate(paper.updatedAt)}
+                  {paper.isCachedOnly ? " · 离线缓存" : ""}
+                </Text>
+              </View>
+              <Pressable
+                style={[
+                  styles.openButton,
+                  !paper.hasPdf ? styles.openButtonDisabled : null,
+                ]}
+                onPress={() => handleOpenPdf(paper)}
+                disabled={!paper.hasPdf}
+              >
+                <Text style={styles.openButtonText}>
+                  {paper.hasPdf ? "打开" : "无 PDF"}
+                </Text>
+              </Pressable>
+            </View>
+          ))}
+        </View>
       ) : (
         <View style={styles.centerPanel}>
           <Text style={styles.emptyText}>
@@ -236,6 +252,12 @@ const styles = StyleSheet.create({
     padding: spacing.md,
     flexDirection: "row",
     alignItems: "center",
+    gap: spacing.md,
+  },
+  paperGrid: {
+    width: "100%",
+    flexDirection: "row",
+    flexWrap: "wrap",
     gap: spacing.md,
   },
   paperText: {

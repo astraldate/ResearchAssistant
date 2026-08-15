@@ -1,6 +1,8 @@
 import { Ionicons } from "@expo/vector-icons";
 import { Tabs } from "expo-router";
 import type { ComponentProps } from "react";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useResponsiveLayout } from "../../src/lib/responsiveLayout";
 import { palette } from "../../src/theme";
 
 type IoniconName = ComponentProps<typeof Ionicons>["name"];
@@ -18,10 +20,14 @@ function TabIcon({
 }
 
 export default function TabLayout() {
+  const insets = useSafeAreaInsets();
+  const layout = useResponsiveLayout();
+  const useSideTabs = layout.isTabletLandscape;
   return (
     <Tabs
       screenOptions={{
         headerShown: false,
+        tabBarPosition: useSideTabs ? "left" : "bottom",
         tabBarActiveTintColor: palette.primary,
         tabBarInactiveTintColor: palette.slate,
         tabBarLabelStyle: {
@@ -30,11 +36,17 @@ export default function TabLayout() {
         },
         tabBarStyle: {
           backgroundColor: "#fffdf9",
-          borderTopColor: "#ddd7cf",
-          height: 62,
-          paddingTop: 6,
-          paddingBottom: 8,
+          borderTopColor: useSideTabs ? "transparent" : "#ddd7cf",
+          borderRightColor: useSideTabs ? "#ddd7cf" : "transparent",
+          borderRightWidth: useSideTabs ? 1 : 0,
+          width: useSideTabs ? (layout.size === "large" ? 96 : 88) : undefined,
+          height: useSideTabs ? undefined : 54 + insets.bottom,
+          paddingTop: useSideTabs ? Math.max(insets.top, 8) : 6,
+          paddingBottom: useSideTabs
+            ? Math.max(insets.bottom, 8)
+            : insets.bottom,
         },
+        tabBarItemStyle: useSideTabs ? { minHeight: 64 } : undefined,
       }}
     >
       <Tabs.Screen

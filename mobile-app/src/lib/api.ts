@@ -4,6 +4,7 @@ import {
   type MobileBootstrapResponse,
   type MobileCardRecord,
   type MobileCardWriteRequest,
+  type MobileChatCancelResponse,
   type MobileChatSendRequest,
   type MobileChatStreamEvent,
   type MobileChatThread,
@@ -529,6 +530,24 @@ export async function streamChatMessage(
     payload,
     onEvent,
     signal,
+  );
+}
+
+export async function cancelMobileChatGeneration(
+  baseUrl: string,
+  token: string,
+  clientRequestId: string,
+  signal?: AbortSignal,
+) {
+  return requestJson<MobileChatCancelResponse>(
+    baseUrl,
+    `${MOBILE_API_PREFIX}/chat/cancel`,
+    {
+      method: "POST",
+      body: JSON.stringify({ clientRequestId }),
+      signal,
+    },
+    token,
   );
 }
 

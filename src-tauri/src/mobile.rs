@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::net::TcpListener;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use uuid::Uuid;
 use walkdir::WalkDir;
 
@@ -45,6 +45,8 @@ const MOBILE_TRANSLATION_DEFAULT_MODEL: &str = "MedAIBase/Tencent-HY-MT1.5:1.8b-
 const MOBILE_CHAT_HISTORY_LIMIT: usize = 12;
 const MOBILE_CHAT_RETRIEVAL_LIMIT: usize = 5;
 const MOBILE_CHAT_QUEUE_TIMEOUT_SECS: u64 = 45;
+const MOBILE_CHAT_CANCEL_TTL_SECS: u64 = 10;
+const MOBILE_CHAT_STREAM_CLOSED: &str = "移动端流连接已关闭。";
 const MOBILE_PORT_CANDIDATES: [u16; 5] = [38465, 38466, 38467, 38468, 38469];
 
 #[cfg(target_os = "windows")]
@@ -528,6 +530,8 @@ pub struct MobileChatThreadSummary {
 pub struct MobileChatSendRequest {
     pub message: String,
     #[serde(default)]
+    pub client_request_id: Option<String>,
+    #[serde(default)]
     pub use_retrieval: Option<bool>,
     #[serde(default)]
     pub thinking_enabled: Option<bool>,
@@ -537,6 +541,19 @@ pub struct MobileChatSendRequest {
     pub command: Option<String>,
     #[serde(default)]
     pub paper_context: Option<MobileChatPaperContext>,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+struct MobileChatCancelRequest {
+    client_request_id: String,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+struct MobileChatCancelResponse {
+    client_request_id: String,
+    cancelled: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -600,6 +617,21 @@ struct MobileRouterState {
     app: AppHandle,
     mobile_state: MobileCompanionState,
     chat_queue: LlmChatQueueState,
+    chat_cancellations: MobileChatCancellationRegistry,
+}
+
+type MobileChatCancellationRegistry = Arc<Mutex<HashMap<String, MobileChatCancellationEntry>>>;
+
+#[derive(Clone)]
+enum MobileChatCancellationEntry {
+    Pending(watch::Sender<bool>),
+    Active(watch::Sender<bool>),
+}
+
+#[derive(Default)]
+struct MobileChatTaskContext {
+    thread_id: Option<String>,
+    assistant_id: Option<String>,
 }
 
 impl MobileCompanionState {
@@ -620,6 +652,7 @@ pub fn initialize_mobile_companion(
     state: MobileCompanionState,
 ) -> Result<(), String> {
     ensure_mobile_dirs(&app)?;
+    recover_interrupted_mobile_chat_threads(&app)?;
 
     let mut stored = read_stored_mobile_state(&app)?;
     if stored.pair_code.trim().is_empty() {
@@ -674,6 +707,7 @@ pub fn initialize_mobile_companion(
                     chat_queue: app_handle.state::<LlmChatQueueState>().inner().clone(),
                     app: app_handle.clone(),
                     mobile_state: state_handle.clone(),
+                    chat_cancellations: Arc::new(Mutex::new(HashMap::new())),
                 };
                 if let Err(error) = axum::serve(listener, build_mobile_router(router_state)).await {
                     if let Ok(mut runtime) = state_handle.inner.lock() {
@@ -828,6 +862,10 @@ fn build_mobile_router(state: MobileRouterState) -> Router {
         .route(
             "/api/mobile/v1/chat/innovation-intent",
             post(axum_mobile_innovation_intent),
+        )
+        .route(
+            "/api/mobile/v1/chat/cancel",
+            post(axum_cancel_mobile_chat_generation),
         )
         .route(
             "/api/mobile/v1/chat/threads/{thread_id}",
@@ -1424,6 +1462,66 @@ async fn axum_continue_chat_thread_stream(
     stream_mobile_chat_response(state, Some(thread_id), payload)
 }
 
+async fn axum_cancel_mobile_chat_generation(
+    AxumState(state): AxumState<MobileRouterState>,
+    headers: HeaderMap,
+    Json(payload): Json<MobileChatCancelRequest>,
+) -> Response {
+    if let Err(error) = authorize_headers(&state.app, &state.mobile_state, &headers) {
+        return (StatusCode::UNAUTHORIZED, error).into_response();
+    }
+    let request_id = payload.client_request_id.trim();
+    if !is_valid_mobile_chat_request_id(request_id) {
+        return (StatusCode::BAD_REQUEST, "取消请求 ID 无效。").into_response();
+    }
+    let cancelled = match state.chat_cancellations.lock() {
+        Ok(mut cancellations) => {
+            if let Some(entry) = cancellations.get(request_id) {
+                cancellation_sender(entry).send_replace(true);
+            } else {
+                // 手机可能在流式请求刚发出时立即点击停止；保留一次取消信号，
+                // 等生成请求到达后直接消费，避免出现“先取消、后启动”的竞态。
+                let (sender, receiver) = watch::channel(true);
+                drop(receiver);
+                cancellations.insert(
+                    request_id.to_string(),
+                    MobileChatCancellationEntry::Pending(sender),
+                );
+                let cancellations = state.chat_cancellations.clone();
+                let request_id = request_id.to_string();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(MOBILE_CHAT_CANCEL_TTL_SECS)).await;
+                    if let Ok(mut entries) = cancellations.lock() {
+                        let is_unclaimed = matches!(
+                            entries.get(&request_id),
+                            Some(MobileChatCancellationEntry::Pending(_))
+                        );
+                        if is_unclaimed {
+                            entries.remove(&request_id);
+                        }
+                    }
+                });
+            }
+            true
+        }
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "无法访问桌面端生成任务状态。",
+            )
+                .into_response();
+        }
+    };
+    (
+        StatusCode::OK,
+        Json(MobileChatCancelResponse {
+            client_request_id: request_id.to_string(),
+            cancelled,
+        }),
+    )
+        .into_response()
+}
+
 async fn axum_mobile_innovation_intent(
     AxumState(state): AxumState<MobileRouterState>,
     headers: HeaderMap,
@@ -1570,9 +1668,34 @@ fn stream_mobile_chat_response(
         return (StatusCode::BAD_REQUEST, "Message must not be empty.").into_response();
     }
 
+    let request_id = match normalize_mobile_chat_request_id(payload.client_request_id.as_deref()) {
+        Ok(value) => value,
+        Err(error) => return (StatusCode::BAD_REQUEST, error).into_response(),
+    };
+    let cancel_receiver =
+        match register_mobile_chat_generation(&state.chat_cancellations, &request_id) {
+            Ok(receiver) => receiver,
+            Err(MobileChatRegistrationError::Conflict) => {
+                return (
+                    StatusCode::CONFLICT,
+                    "该移动生成请求 ID 正在使用，请勿重复提交。",
+                )
+                    .into_response();
+            }
+            Err(MobileChatRegistrationError::Unavailable) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "无法注册桌面端生成任务。",
+                )
+                    .into_response();
+            }
+        };
+
     let (sender, receiver) = mpsc::channel::<Result<Bytes, Infallible>>(64);
+    let cancellation_state = state.chat_cancellations.clone();
     tauri::async_runtime::spawn(async move {
-        run_mobile_chat_stream_task(state, thread_id, payload, sender).await;
+        run_mobile_chat_stream_task(state, thread_id, payload, sender, cancel_receiver).await;
+        remove_mobile_chat_generation(&cancellation_state, &request_id);
     });
     let stream = stream::unfold(receiver, |mut receiver| async move {
         receiver.recv().await.map(|item| (item, receiver))
@@ -1583,6 +1706,76 @@ fn stream_mobile_chat_response(
         .header("content-type", "application/x-ndjson; charset=utf-8")
         .body(Body::from_stream(stream))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum MobileChatRegistrationError {
+    Conflict,
+    Unavailable,
+}
+
+fn is_valid_mobile_chat_request_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
+fn normalize_mobile_chat_request_id(value: Option<&str>) -> Result<String, String> {
+    match value.map(str::trim) {
+        None => Ok(Uuid::new_v4().simple().to_string()),
+        Some(value) if is_valid_mobile_chat_request_id(value) => Ok(value.to_string()),
+        Some(_) => Err("移动生成请求 ID 无效。".to_string()),
+    }
+}
+
+fn cancellation_sender(entry: &MobileChatCancellationEntry) -> &watch::Sender<bool> {
+    match entry {
+        MobileChatCancellationEntry::Pending(sender)
+        | MobileChatCancellationEntry::Active(sender) => sender,
+    }
+}
+
+fn register_mobile_chat_generation(
+    registry: &MobileChatCancellationRegistry,
+    request_id: &str,
+) -> Result<watch::Receiver<bool>, MobileChatRegistrationError> {
+    let mut entries = registry
+        .lock()
+        .map_err(|_| MobileChatRegistrationError::Unavailable)?;
+    match entries.remove(request_id) {
+        Some(MobileChatCancellationEntry::Pending(sender)) => {
+            let receiver = sender.subscribe();
+            entries.insert(
+                request_id.to_string(),
+                MobileChatCancellationEntry::Active(sender),
+            );
+            Ok(receiver)
+        }
+        Some(entry @ MobileChatCancellationEntry::Active(_)) => {
+            entries.insert(request_id.to_string(), entry);
+            Err(MobileChatRegistrationError::Conflict)
+        }
+        None => {
+            let (sender, receiver) = watch::channel(false);
+            entries.insert(
+                request_id.to_string(),
+                MobileChatCancellationEntry::Active(sender),
+            );
+            Ok(receiver)
+        }
+    }
+}
+
+fn remove_mobile_chat_generation(
+    registry: &MobileChatCancellationRegistry,
+    request_id: &str,
+) -> bool {
+    registry
+        .lock()
+        .map(|mut entries| entries.remove(request_id).is_some())
+        .unwrap_or(false)
 }
 
 fn bind_mobile_listener() -> Result<(std::net::TcpListener, u16), String> {
@@ -3210,10 +3403,36 @@ async fn run_mobile_chat_stream_task(
     thread_id: Option<String>,
     payload: MobileChatSendRequest,
     sender: mpsc::Sender<Result<Bytes, Infallible>>,
+    cancel_receiver: watch::Receiver<bool>,
 ) {
-    let result = run_mobile_chat_stream_task_inner(&state, thread_id, payload, &sender).await;
+    let mut context = MobileChatTaskContext::default();
+    let result = run_mobile_chat_stream_task_inner(
+        &state,
+        thread_id,
+        payload,
+        &sender,
+        cancel_receiver,
+        &mut context,
+    )
+    .await;
     if let Err(error) = result {
-        let _ = send_ndjson(&sender, json!({ "type": "error", "error": error })).await;
+        if let (Some(thread_id), Some(assistant_id)) = (
+            context.thread_id.as_deref(),
+            context.assistant_id.as_deref(),
+        ) {
+            if error == MOBILE_CHAT_STREAM_CLOSED {
+                let _ = finish_mobile_chat_interrupted_if_streaming(
+                    &state.app,
+                    thread_id,
+                    assistant_id,
+                );
+            } else {
+                let _ = finish_mobile_chat_error(&state.app, thread_id, assistant_id, &error);
+                let _ = send_ndjson(&sender, json!({ "type": "error", "error": error })).await;
+            }
+        } else {
+            let _ = send_ndjson(&sender, json!({ "type": "error", "error": error })).await;
+        }
     }
 }
 
@@ -3222,6 +3441,8 @@ async fn run_mobile_chat_stream_task_inner(
     thread_id: Option<String>,
     payload: MobileChatSendRequest,
     sender: &mpsc::Sender<Result<Bytes, Infallible>>,
+    mut cancel_receiver: watch::Receiver<bool>,
+    context: &mut MobileChatTaskContext,
 ) -> Result<(), String> {
     ensure_mobile_dirs(&state.app)?;
     let now = cards::current_timestamp_iso_utc();
@@ -3283,6 +3504,8 @@ async fn run_mobile_chat_stream_task_inner(
     thread.updated_at = now;
     thread.last_error = None;
     write_mobile_chat_thread(&state.app, &thread)?;
+    context.thread_id = Some(thread.thread_id.clone());
+    context.assistant_id = Some(assistant_id.clone());
     emit_mobile_thread_update(&state.app, &thread);
 
     send_ndjson(
@@ -3295,6 +3518,17 @@ async fn run_mobile_chat_stream_task_inner(
     )
     .await?;
     send_ndjson(sender, json!({ "type": "queued" })).await?;
+
+    if mobile_chat_cancel_requested(&cancel_receiver) {
+        return finish_mobile_chat_interrupted(
+            &state.app,
+            &thread.thread_id,
+            &assistant_id,
+            "",
+            sender,
+        )
+        .await;
+    }
 
     let innovation_evidence = if let Some(analysis) = payload.innovation_analysis.clone() {
         emit_mobile_thread_progress(
@@ -3310,7 +3544,19 @@ async fn run_mobile_chat_stream_task_inner(
             json!({ "type": "status", "status": "正在分别检索概念 A 与概念 B 的论文证据..." }),
         )
         .await?;
-        Some(build_mobile_innovation_context(&state.app, analysis).await?)
+        let evidence = tokio::select! {
+            result = build_mobile_innovation_context(&state.app, analysis) => result?,
+            _ = wait_for_mobile_chat_cancel(&mut cancel_receiver) => {
+                return finish_mobile_chat_interrupted(
+                    &state.app,
+                    &thread.thread_id,
+                    &assistant_id,
+                    "",
+                    sender,
+                ).await;
+            }
+        };
+        Some(evidence)
     } else {
         None
     };
@@ -3349,13 +3595,22 @@ async fn run_mobile_chat_stream_task_inner(
             json!({ "type": "status", "status": "正在检索知识库上下文..." }),
         )
         .await?;
-        build_mobile_chat_retrieval_context(
-            &state.app,
-            &user_message.content,
-            paper_context.as_ref(),
-        )
-        .await
-        .unwrap_or_default()
+        tokio::select! {
+            result = build_mobile_chat_retrieval_context(
+                &state.app,
+                &user_message.content,
+                paper_context.as_ref(),
+            ) => result.unwrap_or_default(),
+            _ = wait_for_mobile_chat_cancel(&mut cancel_receiver) => {
+                return finish_mobile_chat_interrupted(
+                    &state.app,
+                    &thread.thread_id,
+                    &assistant_id,
+                    "",
+                    sender,
+                ).await;
+            }
+        }
     } else {
         String::new()
     };
@@ -3372,14 +3627,22 @@ async fn run_mobile_chat_stream_task_inner(
         json!({ "type": "status", "status": "正在等待桌面模型空闲..." }),
     )
     .await?;
-    let Some(permit) = state
-        .chat_queue
-        .acquire_timeout(
+    let permit = tokio::select! {
+        permit = state.chat_queue.acquire_timeout(
             ChatPriority::Mobile,
             tokio::time::Duration::from_secs(MOBILE_CHAT_QUEUE_TIMEOUT_SECS),
-        )
-        .await
-    else {
+        ) => permit,
+        _ = wait_for_mobile_chat_cancel(&mut cancel_receiver) => {
+            return finish_mobile_chat_interrupted(
+                &state.app,
+                &thread.thread_id,
+                &assistant_id,
+                "",
+                sender,
+            ).await;
+        }
+    };
+    let Some(permit) = permit else {
         return Err("模型队列等待超时：桌面端可能仍有一个生成任务卡住。请稍后重试，或在桌面端停止当前生成。".to_string());
     };
     emit_mobile_thread_progress(
@@ -3415,12 +3678,13 @@ async fn run_mobile_chat_stream_task_inner(
         messages,
         thinking_enabled,
         sender,
+        &mut cancel_receiver,
     )
     .await;
     permit.release().await;
 
     match stream_result {
-        Ok(answer) => {
+        Ok(MobileChatGenerationOutcome::Complete(answer)) => {
             update_mobile_thread_assistant(
                 &state.app,
                 &thread.thread_id,
@@ -3469,6 +3733,16 @@ async fn run_mobile_chat_stream_task_inner(
                 }
             }
             send_ndjson(sender, json!({ "type": "done", "ideaId": saved_idea_id })).await?;
+        }
+        Ok(MobileChatGenerationOutcome::Interrupted(partial_answer)) => {
+            finish_mobile_chat_interrupted(
+                &state.app,
+                &thread.thread_id,
+                &assistant_id,
+                &partial_answer,
+                sender,
+            )
+            .await?;
         }
         Err(error) => {
             update_mobile_thread_assistant(
@@ -4057,6 +4331,81 @@ fn mobile_chat_command_instruction(command: Option<&str>) -> &'static str {
     }
 }
 
+enum MobileChatGenerationOutcome {
+    Complete(String),
+    Interrupted(String),
+}
+
+fn mobile_chat_cancel_requested(receiver: &watch::Receiver<bool>) -> bool {
+    *receiver.borrow()
+}
+
+async fn wait_for_mobile_chat_cancel(receiver: &mut watch::Receiver<bool>) {
+    if mobile_chat_cancel_requested(receiver) {
+        return;
+    }
+    while receiver.changed().await.is_ok() {
+        if mobile_chat_cancel_requested(receiver) {
+            return;
+        }
+    }
+}
+
+async fn finish_mobile_chat_interrupted(
+    app: &AppHandle,
+    thread_id: &str,
+    assistant_id: &str,
+    partial_answer: &str,
+    sender: &mpsc::Sender<Result<Bytes, Infallible>>,
+) -> Result<(), String> {
+    let content = if partial_answer.trim().is_empty() {
+        "已停止本次生成。".to_string()
+    } else {
+        partial_answer.to_string()
+    };
+    update_mobile_thread_assistant(
+        app,
+        thread_id,
+        assistant_id,
+        content,
+        MobileChatMessageStatus::Interrupted,
+        None,
+    )?;
+    send_ndjson(
+        sender,
+        json!({ "type": "interrupted", "message": "已停止本次生成。" }),
+    )
+    .await
+}
+
+fn finish_mobile_chat_interrupted_if_streaming(
+    app: &AppHandle,
+    thread_id: &str,
+    assistant_id: &str,
+) -> Result<(), String> {
+    let mut thread = read_mobile_chat_thread(app, thread_id)?;
+    let Some(message) = thread
+        .messages
+        .iter_mut()
+        .find(|message| message.message_id == assistant_id)
+    else {
+        return Ok(());
+    };
+    if message.status != MobileChatMessageStatus::Streaming {
+        return Ok(());
+    }
+    if message.content.trim().is_empty() {
+        message.content = "移动端连接中断，本次生成已停止。".to_string();
+    }
+    message.status = MobileChatMessageStatus::Interrupted;
+    thread.status = MobileChatThreadStatus::Idle;
+    thread.updated_at = cards::current_timestamp_iso_utc();
+    thread.last_error = None;
+    write_mobile_chat_thread(app, &thread)?;
+    emit_mobile_thread_update(app, &thread);
+    Ok(())
+}
+
 async fn stream_ollama_mobile_chat(
     app: &AppHandle,
     thread_id: &str,
@@ -4065,9 +4414,10 @@ async fn stream_ollama_mobile_chat(
     messages: Vec<serde_json::Value>,
     think_enabled: bool,
     sender: &mpsc::Sender<Result<Bytes, Infallible>>,
-) -> Result<String, String> {
+    cancel_receiver: &mut watch::Receiver<bool>,
+) -> Result<MobileChatGenerationOutcome, String> {
     let client = reqwest::Client::new();
-    let response = client
+    let request = client
         .post("http://localhost:11434/api/chat")
         .json(&json!({
             "model": model,
@@ -4075,9 +4425,14 @@ async fn stream_ollama_mobile_chat(
             "think": think_enabled,
             "stream": true
         }))
-        .send()
-        .await
-        .map_err(|error| format!("Failed to connect to LLM: {}", error))?;
+        .send();
+    let response = tokio::select! {
+        response = request => response
+            .map_err(|error| format!("Failed to connect to LLM: {}", error))?,
+        _ = wait_for_mobile_chat_cancel(cancel_receiver) => {
+            return Ok(MobileChatGenerationOutcome::Interrupted(String::new()));
+        }
+    };
     if !response.status().is_success() {
         return Err(format!("LLM API error: {}", response.status()));
     }
@@ -4086,7 +4441,17 @@ async fn stream_ollama_mobile_chat(
     let mut reasoning = String::new();
     let mut buffer = String::new();
     let mut bytes_stream = response.bytes_stream();
-    while let Some(chunk) = bytes_stream.next().await {
+    loop {
+        let next_chunk = tokio::select! {
+            chunk = bytes_stream.next() => chunk,
+            _ = wait_for_mobile_chat_cancel(cancel_receiver) => {
+                let partial = format_mobile_chat_answer(&answer, &reasoning);
+                return Ok(MobileChatGenerationOutcome::Interrupted(partial));
+            }
+        };
+        let Some(chunk) = next_chunk else {
+            break;
+        };
         let chunk = chunk.map_err(|error| error.to_string())?;
         buffer.push_str(&String::from_utf8_lossy(&chunk));
         while let Some(newline_index) = buffer.find('\n') {
@@ -4095,7 +4460,7 @@ async fn stream_ollama_mobile_chat(
             if line.is_empty() {
                 continue;
             }
-            process_ollama_mobile_line(
+            if let Err(error) = process_ollama_mobile_line(
                 app,
                 thread_id,
                 assistant_id,
@@ -4104,11 +4469,19 @@ async fn stream_ollama_mobile_chat(
                 &mut reasoning,
                 sender,
             )
-            .await?;
+            .await
+            {
+                if error == MOBILE_CHAT_STREAM_CLOSED {
+                    return Ok(MobileChatGenerationOutcome::Interrupted(
+                        format_mobile_chat_answer(&answer, &reasoning),
+                    ));
+                }
+                return Err(error);
+            }
         }
     }
     if !buffer.trim().is_empty() {
-        process_ollama_mobile_line(
+        if let Err(error) = process_ollama_mobile_line(
             app,
             thread_id,
             assistant_id,
@@ -4117,20 +4490,118 @@ async fn stream_ollama_mobile_chat(
             &mut reasoning,
             sender,
         )
-        .await?;
+        .await
+        {
+            if error == MOBILE_CHAT_STREAM_CLOSED {
+                return Ok(MobileChatGenerationOutcome::Interrupted(
+                    format_mobile_chat_answer(&answer, &reasoning),
+                ));
+            }
+            return Err(error);
+        }
     }
     if answer.trim().is_empty() && reasoning.trim().is_empty() {
         Err("LLM response did not include content".to_string())
-    } else if answer.trim().is_empty() {
-        Ok(format!("<think>\n{}\n</think>", reasoning.trim()))
-    } else if reasoning.trim().is_empty() {
-        Ok(answer)
     } else {
-        Ok(format!(
-            "<think>\n{}\n</think>\n\n{}",
-            reasoning.trim(),
-            answer
+        Ok(MobileChatGenerationOutcome::Complete(
+            format_mobile_chat_answer(&answer, &reasoning),
         ))
+    }
+}
+
+fn format_mobile_chat_answer(answer: &str, reasoning: &str) -> String {
+    if answer.trim().is_empty() {
+        format!("<think>\n{}\n</think>", reasoning.trim())
+    } else if reasoning.trim().is_empty() {
+        answer.to_string()
+    } else {
+        format!("<think>\n{}\n</think>\n\n{}", reasoning.trim(), answer)
+    }
+}
+
+#[cfg(test)]
+mod mobile_chat_cancellation_tests {
+    use super::*;
+
+    fn streaming_thread(content: &str) -> MobileChatThread {
+        serde_json::from_value(serde_json::json!({
+            "threadId": "thread-1",
+            "title": "测试会话",
+            "createdAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-01T00:00:00Z",
+            "model": "qwen3:8b",
+            "status": "streaming",
+            "messages": [{
+                "messageId": "assistant-1",
+                "role": "assistant",
+                "content": content,
+                "createdAt": "2026-01-01T00:00:00Z",
+                "source": "desktop",
+                "status": "streaming"
+            }],
+            "lastError": null
+        }))
+        .expect("测试会话应可读取")
+    }
+
+    #[tokio::test]
+    async fn cancellation_signal_reaches_waiting_generation() {
+        let (sender, mut receiver) = watch::channel(false);
+        sender.send_replace(true);
+
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            wait_for_mobile_chat_cancel(&mut receiver),
+        )
+        .await
+        .expect("取消信号应立即唤醒生成任务");
+        assert!(mobile_chat_cancel_requested(&receiver));
+    }
+
+    #[test]
+    fn interrupted_partial_answer_keeps_reasoning_and_answer() {
+        let content = format_mobile_chat_answer("部分回答", "部分思考");
+        assert!(content.contains("部分思考"));
+        assert!(content.contains("部分回答"));
+    }
+
+    #[test]
+    fn 非法请求_id_会被拒绝而旧客户端仍可生成() {
+        assert!(normalize_mobile_chat_request_id(None).is_ok());
+        assert!(normalize_mobile_chat_request_id(Some("mobile-123_ok.1")).is_ok());
+        assert!(normalize_mobile_chat_request_id(Some("含中文")).is_err());
+        assert!(normalize_mobile_chat_request_id(Some("bad/id")).is_err());
+    }
+
+    #[test]
+    fn 提前取消会被首个生成消费且活动_id_拒绝重复提交() {
+        let registry: MobileChatCancellationRegistry = Arc::new(Mutex::new(HashMap::new()));
+        let (sender, receiver) = watch::channel(true);
+        drop(receiver);
+        registry.lock().expect("应锁定注册表").insert(
+            "request-1".to_string(),
+            MobileChatCancellationEntry::Pending(sender),
+        );
+
+        let receiver = register_mobile_chat_generation(&registry, "request-1")
+            .expect("首个生成应消费提前取消");
+        assert!(mobile_chat_cancel_requested(&receiver));
+        assert_eq!(
+            register_mobile_chat_generation(&registry, "request-1").unwrap_err(),
+            MobileChatRegistrationError::Conflict
+        );
+        assert!(remove_mobile_chat_generation(&registry, "request-1"));
+        assert!(register_mobile_chat_generation(&registry, "request-1").is_ok());
+    }
+
+    #[test]
+    fn 错误终态保留部分回答并让线程退出_streaming() {
+        let mut thread = streaming_thread("已有部分回答");
+        apply_mobile_chat_error_terminal(&mut thread, "assistant-1", "模型连接失败");
+        assert_eq!(thread.status, MobileChatThreadStatus::Idle);
+        assert_eq!(thread.messages[0].status, MobileChatMessageStatus::Error);
+        assert_eq!(thread.messages[0].content, "已有部分回答");
+        assert_eq!(thread.last_error.as_deref(), Some("模型连接失败"));
     }
 }
 
@@ -4182,11 +4653,42 @@ async fn send_ndjson(
 ) -> Result<(), String> {
     let line = serde_json::to_string(&value).map_err(|error| error.to_string())? + "\n";
     if sender.send(Ok(Bytes::from(line))).await.is_err() {
-        // The phone may drop a long-lived HTTP stream while the desktop model keeps
-        // generating. Treat that as a best-effort push failure so the final answer
-        // is still persisted into the mobile conversation.
+        return Err(MOBILE_CHAT_STREAM_CLOSED.to_string());
     }
     Ok(())
+}
+
+fn finish_mobile_chat_error(
+    app: &AppHandle,
+    thread_id: &str,
+    assistant_id: &str,
+    error: &str,
+) -> Result<(), String> {
+    let mut thread = read_mobile_chat_thread(app, thread_id)?;
+    apply_mobile_chat_error_terminal(&mut thread, assistant_id, error);
+    thread.updated_at = cards::current_timestamp_iso_utc();
+    write_mobile_chat_thread(app, &thread)?;
+    emit_mobile_thread_update(app, &thread);
+    Ok(())
+}
+
+fn apply_mobile_chat_error_terminal(
+    thread: &mut MobileChatThread,
+    assistant_id: &str,
+    error: &str,
+) {
+    if let Some(message) = thread
+        .messages
+        .iter_mut()
+        .find(|message| message.message_id == assistant_id)
+    {
+        if message.content.trim().is_empty() {
+            message.content = format!("回答失败：{error}");
+        }
+        message.status = MobileChatMessageStatus::Error;
+    }
+    thread.status = MobileChatThreadStatus::Idle;
+    thread.last_error = Some(error.to_string());
 }
 
 fn update_mobile_thread_assistant(
@@ -4206,11 +4708,7 @@ fn update_mobile_thread_assistant(
         message.content = content;
         message.status = status.clone();
     }
-    thread.status = if last_error.is_some() {
-        MobileChatThreadStatus::Error
-    } else {
-        MobileChatThreadStatus::Idle
-    };
+    thread.status = MobileChatThreadStatus::Idle;
     thread.updated_at = cards::current_timestamp_iso_utc();
     thread.last_error = last_error;
     write_mobile_chat_thread(app, &thread)?;
@@ -4414,6 +4912,46 @@ fn write_mobile_chat_thread(app: &AppHandle, thread: &MobileChatThread) -> Resul
         content,
     )
     .map_err(|error| error.to_string())
+}
+
+fn recover_mobile_chat_thread_after_restart(thread: &mut MobileChatThread) -> bool {
+    let mut changed = false;
+    for message in &mut thread.messages {
+        if message.status == MobileChatMessageStatus::Streaming {
+            message.status = MobileChatMessageStatus::Interrupted;
+            if message.content.trim().is_empty() {
+                message.content = "桌面端重启，本次生成已中断。".to_string();
+            }
+            changed = true;
+        }
+    }
+
+    if thread.status == MobileChatThreadStatus::Streaming {
+        thread.status = MobileChatThreadStatus::Idle;
+        thread.last_error = None;
+        changed = true;
+    }
+
+    if changed {
+        thread.updated_at = cards::current_timestamp_iso_utc();
+    }
+    changed
+}
+
+fn recover_interrupted_mobile_chat_threads(app: &AppHandle) -> Result<(), String> {
+    for path in mobile_chat_thread_paths(app)? {
+        let mut thread = match read_mobile_chat_thread_file(&path) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!("跳过无法读取的移动会话文件 '{}': {}", path.display(), error);
+                continue;
+            }
+        };
+        if recover_mobile_chat_thread_after_restart(&mut thread) {
+            write_mobile_chat_thread(app, &thread)?;
+        }
+    }
+    Ok(())
 }
 
 fn read_mobile_chat_settings(app: &AppHandle) -> Result<MobileChatSettings, String> {
@@ -4728,6 +5266,37 @@ mod tests {
         assert!(message.idea_id.is_none());
         assert!(message.command.is_none());
         assert!(message.paper_context.is_none());
+    }
+
+    #[test]
+    fn 桌面重启会把遗留流式会话修复为已中断() {
+        let mut thread: MobileChatThread = serde_json::from_value(serde_json::json!({
+            "threadId": "thread-1",
+            "title": "测试会话",
+            "createdAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-01T00:00:00Z",
+            "model": "qwen3:8b",
+            "status": "streaming",
+            "messages": [{
+                "messageId": "message-1",
+                "role": "assistant",
+                "content": "已经生成的部分回答",
+                "createdAt": "2026-01-01T00:00:00Z",
+                "source": "desktop",
+                "status": "streaming"
+            }],
+            "lastError": "旧错误"
+        }))
+        .expect("测试会话应可读取");
+
+        assert!(recover_mobile_chat_thread_after_restart(&mut thread));
+        assert_eq!(thread.status, MobileChatThreadStatus::Idle);
+        assert_eq!(
+            thread.messages[0].status,
+            MobileChatMessageStatus::Interrupted
+        );
+        assert_eq!(thread.messages[0].content, "已经生成的部分回答");
+        assert!(thread.last_error.is_none());
     }
 
     #[test]

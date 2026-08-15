@@ -351,11 +351,21 @@ export interface MobileChatThreadSummary {
 
 export interface MobileChatSendRequest {
   message: string;
+  clientRequestId?: string | null;
   useRetrieval?: boolean | null;
   thinkingEnabled?: boolean | null;
   innovationAnalysis?: MobileInnovationAnalysis | null;
   command?: MobileChatCommand | null;
   paperContext?: MobileChatPaperContext | null;
+}
+
+export interface MobileChatCancelRequest {
+  clientRequestId: string;
+}
+
+export interface MobileChatCancelResponse {
+  clientRequestId: string;
+  cancelled: boolean;
 }
 
 export type MobileChatStreamEvent =
@@ -369,5 +379,6 @@ export type MobileChatStreamEvent =
     }
   | { type: "idea"; ideaId?: string; title?: string; error?: string }
   | { type: "delta"; delta: string; phase?: "thinking" | "answer" }
+  | { type: "interrupted"; message?: string }
   | { type: "done"; ideaId?: string | null }
   | { type: "error"; error: string };

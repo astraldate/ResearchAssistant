@@ -8,6 +8,7 @@ import {
   Text,
   View,
 } from "react-native";
+import { useResponsiveLayout } from "../lib/responsiveLayout";
 import { MobileMarkdown } from "./MobileMarkdown";
 import { palette, spacing } from "../theme";
 
@@ -46,6 +47,8 @@ export function MobilePdfAiPanel({
   loadingMessage,
   onRetry,
 }: MobilePdfAiPanelProps) {
+  const layout = useResponsiveLayout();
+  const isSidePanel = layout.isTabletLandscape;
   return (
     <Modal
       visible={visible}
@@ -54,15 +57,15 @@ export function MobilePdfAiPanel({
       statusBarTranslucent
       onRequestClose={onClose}
     >
-      <View style={styles.modalRoot}>
+      <View style={[styles.modalRoot, isSidePanel && styles.modalRootSide]}>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="关闭 AI 结果"
           style={styles.backdrop}
           onPress={onClose}
         />
-        <View style={styles.sheet}>
-          <View style={styles.handle} />
+        <View style={[styles.sheet, isSidePanel && styles.sheetSide]}>
+          {!isSidePanel ? <View style={styles.handle} /> : null}
           <View style={styles.header}>
             <View style={styles.headerCopy}>
               <Text style={styles.eyebrow}>桌面端 AI</Text>
@@ -130,6 +133,10 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "flex-end",
   },
+  modalRootSide: {
+    alignItems: "flex-end",
+    justifyContent: "center",
+  },
   backdrop: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(29, 36, 48, 0.42)",
@@ -148,6 +155,16 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.18,
     shadowRadius: 14,
     elevation: 16,
+  },
+  sheetSide: {
+    width: 420,
+    maxWidth: "44%",
+    height: "100%",
+    maxHeight: "100%",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 0,
+    borderBottomLeftRadius: 24,
+    paddingTop: spacing.lg,
   },
   handle: {
     alignSelf: "center",

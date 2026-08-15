@@ -3,9 +3,9 @@
     "name": "Research Assistant Mobile",
     "slug": "researchassistant-mobile",
     "scheme": "researchassistant-mobile",
-    "version": "1.1.12",
+    "version": "1.1.13",
     "icon": "./assets/icon.png",
-    "orientation": "portrait",
+    "orientation": "default",
     "userInterfaceStyle": "light",
     "splash": {
       "image": "./assets/splash-icon.png",
@@ -18,7 +18,7 @@
     },
     "android": {
       "package": "com.researchassistant.mobile",
-      "versionCode": 22,
+      "versionCode": 23,
       "usesCleartextTraffic": true,
       "permissions": ["CAMERA"],
       "adaptiveIcon": {
@@ -27,7 +27,8 @@
       }
     },
     "ios": {
-      "bundleIdentifier": "com.researchassistant.mobile"
+      "bundleIdentifier": "com.researchassistant.mobile",
+      "supportsTablet": true
     }
   }
 }

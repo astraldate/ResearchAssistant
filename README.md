@@ -8,7 +8,7 @@ ResearchAssistant 是一个本地优先的科研助理工作台，当前同时�
 
 当前主线已经覆盖资料导入、知识库检索、Research Memory、PDF 阅读与术语卡片、Notes 草稿、移动端收件箱、移动端独立聊天、移动端 PDF AI、A+B 组合创新分析、桌面笔记与知识卡片同步、局域网或 Tailscale 配对、复习事件同步，以及桌面端和 Android release 构建。
 
-当前发布版本为 `1.1.12`。移动协议版本为 `2026-08-10.v2`；HTTP 路径为兼容旧客户端继续保留 `/api/mobile/v1` 前缀。
+当前发布版本为 `1.1.13`。移动协议版本为 `2026-08-10.v2`；HTTP 路径为兼容旧客户端继续保留 `/api/mobile/v1` 前缀。
 
 ## 仓库结构
 
@@ -229,9 +229,9 @@ pnpm check:release-version
 5. 创建并推送 tag，例如：
 
 ```bash
-git tag -a v1.1.12 -m "release: v1.1.12"
+git tag -a v1.1.13 -m "release: v1.1.13"
 git push origin main
-git push origin v1.1.12
+git push origin v1.1.13
 ```
 
 6. GitHub 会自动触发 `Release Desktop`，生成一个 draft release。

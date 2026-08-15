@@ -28,6 +28,7 @@ import {
 } from "../src/lib/api";
 import { ensurePdfCached, findCachedPdf } from "../src/lib/pdfCache";
 import type { PdfSourceType } from "../src/lib/database";
+import { useResponsiveLayout } from "../src/lib/responsiveLayout";
 import { bootstrapSync } from "../src/lib/sync";
 import { useSessionStore } from "../src/store/session";
 import { palette, spacing } from "../src/theme";
@@ -36,6 +37,7 @@ export default function PdfReaderScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const windowSize = useWindowDimensions();
+  const responsiveLayout = useResponsiveLayout();
   const session = useSessionStore((state) => state.session);
   const params = useLocalSearchParams<{
     sourceType?: string;
@@ -80,6 +82,7 @@ export default function PdfReaderScreen() {
     page: initialPage,
     pageCount: null as number | null,
   });
+  const previousLandscapeRef = useRef(responsiveLayout.isLandscape);
   const pdfSource = useMemo(
     () => (localUri ? { uri: localUri } : null),
     [localUri],
@@ -121,7 +124,11 @@ export default function PdfReaderScreen() {
     }
 
     const maxWidth = Math.max(0, containerSize.width - spacing.md * 2);
-    const reservedHeight = readerMode === "online" ? 142 : 96;
+    const reservedHeight = responsiveLayout.isTabletLandscape
+      ? 42
+      : readerMode === "online"
+        ? 142
+        : 96;
     const maxHeight = Math.max(
       0,
       containerSize.height - spacing.sm * 2 - reservedHeight,
@@ -139,9 +146,18 @@ export default function PdfReaderScreen() {
     containerSize.width,
     pageAspectRatio,
     readerMode,
+    responsiveLayout.isTabletLandscape,
     windowSize.height,
     windowSize.width,
   ]);
+
+  useEffect(() => {
+    if (previousLandscapeRef.current === responsiveLayout.isLandscape) return;
+    previousLandscapeRef.current = responsiveLayout.isLandscape;
+    // PDF.js 旋转后会重新排版文字层，旧选择坐标不再可靠。
+    setSelectedText("");
+    setSelectedContext("");
+  }, [responsiveLayout.isLandscape]);
 
   const handleReaderLayout = (event: LayoutChangeEvent) => {
     const { width, height } = event.nativeEvent.layout;
@@ -539,140 +555,181 @@ export default function PdfReaderScreen() {
       }
       scroll={false}
       contentStyle={styles.readerContent}
+      maxContentWidth={responsiveLayout.width}
+      safeAreaEdges={["top", "left", "right", "bottom"]}
       headerRight={
         <Pressable style={styles.backButton} onPress={() => router.back()}>
           <Text style={styles.backButtonText}>返回</Text>
         </Pressable>
       }
     >
-      <View style={styles.readerViewport} onLayout={handleReaderLayout}>
+      <View
+        style={[
+          styles.readerViewport,
+          responsiveLayout.isTabletLandscape && styles.readerViewportLandscape,
+        ]}
+      >
         <View
           style={[
-            styles.modeBadge,
-            isOnlineReader ? styles.modeBadgeOnline : styles.modeBadgeOffline,
+            styles.documentArea,
+            responsiveLayout.isTabletLandscape && styles.documentAreaLandscape,
           ]}
+          onLayout={handleReaderLayout}
         >
           <View
             style={[
-              styles.modeDot,
-              isOnlineReader ? styles.modeDotOnline : styles.modeDotOffline,
+              styles.modeBadge,
+              isOnlineReader ? styles.modeBadgeOnline : styles.modeBadgeOffline,
             ]}
-          />
-          <Text style={styles.modeBadgeText}>
-            {isOnlineReader ? "桌面 AI 已连接" : "离线阅读"}
-          </Text>
-        </View>
-        <View style={[styles.readerPanel, readerFrame]}>
-          {isOnlineReader && webViewSource ? (
-            <WebView
-              source={webViewSource}
-              originWhitelist={companionOrigin ? [`${companionOrigin}/*`] : []}
-              onMessage={handleWebViewMessage}
-              onLoadStart={() => {
-                setViewerReady(false);
-                setOnlineStatus("正在连接桌面 AI 阅读器...");
-              }}
-              onLoad={() => setOnlineStatus("正在加载 PDF 当前页...")}
-              onError={() => fallBackToOffline("无法连接桌面 AI 阅读器。")}
-              onHttpError={(event: { nativeEvent: { statusCode: number } }) =>
-                fallBackToOffline(
-                  `桌面 AI 阅读器返回 ${event.nativeEvent.statusCode}。`,
-                )
-              }
-              onShouldStartLoadWithRequest={(request: { url: string }) =>
-                isAllowedViewerNavigation(request.url, companionOrigin)
-              }
-              javaScriptEnabled
-              nestedScrollEnabled
-              textZoom={100}
-              domStorageEnabled={false}
-              cacheEnabled={false}
-              incognito
-              allowFileAccess={false}
-              allowFileAccessFromFileURLs={false}
-              allowUniversalAccessFromFileURLs={false}
-              javaScriptCanOpenWindowsAutomatically={false}
-              setSupportMultipleWindows={false}
-              style={styles.webView}
+          >
+            <View
+              style={[
+                styles.modeDot,
+                isOnlineReader ? styles.modeDotOnline : styles.modeDotOffline,
+              ]}
             />
-          ) : pdfSource ? (
-            <StablePdfView
-              source={pdfSource}
-              initialPage={readerInitialPage}
-              onLoadComplete={handlePdfLoadComplete}
-              onPageChanged={handlePdfPageChanged}
-              onError={handlePdfError}
-            />
-          ) : (
-            <View style={styles.centerState}>
-              {statusText ? (
-                <ActivityIndicator color={palette.primary} />
-              ) : null}
-              <Text style={styles.statusText}>{errorText || statusText}</Text>
-            </View>
-          )}
-          {isOnlineReader && onlineStatus ? (
-            <View pointerEvents="none" style={styles.webLoadingOverlay}>
-              <ActivityIndicator color={palette.primary} />
-              <Text style={styles.statusText}>{onlineStatus}</Text>
-            </View>
-          ) : null}
-        </View>
-        {isOnlineReader ? (
-          <View style={styles.aiToolbar}>
-            {selectedText ? (
-              <View style={styles.selectionCopy}>
-                <Text style={styles.selectionLabel}>已选择</Text>
-                <Text numberOfLines={1} style={styles.selectionText}>
-                  {selectedText}
-                </Text>
-              </View>
-            ) : (
-              <Text style={styles.selectionHint}>
-                点击“选字”后直接拖动，松手后可翻译或解释
-              </Text>
-            )}
-            <View style={styles.aiActions}>
-              <AiActionButton
-                label="翻译选中"
-                disabled={!selectedText}
-                onPress={() => void runAiRequest("selection")}
-              />
-              <AiActionButton
-                label="解释术语"
-                disabled={!selectedText}
-                onPress={() => void runAiRequest("explanation")}
-              />
-              <AiActionButton
-                label="翻译本页"
-                emphasis
-                onPress={() => void runAiRequest("page")}
-              />
-            </View>
-          </View>
-        ) : (
-          <View style={styles.offlineNotice}>
-            <Text style={styles.offlineNoticeText}>
-              {session
-                ? "AI 阅读器当前不可用；已保留阅读页码，连接恢复后可重新进入。"
-                : "连接桌面端后可使用划词翻译、术语解释和整页翻译。"}
+            <Text style={styles.modeBadgeText}>
+              {isOnlineReader ? "桌面 AI 已连接" : "离线阅读"}
             </Text>
-            {session ? (
-              <Pressable
-                style={styles.retryButton}
-                onPress={() => {
-                  setErrorText(null);
+          </View>
+          <View style={[styles.readerPanel, readerFrame]}>
+            {isOnlineReader && webViewSource ? (
+              <WebView
+                source={webViewSource}
+                originWhitelist={
+                  companionOrigin ? [`${companionOrigin}/*`] : []
+                }
+                onMessage={handleWebViewMessage}
+                onLoadStart={() => {
                   setViewerReady(false);
-                  setOnlineStatus("正在重新连接桌面 AI 阅读器...");
-                  setReaderMode("online");
+                  setOnlineStatus("正在连接桌面 AI 阅读器...");
                 }}
-              >
-                <Text style={styles.retryButtonText}>重新连接</Text>
-              </Pressable>
+                onLoad={() => setOnlineStatus("正在加载 PDF 当前页...")}
+                onError={() => fallBackToOffline("无法连接桌面 AI 阅读器。")}
+                onHttpError={(event: { nativeEvent: { statusCode: number } }) =>
+                  fallBackToOffline(
+                    `桌面 AI 阅读器返回 ${event.nativeEvent.statusCode}。`,
+                  )
+                }
+                onShouldStartLoadWithRequest={(request: { url: string }) =>
+                  isAllowedViewerNavigation(request.url, companionOrigin)
+                }
+                javaScriptEnabled
+                nestedScrollEnabled
+                textZoom={100}
+                domStorageEnabled={false}
+                cacheEnabled={false}
+                incognito
+                allowFileAccess={false}
+                allowFileAccessFromFileURLs={false}
+                allowUniversalAccessFromFileURLs={false}
+                javaScriptCanOpenWindowsAutomatically={false}
+                setSupportMultipleWindows={false}
+                style={styles.webView}
+              />
+            ) : pdfSource ? (
+              <StablePdfView
+                source={pdfSource}
+                initialPage={readerInitialPage}
+                onLoadComplete={handlePdfLoadComplete}
+                onPageChanged={handlePdfPageChanged}
+                onError={handlePdfError}
+              />
+            ) : (
+              <View style={styles.centerState}>
+                {statusText ? (
+                  <ActivityIndicator color={palette.primary} />
+                ) : null}
+                <Text style={styles.statusText}>{errorText || statusText}</Text>
+              </View>
+            )}
+            {isOnlineReader && onlineStatus ? (
+              <View pointerEvents="none" style={styles.webLoadingOverlay}>
+                <ActivityIndicator color={palette.primary} />
+                <Text style={styles.statusText}>{onlineStatus}</Text>
+              </View>
             ) : null}
           </View>
-        )}
-        {errorText ? <Text style={styles.errorText}>{errorText}</Text> : null}
+        </View>
+        <View
+          style={[
+            styles.readerTools,
+            responsiveLayout.isTabletLandscape && styles.readerToolsLandscape,
+          ]}
+        >
+          {isOnlineReader ? (
+            <View
+              style={[
+                styles.aiToolbar,
+                responsiveLayout.isTabletLandscape && styles.aiToolbarLandscape,
+              ]}
+            >
+              {selectedText ? (
+                <View style={styles.selectionCopy}>
+                  <Text style={styles.selectionLabel}>已选择</Text>
+                  <Text numberOfLines={1} style={styles.selectionText}>
+                    {selectedText}
+                  </Text>
+                </View>
+              ) : (
+                <Text style={styles.selectionHint}>
+                  点击“选字”后直接拖动，松手后可翻译或解释
+                </Text>
+              )}
+              <View
+                style={[
+                  styles.aiActions,
+                  responsiveLayout.isTabletLandscape &&
+                    styles.aiActionsLandscape,
+                ]}
+              >
+                <AiActionButton
+                  label="翻译选中"
+                  disabled={!selectedText}
+                  onPress={() => void runAiRequest("selection")}
+                />
+                <AiActionButton
+                  label="解释术语"
+                  disabled={!selectedText}
+                  onPress={() => void runAiRequest("explanation")}
+                />
+                <AiActionButton
+                  label="翻译本页"
+                  emphasis
+                  onPress={() => void runAiRequest("page")}
+                />
+              </View>
+            </View>
+          ) : (
+            <View
+              style={[
+                styles.offlineNotice,
+                responsiveLayout.isTabletLandscape &&
+                  styles.offlineNoticeLandscape,
+              ]}
+            >
+              <Text style={styles.offlineNoticeText}>
+                {session
+                  ? "AI 阅读器当前不可用；已保留阅读页码，连接恢复后可重新进入。"
+                  : "连接桌面端后可使用划词翻译、术语解释和整页翻译。"}
+              </Text>
+              {session ? (
+                <Pressable
+                  style={styles.retryButton}
+                  onPress={() => {
+                    setErrorText(null);
+                    setViewerReady(false);
+                    setOnlineStatus("正在重新连接桌面 AI 阅读器...");
+                    setReaderMode("online");
+                  }}
+                >
+                  <Text style={styles.retryButtonText}>重新连接</Text>
+                </Pressable>
+              ) : null}
+            </View>
+          )}
+          {errorText ? <Text style={styles.errorText}>{errorText}</Text> : null}
+        </View>
       </View>
       <MobilePdfAiPanel
         visible={aiPanel.visible}
@@ -899,6 +956,31 @@ const styles = StyleSheet.create({
     backgroundColor: palette.cloud,
     paddingBottom: spacing.sm,
   },
+  readerViewportLandscape: {
+    flexDirection: "row",
+    alignItems: "stretch",
+    justifyContent: "center",
+    gap: spacing.md,
+    paddingHorizontal: spacing.md,
+  },
+  documentArea: {
+    flex: 1,
+    width: "100%",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  documentAreaLandscape: {
+    minWidth: 520,
+  },
+  readerTools: {
+    width: "100%",
+  },
+  readerToolsLandscape: {
+    width: 320,
+    borderRadius: 18,
+    overflow: "hidden",
+    alignSelf: "center",
+  },
   modeBadge: {
     flexDirection: "row",
     alignItems: "center",
@@ -980,6 +1062,13 @@ const styles = StyleSheet.create({
     paddingTop: spacing.sm,
     gap: spacing.sm,
   },
+  aiToolbarLandscape: {
+    borderTopWidth: 0,
+    borderWidth: 1,
+    borderColor: palette.border,
+    borderRadius: 18,
+    padding: spacing.md,
+  },
   selectionCopy: {
     flexDirection: "row",
     alignItems: "center",
@@ -1003,6 +1092,9 @@ const styles = StyleSheet.create({
   aiActions: {
     flexDirection: "row",
     gap: spacing.xs,
+  },
+  aiActionsLandscape: {
+    flexDirection: "column",
   },
   aiActionButton: {
     flex: 1,
@@ -1041,6 +1133,15 @@ const styles = StyleSheet.create({
     backgroundColor: palette.secondarySoft,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
+  },
+  offlineNoticeLandscape: {
+    borderTopWidth: 0,
+    borderWidth: 1,
+    borderColor: palette.border,
+    borderRadius: 18,
+    flexDirection: "column",
+    alignItems: "stretch",
+    padding: spacing.md,
   },
   offlineNoticeText: {
     flex: 1,

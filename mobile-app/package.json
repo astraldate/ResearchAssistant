@@ -1,7 +1,7 @@
 {
   "name": "researchassistant-mobile",
   "private": true,
-  "version": "1.1.12",
+  "version": "1.1.13",
   "main": "expo-router/entry",
   "expo": {
     "autolinking": {
@@ -22,7 +22,8 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
-    "test:chat-composer": "node --test --experimental-strip-types src/lib/chatComposer.test.ts"
+    "test:chat-composer": "node --test --experimental-strip-types src/lib/chatComposer.test.ts",
+    "test:responsive-layout": "node --test --experimental-strip-types src/lib/responsiveLayout.test.ts"
   },
   "dependencies": {
     "@expo/metro-runtime": "~55.0.6",

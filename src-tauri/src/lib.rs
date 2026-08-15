@@ -11,6 +11,7 @@ mod cards;
 mod chat_queue;
 mod encyclopedia;
 mod mobile;
+mod ocr;
 pub mod research_memory;
 mod text_decode;
 use cards::{
@@ -6140,6 +6141,7 @@ async fn append_mobile_chat_thread_turn(
 pub fn run() {
     let inference_settings_state = InferenceSettingsState::new();
     let mobile_companion_state = mobile::MobileCompanionState::new();
+    let ocr_runtime_state = ocr::RuntimeState::default();
     let pdf_page_text_cache_state = PdfPageTextCacheState::new();
     let llm_chat_queue_state = LlmChatQueueState::new();
 
@@ -6150,6 +6152,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(inference_settings_state)
         .manage(mobile_companion_state)
+        .manage(ocr_runtime_state)
         .manage(pdf_page_text_cache_state)
         .manage(llm_chat_queue_state)
         .setup(|app| {
@@ -6187,6 +6190,9 @@ pub fn run() {
                 .clone();
             if let Err(error) = mobile::initialize_mobile_companion(handle.clone(), mobile_state) {
                 println!("Failed to initialize mobile companion service: {}", error);
+            }
+            if let Err(error) = ocr::initialize(&handle) {
+                println!("OCR 基础服务初始化失败：{error}");
             }
             println!(
                 "[startup] tauri setup finished in {}ms",
@@ -6279,7 +6285,15 @@ pub fn run() {
             list_mobile_chat_threads,
             read_mobile_chat_thread,
             delete_mobile_chat_thread,
-            append_mobile_chat_thread_turn
+            append_mobile_chat_thread_turn,
+            ocr::get_ocr_runtime_status,
+            ocr::download_ocr_runtime,
+            ocr::cancel_ocr_runtime_download,
+            ocr::delete_ocr_runtime_assets,
+            ocr::inspect_pdf_ocr,
+            ocr::list_ocr_assets,
+            ocr::list_ocr_jobs,
+            ocr::read_ocr_page_layout
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

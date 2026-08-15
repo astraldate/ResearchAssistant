@@ -29,6 +29,7 @@ import { HubSwitch } from "../../src/components/HubSwitch";
 import { MobileMarkdown } from "../../src/components/MobileMarkdown";
 import { ScreenShell } from "../../src/components/ScreenShell";
 import {
+  cancelMobileChatGeneration,
   deleteChatThread,
   deleteMobileIdea,
   deleteMobileInnovationResult,
@@ -213,6 +214,8 @@ export default function ChatScreen() {
   >(null);
   const [error, setError] = useState<string | null>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
+  const streamingRequestIdRef = useRef<string | null>(null);
+  const streamCancelUnconfirmedRef = useRef(false);
   const inputRef = useRef<TextInput | null>(null);
   const activeThreadIdRef = useRef<string | null>(null);
   const activeThreadRef = useRef<MobileChatThread | null>(null);
@@ -621,7 +624,10 @@ export default function ChatScreen() {
   ) => {
     if (!session || !content.trim() || isStreaming) return;
     const abortController = new AbortController();
+    const clientRequestId = `mobile-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     streamAbortRef.current = abortController;
+    streamingRequestIdRef.current = clientRequestId;
+    streamCancelUnconfirmedRef.current = false;
     setInput("");
     setComposerSelection({ start: 0, end: 0 });
     setSelectedCommand(null);
@@ -681,6 +687,7 @@ export default function ChatScreen() {
         recoveryThreadId || null,
         {
           message: content,
+          clientRequestId,
           useRetrieval,
           thinkingEnabled,
           ...(innovationAnalysis ? { innovationAnalysis } : {}),
@@ -797,6 +804,18 @@ export default function ChatScreen() {
                 : previous,
             );
           }
+          if (event.type === "interrupted") {
+            setError(null);
+            setStreamStatus("已停止本次生成");
+            setActiveThread((previous) =>
+              shouldApplyStreamingUpdate(previous, recoveryThreadId)
+                ? markLastAssistantInterrupted(
+                    previous,
+                    event.message || "已停止本次生成。",
+                  )
+                : previous,
+            );
+          }
         },
         abortController.signal,
       );
@@ -808,12 +827,34 @@ export default function ChatScreen() {
         nextError instanceof Error &&
         (nextError.name === "AbortError" || abortController.signal.aborted)
       ) {
-        setError(null);
-        setStreamStatus("已停止本次生成");
+        const cancellationUnconfirmed = streamCancelUnconfirmedRef.current;
+        setError(
+          cancellationUnconfirmed
+            ? "桌面端停止状态未确认，请刷新会话后核对。"
+            : null,
+        );
+        setStreamStatus(
+          cancellationUnconfirmed ? "桌面端停止状态未确认" : "已停止本次生成",
+        );
         setActiveThread((previous) =>
           markLastAssistantInterrupted(previous, "已停止本次生成。"),
         );
         if (recoveryThreadId) {
+          const recovered = await recoverThreadAfterStreamDrop(
+            session.baseUrl,
+            session.deviceToken,
+            recoveryThreadId,
+            true,
+          );
+          if (
+            recovered &&
+            shouldApplyStreamingUpdate(
+              activeThreadRef.current,
+              recoveryThreadId,
+            )
+          ) {
+            setActiveThread(recovered);
+          }
           await loadThreads();
         }
         return;
@@ -857,6 +898,10 @@ export default function ChatScreen() {
       if (streamAbortRef.current === abortController) {
         streamAbortRef.current = null;
       }
+      if (streamingRequestIdRef.current === clientRequestId) {
+        streamingRequestIdRef.current = null;
+      }
+      streamCancelUnconfirmedRef.current = false;
       if (streamingThreadIdRef.current === recoveryThreadId) {
         streamingThreadIdRef.current = null;
       }
@@ -864,12 +909,35 @@ export default function ChatScreen() {
     }
   };
 
-  const handleStopStreaming = () => {
-    streamAbortRef.current?.abort();
+  const handleStopStreaming = async () => {
+    const streamController = streamAbortRef.current;
+    const clientRequestId = streamingRequestIdRef.current;
+    if (!streamController) return;
     setStreamStatus("正在停止...");
     setActiveThread((previous) =>
       markLastAssistantInterrupted(previous, "正在停止本次生成..."),
     );
+    if (session && clientRequestId) {
+      const cancelController = new AbortController();
+      const timeout = setTimeout(() => cancelController.abort(), 1_500);
+      try {
+        const result = await cancelMobileChatGeneration(
+          session.baseUrl,
+          session.deviceToken,
+          clientRequestId,
+          cancelController.signal,
+        );
+        if (!result.cancelled) {
+          streamCancelUnconfirmedRef.current = true;
+        }
+      } catch {
+        // 即使取消确认丢失，也要终止手机端流，避免界面一直停留在生成状态。
+        streamCancelUnconfirmedRef.current = true;
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+    streamController.abort();
   };
 
   const prepareInnovation = () => {
@@ -1508,10 +1576,10 @@ function markLastAssistant(
     messages[messages.length - 1] = {
       ...last,
       content: last.content || `生成中断：${error}`,
-      status: "interrupted",
+      status: "error",
     };
   }
-  return { ...thread, messages, status: "error", lastError: error };
+  return { ...thread, messages, status: "idle", lastError: error };
 }
 
 function shouldApplyStreamingUpdate(
@@ -1564,6 +1632,7 @@ async function recoverThreadAfterStreamDrop(
   baseUrl: string,
   token: string,
   threadId: string,
+  waitForTerminal = false,
 ) {
   for (const delayMs of [300, 1200, 3000]) {
     await delay(delayMs);
@@ -1572,7 +1641,10 @@ async function recoverThreadAfterStreamDrop(
       const lastAssistant = [...thread.messages]
         .reverse()
         .find((message) => message.role === "assistant");
-      if (lastAssistant?.content.trim() || thread.status !== "streaming") {
+      if (
+        thread.status !== "streaming" ||
+        (!waitForTerminal && lastAssistant?.content.trim())
+      ) {
         return thread;
       }
     } catch {

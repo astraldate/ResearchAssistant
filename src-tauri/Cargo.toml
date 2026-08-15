@@ -1,9 +1,10 @@
 [package]
 name = "researchassistant"
-version = "1.1.12"
+version = "1.1.13"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
+rust-version = "1.91"
 default-run = "researchassistant"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
