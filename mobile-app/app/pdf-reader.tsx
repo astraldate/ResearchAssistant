@@ -1,3 +1,6 @@
+export { default } from "../src/components/PdfReaderScreen";
+
+/*
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -1180,3 +1183,4 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
   },
 });
+*/

@@ -120,6 +120,14 @@ export interface MobilePaperRecord {
 
 export type MobilePdfSourceType = "card" | "paper" | "workspacePdf";
 
+export type PdfViewMode = "continuous" | "single";
+
+export interface PdfOutlineEntry {
+  title: string;
+  page: number;
+  depth: number;
+}
+
 export interface MobilePdfSource {
   sourceType: MobilePdfSourceType;
   sourceId: string;

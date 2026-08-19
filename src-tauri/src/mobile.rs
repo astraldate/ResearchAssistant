@@ -39,7 +39,6 @@ const MOBILE_INBOX_DIR_NAME: &str = "mobile_inbox";
 const MOBILE_INBOX_ASSET_DIR_NAME: &str = "assets";
 const MOBILE_CHAT_DIR_NAME: &str = "mobile_chat_threads";
 const MOBILE_CHAT_SETTINGS_FILE_NAME: &str = "mobile_chat_settings.json";
-const DEMO_LIBRARY_FILE_NAME: &str = "demo_library.json";
 const MOBILE_CHAT_DEFAULT_MODEL: &str = "qwen3.5:9b";
 const MOBILE_TRANSLATION_DEFAULT_MODEL: &str = "MedAIBase/Tencent-HY-MT1.5:1.8b-q4_K_M";
 const MOBILE_CHAT_HISTORY_LIMIT: usize = 12;
@@ -175,29 +174,6 @@ pub struct MobilePaperRecord {
     pub updated_at: String,
     pub has_pdf: bool,
     pub source_type: String,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-struct DemoLibrarySettings {
-    enabled: bool,
-    visible_file_names: Vec<String>,
-}
-
-impl Default for DemoLibrarySettings {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            visible_file_names: vec![
-                "Tan 等 - 2025 - Integration of Single-Cell Analysis and Bulk RNA Sequencing Data Using Multi-Level Attention Graph N.pdf".to_string(),
-                "Tejada-Lapuerta 等 - 2025 - Causal machine learning for single-cell genomics.pdf".to_string(),
-                "Raj 等 - 2012 - A network diffusion model of disease progression in dementia.pdf".to_string(),
-                "Liu 等 - 2024 - TP-GNN Continuous Dynamic Graph Neural Network for Graph Classification.pdf".to_string(),
-                "Ali 等 - 2025 - Graph neural networks in alzheimer's disease diagnosis a review of unimodal and multimodal advances.pdf".to_string(),
-                "2024 - Self-explainable graph neural network for alzheimer disease and related dementias risk prediction a.pdf".to_string(),
-            ],
-        }
-    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -2506,18 +2482,15 @@ fn strip_mobile_markdown_frontmatter(content: &str) -> &str {
 }
 
 async fn load_mobile_papers(app: &AppHandle) -> Result<Vec<MobilePaperRecord>, String> {
-    let demo_library = load_demo_library_settings(app)?;
     let papers = research_memory::list_research_papers(app)
         .await
         .map_err(|error| error.to_string())?;
     let indexed_paths = papers
         .iter()
-        .filter(|paper| is_demo_visible_path(&paper.path, &demo_library))
         .map(|paper| paper.path.clone())
         .collect::<HashSet<_>>();
     let mut result = papers
         .into_iter()
-        .filter(|paper| is_demo_visible_path(&paper.path, &demo_library))
         .map(|paper| MobilePaperRecord {
             paper_id: paper.paper_id,
             title: paper.title,
@@ -2527,11 +2500,7 @@ async fn load_mobile_papers(app: &AppHandle) -> Result<Vec<MobilePaperRecord>, S
             source_type: "paper".to_string(),
         })
         .collect::<Vec<_>>();
-    result.extend(collect_workspace_pdf_records(
-        app,
-        &indexed_paths,
-        &demo_library,
-    )?);
+    result.extend(collect_workspace_pdf_records(app, &indexed_paths)?);
     result.sort_by(|left, right| {
         right
             .updated_at
@@ -2829,77 +2798,97 @@ fn render_mobile_pdf_viewer_html(source: &MobilePdfSource, token: &str) -> Strin
     r#"<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=4,user-scalable=yes">
 <style>
-html,body{margin:0;background:#e5e7eb;color:#111827;font-family:system-ui,sans-serif;-webkit-text-size-adjust:none;text-size-adjust:none}#toolbar{position:sticky;top:0;z-index:20;display:flex;justify-content:center;align-items:center;gap:8px;padding:7px;background:#fff;border-bottom:1px solid #d1d5db;-webkit-user-select:none;user-select:none}button{border:0;border-radius:8px;padding:7px 10px;background:#e5e7eb;color:#111827;white-space:nowrap}button:disabled{opacity:.5}button.active{background:#0f766e;color:#fff}#status{min-width:52px;text-align:center}#pages{padding:10px 0 40px;min-height:60vh}.page{position:relative;margin:0 auto 12px;background:#fff;box-shadow:0 2px 8px #0002}canvas{display:block;pointer-events:none}.textLayer{position:absolute;inset:0;overflow:hidden;opacity:1;line-height:1;text-align:initial;transform-origin:0 0;z-index:2;-webkit-user-select:text;user-select:text;-webkit-touch-callout:default;touch-action:pan-x pan-y pinch-zoom}.textLayer span,.textLayer br{color:transparent;position:absolute;white-space:pre;cursor:text;transform-origin:0 0;-webkit-user-select:text;user-select:text}.textLayer ::selection{background:rgba(37,99,235,.42)}body.selectionMode .textLayer{touch-action:none;cursor:text;-webkit-user-select:none;user-select:none}body.selectionMode .textLayer span{cursor:text;-webkit-user-select:none;user-select:none}.dragSelectionHighlight{position:absolute;z-index:3;border-radius:1px;background:rgba(37,99,235,.42);pointer-events:none}.selectionHandle{position:absolute;z-index:6;width:44px;height:44px;margin:-10px 0 0 -22px;border-radius:50%;background:transparent;touch-action:none}.selectionHandle::after{content:'';position:absolute;left:15px;top:15px;width:14px;height:14px;border-radius:50%;background:#2563eb;border:2px solid #fff;box-shadow:0 1px 4px #0006}.selectionHandleStart::after{top:5px}.selectionHandleEnd::after{top:25px}
-</style></head><body><div id="toolbar"><button id="prev">上一页</button><span id="status">加载中…</span><button id="next">下一页</button><button id="select">选字</button></div><main id="pages"></main>
+html,body{margin:0;min-height:100%;background:#dfe3e8;color:#111827;font-family:system-ui,sans-serif;-webkit-text-size-adjust:none;text-size-adjust:none}body{overflow-x:auto}#fallbackToolbar{position:sticky;top:0;z-index:20;display:flex;justify-content:center;align-items:center;gap:6px;padding:6px;background:#fffc;border-bottom:1px solid #d1d5db;backdrop-filter:blur(10px);-webkit-user-select:none;user-select:none}body.hostReady #fallbackToolbar{display:none}button{min-height:40px;border:0;border-radius:10px;padding:7px 10px;background:#e5e7eb;color:#111827;white-space:nowrap}button:disabled{opacity:.5}button.active{background:#0f766e;color:#fff}#status{min-width:58px;text-align:center;font-size:13px}#pages{padding:8px 0 48px;min-height:100vh}.page{position:relative;margin:0 auto 12px;background:#fff;box-shadow:0 2px 10px #0002;overflow:hidden}.pagePlaceholder{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#6b7280;font-size:13px;background:#fff}.page canvas{display:block;pointer-events:none}.textLayer{position:absolute;inset:0;overflow:hidden;opacity:1;line-height:1;text-align:initial;transform-origin:0 0;z-index:2;-webkit-user-select:text;user-select:text;-webkit-touch-callout:default;touch-action:pan-x pan-y pinch-zoom}.textLayer span,.textLayer br{color:transparent;position:absolute;white-space:pre;cursor:text;transform-origin:0 0;-webkit-user-select:text;user-select:text}.textLayer ::selection{background:rgba(37,99,235,.42)}.textLayer br::selection{background:transparent}body.selectionMode .textLayer{touch-action:pan-x pan-y pinch-zoom;cursor:text;-webkit-user-select:none;user-select:none}body.selectionMode .textLayer span{cursor:text;-webkit-user-select:none;user-select:none}.dragSelectionHighlight{position:absolute;z-index:3;border-radius:1px;background:rgba(37,99,235,.42);pointer-events:none}.selectionHandle{position:absolute;z-index:6;width:44px;height:44px;margin:-10px 0 0 -22px;border-radius:50%;background:transparent;touch-action:none}.selectionHandle::after{content:'';position:absolute;left:15px;top:15px;width:14px;height:14px;border-radius:50%;background:#2563eb;border:2px solid #fff;box-shadow:0 1px 4px #0006}.selectionHandleStart::after{top:5px}.selectionHandleEnd::after{top:25px}body.singleMode #pages{display:flex;min-height:100vh;align-items:flex-start}body.singleMode .page{display:none;margin-bottom:0}body.singleMode .page.current{display:block}
+</style></head><body><div id="fallbackToolbar"><button id="prev">上一页</button><span id="status">加载中…</span><button id="next">下一页</button><button id="mode">连续</button><button id="select">选字</button></div><main id="pages"></main>
 <script src="/api/mobile/v1/pdf-viewer/assets/pdf.min.js"></script><script>
 const cfg=__CONFIG__;
 const send=(data)=>window.ReactNativeWebView?.postMessage(JSON.stringify(data));
+const pagesElement=document.querySelector('#pages');
 const statusElement=document.querySelector('#status');
 const previousButton=document.querySelector('#prev');
 const nextButton=document.querySelector('#next');
+const modeButton=document.querySelector('#mode');
 const selectButton=document.querySelector('#select');
+const pageStates=new Map();
+const visualMaps=new WeakMap();
 let documentRef=null;
 let currentPage=cfg.initialPage||1;
-let rendering=false;
+let viewMode='continuous';
 let selectionMode=false;
-function reportError(error){const message=String(error?.message||error||'未知错误');statusElement.textContent='加载失败';send({type:'error',message});}
-async function renderPage(number){
-  clearCustomSelection();getSelection()?.removeAllRanges();lastSelectionKey='';selectionGesture=null;visualMap=null;
-  const page=await documentRef.getPage(number);
-  const baseViewport=page.getViewport({scale:1});
-  const availableWidth=Math.max(280,document.documentElement.clientWidth-20);
-  const viewport=page.getViewport({scale:availableWidth/baseViewport.width});
-  const host=document.createElement('section');host.className='page';host.dataset.page=number;host.style.width=viewport.width+'px';host.style.height=viewport.height+'px';
-  const canvas=document.createElement('canvas');const ratio=devicePixelRatio||1;canvas.width=Math.floor(viewport.width*ratio);canvas.height=Math.floor(viewport.height*ratio);canvas.style.width=viewport.width+'px';canvas.style.height=viewport.height+'px';host.appendChild(canvas);
-  const layer=document.createElement('div');layer.className='textLayer';layer.style.width=viewport.width+'px';layer.style.height=viewport.height+'px';layer.style.setProperty('--scale-factor',String(viewport.scale));host.appendChild(layer);
-  document.querySelector('#pages').replaceChildren(host);
-  await page.render({canvasContext:canvas.getContext('2d'),viewport,transform:ratio===1?null:[ratio,0,0,ratio,0,0]}).promise;
-  const text=await page.getTextContent();
-  await pdfjsLib.renderTextLayer({textContentSource:text,container:layer,viewport,textDivs:[]}).promise;
-  const prepareVisualMap=()=>{if(layer.isConnected)visualMap=buildVisualTextMap(layer);};
-  if(window.requestIdleCallback)window.requestIdleCallback(prepareVisualMap,{timeout:1200});else setTimeout(prepareVisualMap,80);
-}
-async function go(page){
-  if(!documentRef||rendering)return;
-  const target=Math.max(1,Math.min(documentRef.numPages,page));
-  rendering=true;previousButton.disabled=true;nextButton.disabled=true;statusElement.textContent=`正在加载第 ${target} 页…`;
-  try{await renderPage(target);currentPage=target;statusElement.textContent=`${currentPage} / ${documentRef.numPages}`;send({type:'page',page:currentPage,pageCount:documentRef.numPages});}
-  catch(error){reportError(error);}
-  finally{rendering=false;previousButton.disabled=currentPage<=1;nextButton.disabled=currentPage>=documentRef.numPages;}
-}
-async function load(){
-  try{
-    if(!window.pdfjsLib)throw new Error('PDF.js 主资源加载失败。');
-    pdfjsLib.GlobalWorkerOptions.workerSrc='/api/mobile/v1/pdf-viewer/assets/pdf.worker.min.js';
-    const pdfUrl=new URL('/api/mobile/v1/pdf-viewer/pdf-content',location.href);pdfUrl.searchParams.set('sourceType',cfg.sourceType);pdfUrl.searchParams.set('sourceId',cfg.sourceId);pdfUrl.searchParams.set('page',String(cfg.initialPage||1));
-    const task=pdfjsLib.getDocument({url:pdfUrl.href,httpHeaders:{Authorization:'Bearer '+cfg.token},rangeChunkSize:262144,disableAutoFetch:true,disableStream:true});
-    documentRef=await task.promise;currentPage=Math.max(1,Math.min(documentRef.numPages,currentPage));await go(currentPage);send({type:'ready',pageCount:documentRef.numPages});
-  }catch(error){reportError(error);}
-}
-previousButton.onclick=()=>void go(currentPage-1);nextButton.onclick=()=>void go(currentPage+1);
+let scrollFrame=0;
+let resizeTimer=0;
+let defaultAspectRatio=1.414;
+let renderGeneration=0;
 let lastSelectionKey='';
-let customSelectionText='';let customSelectionPage=currentPage;let visualMap=null;let selectionFlow=null;let selectionStartIndex=0;let selectionEndIndex=0;let selectionNodes=[];let selectionGesture=null;
-function clearCustomSelection(clearText=true){for(const node of selectionNodes)node.remove();selectionNodes=[];if(clearText){customSelectionText='';selectionFlow=null;selectionStartIndex=0;selectionEndIndex=0;}}
-function selectionContext(text,selection){if(selectionFlow&&customSelectionText){const begin=Math.max(0,selectionStartIndex-360);const end=Math.min(selectionFlow.chars.length,selectionEndIndex+361);return selectedTextForChars(selectionFlow.chars.slice(begin,end)).slice(0,1400);}let element=null;if(selection?.rangeCount){const node=selection.getRangeAt(0).startContainer;element=node.nodeType===Node.ELEMENT_NODE?node:node.parentElement;}const layer=element?.closest?.('.textLayer')||document.querySelector('.textLayer');const pageText=(layer?.innerText||layer?.textContent||'').replace(/\s+/g,' ').trim();if(!pageText)return'';const index=pageText.indexOf(text);if(index<0)return pageText.slice(0,1400);return pageText.slice(Math.max(0,index-500),Math.min(pageText.length,index+text.length+500));}
-function publishSelection(){const selection=getSelection();const nativeText=selection?.toString().trim()||'';const text=(customSelectionText||nativeText).trim();let page=customSelectionText?customSelectionPage:currentPage;if(!customSelectionText&&selection?.rangeCount){const node=selection.getRangeAt(0).startContainer;const element=node.nodeType===Node.ELEMENT_NODE?node:node.parentElement;page=Number(element?.closest('.page')?.dataset.page||page);}const context=selectionContext(text,selection);const key=`${page}:${text}:${context}`;if(key===lastSelectionKey)return;lastSelectionKey=key;send({type:'selection',text,page,context});}
+let customSelectionText='';
+let customSelectionPage=currentPage;
+let activeVisualMap=null;
+let selectionFlow=null;
+let selectionStartIndex=0;
+let selectionEndIndex=0;
+let selectionNodes=[];
+let selectionGesture=null;
+let selectionCandidate=null;
+
+function reportError(error){const message=String(error?.message||error||'未知错误');statusElement.textContent='加载失败';send({type:'error',message});}
+function clampPage(value){return Math.max(1,Math.min(documentRef?.numPages||1,Math.floor(Number(value)||1)));}
+function availableWidth(){return Math.max(280,document.documentElement.clientWidth-16);}
+function pagePlaceholder(number){const node=document.createElement('div');node.className='pagePlaceholder';node.textContent=`第 ${number} 页`;return node;}
+function updateStatus(){statusElement.textContent=`${currentPage} / ${documentRef?.numPages||'?'}`;previousButton.disabled=currentPage<=1;nextButton.disabled=currentPage>=(documentRef?.numPages||1);modeButton.textContent=viewMode==='continuous'?'连续':'单页';selectButton.textContent=selectionMode?'退出选字':'选字';selectButton.classList.toggle('active',selectionMode);}
+function emitPage(){updateStatus();send({type:'page',page:currentPage,pageCount:documentRef?.numPages||0});}
+function clearCustomSelection(clearText=true){for(const node of selectionNodes)node.remove();selectionNodes=[];if(clearText){customSelectionText='';selectionFlow=null;selectionStartIndex=0;selectionEndIndex=0;activeVisualMap=null;}}
+function cancelSelectionCandidate(){selectionCandidate=null;}
+function clearSelection(){clearCustomSelection();getSelection()?.removeAllRanges();lastSelectionKey='';selectionGesture=null;cancelSelectionCandidate();}
+function publishClearedSelection(page=currentPage){clearSelection();send({type:'selection',text:'',page:Number(page)||currentPage,context:''});}
+
+function createPageShell(number){const shell=document.createElement('section');shell.className='page';shell.dataset.page=String(number);shell.style.width=availableWidth()+'px';shell.style.height=Math.round(availableWidth()*defaultAspectRatio)+'px';shell.appendChild(pagePlaceholder(number));pagesElement.appendChild(shell);pageStates.set(number,{shell,rendered:false,rendering:false,renderTask:null,generation:0});return shell;}
+function setShellMetrics(shell,viewport){shell.style.width=viewport.width+'px';shell.style.height=viewport.height+'px';}
+async function renderPage(number){const state=pageStates.get(number);if(!state||state.rendered||state.rendering)return;state.rendering=true;const generation=renderGeneration;state.generation=generation;try{const page=await documentRef.getPage(number);if(state.generation!==generation)return;const baseViewport=page.getViewport({scale:1});const viewport=page.getViewport({scale:availableWidth()/baseViewport.width});setShellMetrics(state.shell,viewport);const canvas=document.createElement('canvas');const ratio=devicePixelRatio||1;canvas.width=Math.max(1,Math.floor(viewport.width*ratio));canvas.height=Math.max(1,Math.floor(viewport.height*ratio));canvas.style.width=viewport.width+'px';canvas.style.height=viewport.height+'px';const layer=document.createElement('div');layer.className='textLayer';layer.dataset.page=String(number);layer.style.width=viewport.width+'px';layer.style.height=viewport.height+'px';layer.style.setProperty('--scale-factor',String(viewport.scale));state.shell.replaceChildren(canvas,layer);const context=canvas.getContext('2d');if(!context)throw new Error('无法创建 PDF Canvas。');state.renderTask=page.render({canvasContext:context,viewport,transform:ratio===1?null:[ratio,0,0,ratio,0,0]});await state.renderTask.promise;if(state.generation!==generation)return;const text=await page.getTextContent();await pdfjsLib.renderTextLayer({textContentSource:text,container:layer,viewport,textDivs:[]}).promise;if(state.generation!==generation)return;state.rendered=true;}catch(error){if(error?.name!=='RenderingCancelledException'){state.shell.replaceChildren(pagePlaceholder(number));state.shell.querySelector('.pagePlaceholder').textContent=`第 ${number} 页加载失败`;send({type:'pageError',page:number,message:String(error?.message||error)});}}finally{state.rendering=false;state.renderTask=null;}}
+function releasePage(number){const state=pageStates.get(number);if(!state||(!state.rendered&&!state.rendering))return;if(customSelectionText&&customSelectionPage===number)return;state.generation=++renderGeneration;state.renderTask?.cancel?.();state.renderTask=null;state.rendered=false;state.rendering=false;state.shell.replaceChildren(pagePlaceholder(number));}
+function renderTargets(){if(!documentRef)return[];if(viewMode==='single')return[currentPage];const start=Math.max(1,currentPage-2);const end=Math.min(documentRef.numPages,currentPage+2);const targets=[];for(let number=start;number<=end;number+=1)targets.push(number);return targets;}
+function syncRenderWindow(){const targets=new Set(renderTargets());for(const number of targets)void renderPage(number);for(const number of pageStates.keys())if(!targets.has(number))releasePage(number);}
+function markCurrentPage(){for(const [number,state] of pageStates){state.shell.classList.toggle('current',number===currentPage);}}
+function nearestPageToViewport(){const viewportTop=document.body.classList.contains('hostReady')?0:document.querySelector('#fallbackToolbar').getBoundingClientRect().bottom;const viewportBottom=window.innerHeight;let best=currentPage;let bestRatio=-1;let bestDistance=Infinity;for(const [number,state] of pageStates){const rect=state.shell.getBoundingClientRect();const overlap=Math.max(0,Math.min(rect.bottom,viewportBottom)-Math.max(rect.top,viewportTop));const ratio=overlap/Math.max(1,Math.min(rect.height,viewportBottom-viewportTop));const distance=Math.abs(rect.top-viewportTop);if(ratio>bestRatio||(Math.abs(ratio-bestRatio)<0.001&&distance<bestDistance)){best=number;bestRatio=ratio;bestDistance=distance;}}return best;}
+function handleScroll(){cancelSelectionCandidate();if(viewMode!=='continuous')return;cancelAnimationFrame(scrollFrame);scrollFrame=requestAnimationFrame(()=>{const next=nearestPageToViewport();if(next!==currentPage){currentPage=next;markCurrentPage();emitPage();syncRenderWindow();}send({type:'interaction',kind:'scroll'});});}
+function scrollToPage(number,behavior='smooth'){if(!documentRef)return;currentPage=clampPage(number);markCurrentPage();syncRenderWindow();if(viewMode==='continuous')pageStates.get(currentPage)?.shell.scrollIntoView({block:'start',behavior});else window.scrollTo({top:0,behavior:'auto'});emitPage();}
+function setViewMode(mode){const next=mode==='single'?'single':'continuous';if(next===viewMode)return;viewMode=next;clearSelection();document.body.classList.toggle('singleMode',viewMode==='single');markCurrentPage();syncRenderWindow();requestAnimationFrame(()=>scrollToPage(currentPage,'auto'));send({type:'viewMode',mode:viewMode});}
+function setSelectionMode(enabled){cancelSelectionCandidate();selectionMode=Boolean(enabled);document.body.classList.toggle('selectionMode',selectionMode);if(!selectionMode)clearSelection();updateStatus();send({type:'selectionMode',enabled:selectionMode});}
+function resetFit(){renderGeneration+=1;clearSelection();for(const state of pageStates.values()){state.renderTask?.cancel?.();state.rendered=false;state.rendering=false;state.generation=renderGeneration;state.shell.style.width=availableWidth()+'px';state.shell.style.height=Math.round(availableWidth()*defaultAspectRatio)+'px';state.shell.replaceChildren(pagePlaceholder(Number(state.shell.dataset.page)));}syncRenderWindow();requestAnimationFrame(()=>scrollToPage(currentPage,'auto'));}
+
+async function resolveOutlinePage(destination){try{const dest=typeof destination==='string'?await documentRef.getDestination(destination):destination;if(!Array.isArray(dest)||!dest[0])return null;return(await documentRef.getPageIndex(dest[0]))+1;}catch{return null;}}
+async function flattenOutline(items,depth=0,result=[]){for(const item of items||[]){const page=await resolveOutlinePage(item.dest);if(page)result.push({title:String(item.title||`第 ${page} 页`).trim()||`第 ${page} 页`,page,depth});if(item.items?.length)await flattenOutline(item.items,depth+1,result);}return result;}
+
+async function load(){try{if(!window.pdfjsLib)throw new Error('PDF.js 主资源加载失败。');pdfjsLib.GlobalWorkerOptions.workerSrc='/api/mobile/v1/pdf-viewer/assets/pdf.worker.min.js';const pdfUrl=new URL('/api/mobile/v1/pdf-viewer/pdf-content',location.href);pdfUrl.searchParams.set('sourceType',cfg.sourceType);pdfUrl.searchParams.set('sourceId',cfg.sourceId);pdfUrl.searchParams.set('page',String(cfg.initialPage||1));const task=pdfjsLib.getDocument({url:pdfUrl.href,httpHeaders:{Authorization:'Bearer '+cfg.token},rangeChunkSize:262144,disableAutoFetch:true,disableStream:true});documentRef=await task.promise;currentPage=clampPage(currentPage);const firstPage=await documentRef.getPage(currentPage);const firstViewport=firstPage.getViewport({scale:1});defaultAspectRatio=firstViewport.height/Math.max(1,firstViewport.width);for(let number=1;number<=documentRef.numPages;number+=1)createPageShell(number);markCurrentPage();syncRenderWindow();requestAnimationFrame(()=>scrollToPage(currentPage,'auto'));let outline=[];try{outline=await flattenOutline(await documentRef.getOutline());}catch(error){send({type:'outlineError',message:String(error?.message||error)});}send({type:'ready',protocolVersion:3,capabilities:['continuous-scroll','single-page','outline','host-toolbar','page-selection','strict-glyph-selection'],pageCount:documentRef.numPages,outline});updateStatus();}catch(error){reportError(error);}}
+
+function handleHostCommand(value){let command=value;try{if(typeof value==='string')command=JSON.parse(value);}catch{return;}if(!command||typeof command!=='object')return;if(command.type==='hostReady'){document.body.classList.add('hostReady');send({type:'hostReady'});return;}if(command.type==='goToPage'){scrollToPage(command.page);return;}if(command.type==='setViewMode'){setViewMode(command.mode);return;}if(command.type==='setSelectionMode'){setSelectionMode(command.enabled);return;}if(command.type==='resetFit'){resetFit();return;}if(command.type==='clearSelection')clearSelection();}
+window.addEventListener('message',(event)=>handleHostCommand(event.data));document.addEventListener('message',(event)=>handleHostCommand(event.data));
+previousButton.onclick=()=>scrollToPage(currentPage-1);nextButton.onclick=()=>scrollToPage(currentPage+1);modeButton.onclick=()=>setViewMode(viewMode==='continuous'?'single':'continuous');selectButton.onclick=()=>setSelectionMode(!selectionMode);
+
+function selectionContext(text,selection){if(selectionFlow&&customSelectionText){const begin=Math.max(0,selectionStartIndex-360);const end=Math.min(selectionFlow.chars.length,selectionEndIndex+361);return selectedTextForChars(selectionFlow.chars.slice(begin,end)).slice(0,1400);}let element=null;if(selection?.rangeCount){const node=selection.getRangeAt(0).startContainer;element=node.nodeType===Node.ELEMENT_NODE?node:node.parentElement;}const layer=element?.closest?.('.textLayer')||activeVisualMap?.layer;const pageText=(layer?.innerText||layer?.textContent||'').replace(/\s+/g,' ').trim();if(!pageText)return'';const index=pageText.indexOf(text);if(index<0)return pageText.slice(0,1400);return pageText.slice(Math.max(0,index-500),Math.min(pageText.length,index+text.length+500));}
+function publishSelection(){const selection=getSelection();const nativeText=selection?.toString().trim()||'';const text=(customSelectionText||nativeText).trim();let page=customSelectionText?customSelectionPage:currentPage;if(!customSelectionText&&selection?.rangeCount){const node=selection.getRangeAt(0).startContainer;const element=node.nodeType===Node.ELEMENT_NODE?node:node.parentElement;page=Number(element?.closest('.page')?.dataset.page||page);}const context=selectionContext(text,selection);const key=`${page}:${text}:${context}`;if(!text||key===lastSelectionKey)return;lastSelectionKey=key;send({type:'selection',text,page,context});}
 function scheduleSelection(delay=420){clearTimeout(window.__selectionTimer);window.__selectionTimer=setTimeout(publishSelection,delay);}
 function median(values){if(!values.length)return 0;const sorted=[...values].sort((a,b)=>a-b);return sorted[Math.floor(sorted.length/2)];}
-function buildVisualTextMap(layer){const layerRect=layer.getBoundingClientRect();const walker=document.createTreeWalker(layer,NodeFilter.SHOW_TEXT);const chars=[];while(walker.nextNode()){const node=walker.currentNode;const value=node.nodeValue||'';for(let offset=0;offset<value.length;){const length=(value.codePointAt(offset)||0)>65535?2:1;const range=document.createRange();range.setStart(node,offset);range.setEnd(node,Math.min(value.length,offset+length));const rect=Array.from(range.getClientRects()).find(item=>item.height>0&&item.width>0);if(rect){chars.push({node,offset,endOffset:offset+length,char:value.slice(offset,offset+length),left:rect.left-layerRect.left,right:rect.right-layerRect.left,top:rect.top-layerRect.top,bottom:rect.bottom-layerRect.top,width:rect.width,height:rect.height,centerX:(rect.left+rect.right)/2-layerRect.left,centerY:(rect.top+rect.bottom)/2-layerRect.top});}offset+=length;}}const ordered=[...chars].sort((a,b)=>a.centerY-b.centerY||a.left-b.left);const lines=[];for(const char of ordered){let best=null;let bestDistance=Infinity;for(let index=Math.max(0,lines.length-5);index<lines.length;index++){const line=lines[index];const distance=Math.abs(char.centerY-line.centerY);if(distance<=Math.max(char.height,line.height)*0.55&&distance<bestDistance){best=line;bestDistance=distance;}}if(!best){best={id:lines.length,chars:[],centerY:char.centerY,height:char.height,top:char.top,bottom:char.bottom};lines.push(best);}best.chars.push(char);best.centerY=best.chars.reduce((sum,item)=>sum+item.centerY,0)/best.chars.length;best.height=median(best.chars.map(item=>item.height));best.top=Math.min(best.top,char.top);best.bottom=Math.max(best.bottom,char.bottom);}const widths=chars.map(item=>item.width).filter(value=>value>0);const typicalWidth=Math.max(3,median(widths));const splitGap=Math.max(14,typicalWidth*3.2,layerRect.width*0.018);const runs=[];for(const line of lines){line.chars.sort((a,b)=>a.left-b.left);let current=null;for(const char of line.chars){if(!current||char.left-current.right>splitGap){current={id:runs.length,lineId:line.id,chars:[],left:char.left,right:char.right,top:char.top,bottom:char.bottom,height:char.height};runs.push(current);}current.chars.push(char);current.left=Math.min(current.left,char.left);current.right=Math.max(current.right,char.right);current.top=Math.min(current.top,char.top);current.bottom=Math.max(current.bottom,char.bottom);current.height=Math.max(current.height,char.height);char.runId=current.id;}}runs.sort((a,b)=>a.top-b.top||a.left-b.left);const lineHeight=Math.max(8,median(runs.map(run=>run.height)));const flows=[];for(const run of runs){let selected=null;let selectedScore=Infinity;for(const flow of flows){const previous=flow.runs[flow.runs.length-1];const verticalGap=run.top-previous.bottom;if(verticalGap<-(lineHeight*0.8)||verticalGap>Math.max(56,lineHeight*5))continue;const overlap=Math.max(0,Math.min(run.right,previous.right)-Math.max(run.left,previous.left));const overlapRatio=overlap/Math.max(1,Math.min(run.right-run.left,previous.right-previous.left));const alignedLeft=Math.abs(run.left-previous.left)<=Math.max(20,layerRect.width*0.035);if(overlapRatio<0.18&&!alignedLeft)continue;const score=Math.max(0,verticalGap)+Math.abs(run.left-previous.left)*0.25+Math.abs((run.left+run.right)-(previous.left+previous.right))*0.04;if(score<selectedScore){selected=flow;selectedScore=score;}}if(!selected){selected={id:flows.length,runs:[],chars:[]};flows.push(selected);}selected.runs.push(run);run.flowId=selected.id;}for(const flow of flows){flow.runs.sort((a,b)=>a.top-b.top||a.left-b.left);flow.chars=[];for(const run of flow.runs){run.chars.sort((a,b)=>a.left-b.left);for(const char of run.chars){char.flowId=flow.id;char.flowIndex=flow.chars.length;flow.chars.push(char);}}}return{layer,chars,flows,typicalWidth};}
+function buildVisualTextMap(layer){const layerRect=layer.getBoundingClientRect();const walker=document.createTreeWalker(layer,NodeFilter.SHOW_TEXT);const chars=[];while(walker.nextNode()){const node=walker.currentNode;const value=node.nodeValue||'';for(let offset=0;offset<value.length;){const length=(value.codePointAt(offset)||0)>65535?2:1;const valuePart=value.slice(offset,offset+length);if(!valuePart.trim()){offset+=length;continue;}const range=document.createRange();range.setStart(node,offset);range.setEnd(node,Math.min(value.length,offset+length));const rect=Array.from(range.getClientRects()).find(item=>item.height>0&&item.width>0);if(rect)chars.push({node,offset,endOffset:offset+length,char:valuePart,left:rect.left-layerRect.left,right:rect.right-layerRect.left,top:rect.top-layerRect.top,bottom:rect.bottom-layerRect.top,width:rect.width,height:rect.height,centerX:(rect.left+rect.right)/2-layerRect.left,centerY:(rect.top+rect.bottom)/2-layerRect.top});offset+=length;}}const ordered=[...chars].sort((a,b)=>a.centerY-b.centerY||a.left-b.left);const lines=[];for(const char of ordered){let best=null;let bestDistance=Infinity;for(let index=Math.max(0,lines.length-5);index<lines.length;index++){const line=lines[index];const distance=Math.abs(char.centerY-line.centerY);if(distance<=Math.max(char.height,line.height)*.55&&distance<bestDistance){best=line;bestDistance=distance;}}if(!best){best={id:lines.length,chars:[],centerY:char.centerY,height:char.height,top:char.top,bottom:char.bottom};lines.push(best);}best.chars.push(char);best.centerY=best.chars.reduce((sum,item)=>sum+item.centerY,0)/best.chars.length;best.height=median(best.chars.map(item=>item.height));best.top=Math.min(best.top,char.top);best.bottom=Math.max(best.bottom,char.bottom);}const widths=chars.map(item=>item.width).filter(value=>value>0);const typicalWidth=Math.max(3,median(widths));const splitGap=Math.max(14,typicalWidth*3.2,layerRect.width*.018);const runs=[];for(const line of lines){line.chars.sort((a,b)=>a.left-b.left);let current=null;for(const char of line.chars){if(!current||char.left-current.right>splitGap){current={id:runs.length,lineId:line.id,chars:[],left:char.left,right:char.right,top:char.top,bottom:char.bottom,height:char.height};runs.push(current);}current.chars.push(char);current.left=Math.min(current.left,char.left);current.right=Math.max(current.right,char.right);current.top=Math.min(current.top,char.top);current.bottom=Math.max(current.bottom,char.bottom);current.height=Math.max(current.height,char.height);char.runId=current.id;char.lineId=line.id;}}runs.sort((a,b)=>a.top-b.top||a.left-b.left);const lineHeight=Math.max(8,median(runs.map(run=>run.height)));const flows=[];for(const run of runs){let selected=null;let selectedScore=Infinity;for(const flow of flows){const previous=flow.runs[flow.runs.length-1];const verticalGap=run.top-previous.bottom;if(verticalGap<-(lineHeight*.8)||verticalGap>Math.max(56,lineHeight*5))continue;const overlap=Math.max(0,Math.min(run.right,previous.right)-Math.max(run.left,previous.left));const overlapRatio=overlap/Math.max(1,Math.min(run.right-run.left,previous.right-previous.left));const alignedLeft=Math.abs(run.left-previous.left)<=Math.max(20,layerRect.width*.035);if(overlapRatio<.18&&!alignedLeft)continue;const score=Math.max(0,verticalGap)+Math.abs(run.left-previous.left)*.25+Math.abs((run.left+run.right)-(previous.left+previous.right))*.04;if(score<selectedScore){selected=flow;selectedScore=score;}}if(!selected){selected={id:flows.length,runs:[],chars:[]};flows.push(selected);}selected.runs.push(run);run.flowId=selected.id;}for(const flow of flows){flow.runs.sort((a,b)=>a.top-b.top||a.left-b.left);flow.chars=[];for(const run of flow.runs){run.chars.sort((a,b)=>a.left-b.left);for(const char of run.chars){char.flowId=flow.id;char.flowIndex=flow.chars.length;flow.chars.push(char);}}}return{layer,chars,flows,typicalWidth};}
+function visualFlowBounds(flow){const runs=flow?.runs||[];if(!runs.length)return{left:0,right:0,top:0,bottom:0,width:0,centerX:0};const left=Math.min(...runs.map(run=>run.left));const right=Math.max(...runs.map(run=>run.right));return{left,right,top:Math.min(...runs.map(run=>run.top)),bottom:Math.max(...runs.map(run=>run.bottom)),width:Math.max(1,right-left),centerX:(left+right)/2};}
+function visualColumnSignature(flow){const runs=flow?.runs||[];if(!runs.length)return{left:0,right:0,width:0,centerX:0};const left=median(runs.map(run=>run.left));const right=median(runs.map(run=>run.right));return{left,right,width:Math.max(1,right-left),centerX:(left+right)/2};}
+function visualRunSegment(source,chars,index){const left=Math.min(...chars.map(char=>char.left));const right=Math.max(...chars.map(char=>char.right));const top=Math.min(...chars.map(char=>char.top));const bottom=Math.max(...chars.map(char=>char.bottom));const id=`${source.id}:${index}`;for(const char of chars)char.runId=id;return{...source,id,chars,left,right,top,bottom,height:Math.max(1,bottom-top)};}
+function splitVisualRunAtGutters(run,layerWidth,typicalWidth){const chars=[...(run.chars||[])].sort((a,b)=>a.left-b.left);if(chars.length<2)return[run];const edgeGapThreshold=Math.max(10,Math.min(30,typicalWidth*1.75),layerWidth*.012);const centerGapThreshold=Math.max(typicalWidth*3.1,layerWidth*.035);const groups=[];let group=[];let previous=null;for(const char of chars){const edgeGap=previous?char.left-previous.right:0;const centerGap=previous?char.centerX-previous.centerX:0;if(previous&&(edgeGap>edgeGapThreshold||centerGap>centerGapThreshold)){groups.push(group);group=[];}group.push(char);previous=char;}if(group.length)groups.push(group);return groups.map((items,index)=>visualRunSegment(run,items,index));}
+function mergeColumnFlows(flows,layerWidth,typicalWidth){const uniqueRuns=[];const runIds=new Set();for(const source of flows){for(const run of source.runs||[]){if(runIds.has(run.id))continue;runIds.add(run.id);uniqueRuns.push(...splitVisualRunAtGutters(run,layerWidth,typicalWidth));}}uniqueRuns.sort((a,b)=>a.top-b.top||a.left-b.left);const columns=[];const wideThreshold=Math.max(1,layerWidth*.72);for(const run of uniqueRuns){const runWidth=Math.max(1,run.right-run.left);if(runWidth>=wideThreshold){columns.push({id:columns.length,runs:[run],chars:[],wide:true});continue;}let target=null;let bestScore=-Infinity;const runCenter=(run.left+run.right)/2;for(const candidate of columns){if(candidate.wide)continue;const signature=visualColumnSignature(candidate);const overlap=Math.max(0,Math.min(run.right,signature.right)-Math.max(run.left,signature.left));const overlapRatio=overlap/Math.max(1,Math.min(runWidth,signature.width));const centerDistance=Math.abs(runCenter-signature.centerX);const leftDistance=Math.abs(run.left-signature.left);const rightDistance=Math.abs(run.right-signature.right);const edgeAligned=Math.min(leftDistance,rightDistance)<=layerWidth*.065;const sameColumn=(centerDistance<=layerWidth*.18&&(overlapRatio>=.22||edgeAligned))||overlapRatio>=.58;if(!sameColumn)continue;const score=overlapRatio*120-centerDistance/Math.max(1,layerWidth)*35-Math.min(leftDistance,rightDistance)/Math.max(1,layerWidth)*15;if(score>bestScore){target=candidate;bestScore=score;}}if(target)target.runs.push(run);else columns.push({id:columns.length,runs:[run],chars:[],wide:false});}columns.sort((a,b)=>{const boundsA=visualFlowBounds(a);const boundsB=visualFlowBounds(b);return boundsA.left-boundsB.left||boundsA.top-boundsB.top;});for(let flowIndex=0;flowIndex<columns.length;flowIndex++){const flow=columns[flowIndex];flow.id=flowIndex;flow.runs.sort((a,b)=>a.top-b.top||a.left-b.left);flow.chars=[];for(const run of flow.runs){run.chars.sort((a,b)=>a.left-b.left);run.flowId=flowIndex;for(const char of run.chars){char.flowId=flowIndex;char.flowIndex=flow.chars.length;flow.chars.push(char);}}}return columns;}
+function stabilizeVisualMap(map){if(map.stableFlows)return map;map.flows=mergeColumnFlows(map.flows,map.layer.getBoundingClientRect().width,map.typicalWidth);map.stableFlows=true;return map;}
 function distanceToRect(x,y,rect){const dx=x<rect.left?rect.left-x:x>rect.right?x-rect.right:0;const dy=y<rect.top?rect.top-y:y>rect.bottom?y-rect.bottom:0;return dx*dx+dy*dy;}
-function nearestVisualChar(clientX,clientY,flowId=null){if(!visualMap)return null;const layerRect=visualMap.layer.getBoundingClientRect();const x=clientX-layerRect.left;const y=clientY-layerRect.top;const pool=flowId==null?visualMap.chars:(visualMap.flows[flowId]?.chars||[]);let best=null;let bestDistance=Infinity;for(const char of pool){const distance=distanceToRect(x,y,char);if(distance<bestDistance){best=char;bestDistance=distance;}}return best?{char:best,distance:bestDistance}:null;}
-function appendSelectionHandle(kind,char){const handle=document.createElement('div');handle.className=`selectionHandle selectionHandle${kind==='start'?'Start':'End'}`;handle.dataset.selectionHandle=kind;handle.style.left=(kind==='start'?char.left:char.right)+'px';handle.style.top=char.bottom+'px';visualMap.layer.appendChild(handle);selectionNodes.push(handle);}
-function selectedTextForChars(chars){let text='';let previous=null;for(const char of chars){if(previous&&char.runId!==previous.runId)text+='\n';else if(previous&&char.left-previous.right>visualMap.typicalWidth*0.9&&!/\s$/.test(text)&&!/^\s/.test(char.char))text+=' ';text+=char.char;previous=char;}return text.trim();}
-function renderLinearSelection(flow,startIndex,endIndex){if(!flow||!flow.chars.length)return;selectionFlow=flow;selectionStartIndex=Math.max(0,Math.min(startIndex,endIndex,flow.chars.length-1));selectionEndIndex=Math.max(selectionStartIndex,Math.min(Math.max(startIndex,endIndex),flow.chars.length-1));for(const node of selectionNodes)node.remove();selectionNodes=[];const selected=flow.chars.slice(selectionStartIndex,selectionEndIndex+1);const groups=[];for(const char of selected){let group=groups[groups.length-1];if(!group||group.runId!==char.runId){group={runId:char.runId,left:char.left,right:char.right,top:char.top,bottom:char.bottom};groups.push(group);}else{group.left=Math.min(group.left,char.left);group.right=Math.max(group.right,char.right);group.top=Math.min(group.top,char.top);group.bottom=Math.max(group.bottom,char.bottom);}}for(const group of groups){const highlight=document.createElement('div');highlight.className='dragSelectionHighlight';highlight.style.left=group.left+'px';highlight.style.top=group.top+'px';highlight.style.width=Math.max(1,group.right-group.left)+'px';highlight.style.height=Math.max(1,group.bottom-group.top)+'px';visualMap.layer.appendChild(highlight);selectionNodes.push(highlight);}appendSelectionHandle('start',selected[0]);appendSelectionHandle('end',selected[selected.length-1]);customSelectionText=selectedTextForChars(selected);customSelectionPage=Number(visualMap.layer.closest('.page')?.dataset.page||currentPage);}
+function nearestVisualChar(clientX,clientY,flowId=null){if(!activeVisualMap)return null;const layerRect=activeVisualMap.layer.getBoundingClientRect();const x=clientX-layerRect.left;const y=clientY-layerRect.top;const pool=flowId==null?activeVisualMap.chars:(activeVisualMap.flows[flowId]?.chars||[]);let best=null;let bestDistance=Infinity;for(const char of pool){const distance=distanceToRect(x,y,char);if(distance<bestDistance){best=char;bestDistance=distance;}}return best?{char:best,distance:bestDistance}:null;}
+function selectionHitIsClose(hit,pointerType){if(!hit||!activeVisualMap||!hit.char.char.trim())return false;if(pointerType==='touch')return hit.distance<=1;const radius=Math.max(4,Math.min(8,activeVisualMap.typicalWidth*.65));return hit.distance<=radius*radius;}
+function appendSelectionHandle(kind,char){const handle=document.createElement('div');handle.className=`selectionHandle selectionHandle${kind==='start'?'Start':'End'}`;handle.dataset.selectionHandle=kind;handle.style.left=(kind==='start'?char.left:char.right)+'px';handle.style.top=char.bottom+'px';activeVisualMap.layer.appendChild(handle);selectionNodes.push(handle);}
+function selectedTextForChars(chars){let text='';let previous=null;for(const char of chars){const previousLine=previous?(previous.lineId??previous.runId):null;const currentLine=char.lineId??char.runId;if(previous&&currentLine!==previousLine)text+='\n';else if(previous&&char.left-previous.right>activeVisualMap.typicalWidth*.9&&!/\s$/.test(text)&&!/^\s/.test(char.char))text+=' ';text+=char.char;previous=char;}return text.trim();}
+function renderLinearSelection(flow,startIndex,endIndex){if(!flow||!flow.chars.length)return;selectionFlow=flow;selectionStartIndex=Math.max(0,Math.min(startIndex,endIndex,flow.chars.length-1));selectionEndIndex=Math.max(selectionStartIndex,Math.min(Math.max(startIndex,endIndex),flow.chars.length-1));for(const node of selectionNodes)node.remove();selectionNodes=[];const selected=flow.chars.slice(selectionStartIndex,selectionEndIndex+1);const groups=[];for(const char of selected){let group=groups[groups.length-1];if(!group||group.runId!==char.runId){group={runId:char.runId,left:char.left,right:char.right,top:char.top,bottom:char.bottom};groups.push(group);}else{group.left=Math.min(group.left,char.left);group.right=Math.max(group.right,char.right);group.top=Math.min(group.top,char.top);group.bottom=Math.max(group.bottom,char.bottom);}}for(const group of groups){const highlight=document.createElement('div');highlight.className='dragSelectionHighlight';highlight.style.left=group.left+'px';highlight.style.top=group.top+'px';highlight.style.width=Math.max(1,group.right-group.left)+'px';highlight.style.height=Math.max(1,group.bottom-group.top)+'px';activeVisualMap.layer.appendChild(highlight);selectionNodes.push(highlight);}appendSelectionHandle('start',selected[0]);appendSelectionHandle('end',selected[selected.length-1]);customSelectionText=selectedTextForChars(selected);customSelectionPage=Number(activeVisualMap.layer.closest('.page')?.dataset.page||currentPage);}
 function isWordCharacter(value){return /[A-Za-z0-9_\-\u00c0-\uffff]/.test(value);}
 function selectWordAtIndex(flow,index){let start=index;let end=index;const target=flow.chars[index]?.char||'';if(isWordCharacter(target)){while(start>0&&flow.chars[start-1].runId===flow.chars[index].runId&&isWordCharacter(flow.chars[start-1].char))start--;while(end+1<flow.chars.length&&flow.chars[end+1].runId===flow.chars[index].runId&&isWordCharacter(flow.chars[end+1].char))end++;}renderLinearSelection(flow,start,end);}
-function updateLinearSelectionFromPointer(event){if(!selectionGesture||!selectionFlow)return;const sameFlow=nearestVisualChar(event.clientX,event.clientY,selectionFlow.id);if(!sameFlow)return;const nearestAny=nearestVisualChar(event.clientX,event.clientY);if(nearestAny&&nearestAny.char.flowId!==selectionFlow.id&&nearestAny.distance+100<sameFlow.distance)statusElement.textContent='跨栏内容请分次选择';else statusElement.textContent='拖动端点可微调';const index=sameFlow.char.flowIndex;if(selectionGesture.handle==='start')renderLinearSelection(selectionFlow,Math.min(index,selectionEndIndex),selectionEndIndex);else if(selectionGesture.handle==='end')renderLinearSelection(selectionFlow,selectionStartIndex,Math.max(index,selectionStartIndex));else renderLinearSelection(selectionFlow,selectionGesture.anchorIndex,index);if(event.clientY<96)window.scrollBy(0,-8);else if(event.clientY>window.innerHeight-42)window.scrollBy(0,8);}
-document.addEventListener('pointerdown',(event)=>{if(!selectionMode)return;const handle=event.target.closest?.('.selectionHandle');if(handle&&selectionFlow){selectionGesture={handle:handle.dataset.selectionHandle,anchorIndex:null,startX:event.clientX,startY:event.clientY,moved:true};event.target.setPointerCapture?.(event.pointerId);event.preventDefault();return;}const layer=event.target.closest?.('.textLayer');if(!layer)return;if(!visualMap||visualMap.layer!==layer)visualMap=buildVisualTextMap(layer);const hit=nearestVisualChar(event.clientX,event.clientY);if(!hit)return;clearCustomSelection();getSelection()?.removeAllRanges();selectionFlow=visualMap.flows[hit.char.flowId];selectionGesture={handle:null,anchorIndex:hit.char.flowIndex,startX:event.clientX,startY:event.clientY,moved:false};event.target.setPointerCapture?.(event.pointerId);event.preventDefault();},{passive:false});
-document.addEventListener('pointermove',(event)=>{if(!selectionMode||!selectionGesture)return;if(!selectionGesture.moved&&Math.hypot(event.clientX-selectionGesture.startX,event.clientY-selectionGesture.startY)>4)selectionGesture.moved=true;if(selectionGesture.moved)updateLinearSelectionFromPointer(event);event.preventDefault();},{passive:false});
-document.addEventListener('pointerup',(event)=>{if(selectionMode&&selectionGesture&&selectionFlow){if(selectionGesture.handle||selectionGesture.moved)updateLinearSelectionFromPointer(event);else selectWordAtIndex(selectionFlow,selectionGesture.anchorIndex);selectionGesture=null;publishSelection();event.preventDefault();return;}scheduleSelection(220);},{passive:false});
-document.addEventListener('pointercancel',()=>{selectionGesture=null;});
-selectButton.onclick=()=>{selectionMode=!selectionMode;document.body.classList.toggle('selectionMode',selectionMode);selectButton.classList.toggle('active',selectionMode);selectButton.textContent=selectionMode?'退出选字':'选字';statusElement.textContent=selectionMode?'直接拖动选字':`${currentPage} / ${documentRef?.numPages||'?'}`;};
-document.addEventListener('selectionchange',()=>{if(!selectionMode){if(customSelectionText){clearCustomSelection();lastSelectionKey='';}scheduleSelection();}});document.addEventListener('touchend',()=>{if(!selectionMode){if(customSelectionText){clearCustomSelection();lastSelectionKey='';}scheduleSelection(220);}},{passive:true});
-window.addEventListener('error',(event)=>reportError(event.error||event.message));window.addEventListener('unhandledrejection',(event)=>reportError(event.reason));void load();
+function startSelectionGesture(layer,hit,event){clearCustomSelection();activeVisualMap=visualMaps.get(layer);getSelection()?.removeAllRanges();selectionFlow=activeVisualMap.flows[hit.char.flowId];selectionGesture={handle:null,anchorIndex:hit.char.flowIndex,startX:event.clientX,startY:event.clientY,moved:false,grabOffsetX:0,grabOffsetY:0};}
+function updateLinearSelectionFromPointer(event){if(!selectionGesture||!selectionFlow)return;const clientX=event.clientX-(selectionGesture.grabOffsetX||0);const clientY=event.clientY-(selectionGesture.grabOffsetY||0);const sameFlow=nearestVisualChar(clientX,clientY,selectionFlow.id);if(!sameFlow)return;const nearestAny=nearestVisualChar(clientX,clientY);const crossFlow=nearestAny&&nearestAny.char.flowId!==selectionFlow.id&&nearestAny.distance+Math.max(100,activeVisualMap.typicalWidth**2*4)<sameFlow.distance;if(crossFlow){statusElement.textContent='跨栏内容请分次选择';return;}statusElement.textContent='拖动端点可微调';const index=sameFlow.char.flowIndex;if(selectionGesture.handle==='start')renderLinearSelection(selectionFlow,Math.min(index,selectionEndIndex),selectionEndIndex);else if(selectionGesture.handle==='end')renderLinearSelection(selectionFlow,selectionStartIndex,Math.max(index,selectionStartIndex));else renderLinearSelection(selectionFlow,selectionGesture.anchorIndex,index);if(event.clientY<64)window.scrollBy(0,-8);else if(event.clientY>window.innerHeight-42)window.scrollBy(0,8);}
+document.addEventListener('pointerdown',(event)=>{if(!selectionMode)return;const handle=event.target.closest?.('.selectionHandle');if(handle&&selectionFlow&&activeVisualMap){const endpointIndex=handle.dataset.selectionHandle==='start'?selectionStartIndex:selectionEndIndex;const endpoint=selectionFlow.chars[endpointIndex];const layerRect=activeVisualMap.layer.getBoundingClientRect();selectionGesture={handle:handle.dataset.selectionHandle,anchorIndex:null,startX:event.clientX,startY:event.clientY,moved:false,grabOffsetX:event.clientX-(layerRect.left+endpoint.centerX),grabOffsetY:event.clientY-(layerRect.top+endpoint.centerY)};event.target.setPointerCapture?.(event.pointerId);event.preventDefault();return;}const directLayer=event.target.closest?.('.textLayer');const page=event.target.closest?.('.page');const layer=directLayer||page?.querySelector?.('.textLayer');if(!layer)return;if(event.pointerType==='touch'&&!event.target.closest?.('.textLayer span')){selectionCandidate={layer,hit:null,blank:true,startX:event.clientX,startY:event.clientY};return;}activeVisualMap=stabilizeVisualMap(visualMaps.get(layer)||buildVisualTextMap(layer));visualMaps.set(layer,activeVisualMap);const hit=nearestVisualChar(event.clientX,event.clientY);if(event.pointerType==='touch'&&!selectionHitIsClose(hit,event.pointerType)){selectionCandidate={layer,hit:null,blank:true,startX:event.clientX,startY:event.clientY};return;}if(!selectionHitIsClose(hit,event.pointerType))return;if(event.pointerType==='touch'){selectionCandidate={layer,hit,blank:false,startX:event.clientX,startY:event.clientY};return;}startSelectionGesture(layer,hit,event);event.target.setPointerCapture?.(event.pointerId);event.preventDefault();},{passive:false});
+document.addEventListener('pointermove',(event)=>{if(!selectionMode)return;if(selectionCandidate){if(Math.hypot(event.clientX-selectionCandidate.startX,event.clientY-selectionCandidate.startY)>8)cancelSelectionCandidate();return;}if(!selectionGesture)return;const threshold=event.pointerType==='touch'?8:4;if(!selectionGesture.moved&&Math.hypot(event.clientX-selectionGesture.startX,event.clientY-selectionGesture.startY)>threshold)selectionGesture.moved=true;if(selectionGesture.moved)updateLinearSelectionFromPointer(event);event.preventDefault();},{passive:false});
+document.addEventListener('pointerup',(event)=>{if(selectionMode&&selectionCandidate){const candidate=selectionCandidate;cancelSelectionCandidate();if(Math.hypot(event.clientX-candidate.startX,event.clientY-candidate.startY)<=8&&candidate.layer.isConnected){if(candidate.blank){publishClearedSelection(candidate.layer.closest('.page')?.dataset.page);event.preventDefault();return;}activeVisualMap=visualMaps.get(candidate.layer);startSelectionGesture(candidate.layer,candidate.hit,event);selectWordAtIndex(selectionFlow,selectionGesture.anchorIndex);selectionGesture=null;publishSelection();event.preventDefault();}return;}if(selectionMode&&selectionGesture&&selectionFlow){if(selectionGesture.moved)updateLinearSelectionFromPointer(event);else if(!selectionGesture.handle)selectWordAtIndex(selectionFlow,selectionGesture.anchorIndex);selectionGesture=null;publishSelection();event.preventDefault();return;}scheduleSelection(220);},{passive:false});
+document.addEventListener('pointercancel',()=>{selectionGesture=null;cancelSelectionCandidate();});document.addEventListener('selectionchange',()=>{if(!selectionMode)scheduleSelection();});document.addEventListener('touchend',()=>{if(!selectionMode)scheduleSelection(220);},{passive:true});document.addEventListener('click',()=>send({type:'interaction',kind:'tap'}));window.addEventListener('scroll',handleScroll,{passive:true});window.addEventListener('resize',()=>{clearTimeout(resizeTimer);resizeTimer=setTimeout(resetFit,180);});window.addEventListener('error',(event)=>reportError(event.error||event.message));window.addEventListener('unhandledrejection',(event)=>reportError(event.reason));void load();
 </script></body></html>"#
         .replace("__CONFIG__", &config)
 }
@@ -2931,7 +2920,6 @@ fn has_existing_pdf(value: &str) -> bool {
 fn collect_workspace_pdf_records(
     app: &AppHandle,
     indexed_paths: &HashSet<String>,
-    demo_library: &DemoLibrarySettings,
 ) -> Result<Vec<MobilePaperRecord>, String> {
     let workspace_root = mobile_workspace_root_dir(app)?;
     if !workspace_root.exists() {
@@ -2951,9 +2939,6 @@ fn collect_workspace_pdf_records(
         if indexed_paths.contains(&path_string) {
             continue;
         }
-        if !is_demo_visible_path(&path_string, demo_library) {
-            continue;
-        }
         let title = path
             .file_stem()
             .and_then(|value| value.to_str())
@@ -2969,32 +2954,6 @@ fn collect_workspace_pdf_records(
         });
     }
     Ok(result)
-}
-
-fn load_demo_library_settings(app: &AppHandle) -> Result<DemoLibrarySettings, String> {
-    let path = app_data_dir(app)?.join(DEMO_LIBRARY_FILE_NAME);
-    if path.is_file() {
-        let content = fs::read_to_string(&path).map_err(|error| error.to_string())?;
-        return serde_json::from_str(&content).map_err(|error| error.to_string());
-    }
-    let settings = DemoLibrarySettings::default();
-    let content = serde_json::to_string_pretty(&settings).map_err(|error| error.to_string())?;
-    fs::write(path, content).map_err(|error| error.to_string())?;
-    Ok(settings)
-}
-
-fn is_demo_visible_path(path: &str, settings: &DemoLibrarySettings) -> bool {
-    if !settings.enabled {
-        return true;
-    }
-    let file_name = Path::new(path)
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default();
-    settings
-        .visible_file_names
-        .iter()
-        .any(|visible| visible.eq_ignore_ascii_case(file_name))
 }
 
 fn mobile_workspace_root_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -4063,7 +4022,6 @@ fn load_workspace_innovation_hits(
     concept: &str,
     expansion: Option<&str>,
 ) -> Result<Vec<research_memory::ResearchSearchHit>, String> {
-    let demo_library = load_demo_library_settings(app)?;
     let workspace_root = mobile_workspace_root_dir(app)?;
     let mut hits = Vec::new();
     for entry in WalkDir::new(workspace_root)
@@ -4071,10 +4029,7 @@ fn load_workspace_innovation_hits(
         .filter_map(|entry| entry.ok())
     {
         let path = entry.path();
-        if !entry.file_type().is_file()
-            || !is_pdf_path(path.to_string_lossy().as_ref())
-            || !is_demo_visible_path(path.to_string_lossy().as_ref(), &demo_library)
-        {
+        if !entry.file_type().is_file() || !is_pdf_path(path.to_string_lossy().as_ref()) {
             continue;
         }
         let title = path
@@ -5381,16 +5336,13 @@ mod tests {
     }
 
     #[test]
-    fn 演示论文清单排除重复副本() {
-        let settings = DemoLibrarySettings::default();
-        assert!(is_demo_visible_path(
-            r"C:\workspace\Ali 等 - 2025 - Graph neural networks in alzheimer's disease diagnosis a review of unimodal and multimodal advances.pdf",
-            &settings,
-        ));
-        assert!(!is_demo_visible_path(
-            r"C:\workspace\Ali 等 - 2025 - Graph neural networks in Alzheimer's disease diagnosis a review of unimodal and multimodal advances (2).pdf",
-            &settings,
-        ));
+    fn 移动论文同步不再使用演示白名单() {
+        let source = include_str!("mobile.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+        assert!(!production.contains("DEMO_LIBRARY_FILE_NAME"));
+        assert!(!production.contains("is_demo_visible_path"));
+        assert!(production
+            .contains("result.extend(collect_workspace_pdf_records(app, &indexed_paths)?)"));
     }
 
     #[test]
@@ -5448,17 +5400,62 @@ mod tests {
         );
         assert!(html.contains("/api/mobile/v1/pdf-viewer/pdf-content"));
         assert!(html.contains("disableAutoFetch:true"));
-        assert!(html.contains("await go(currentPage)"));
-        assert!(!html.contains("for(let i=1;i<=documentRef.numPages"));
+        assert!(html.contains("protocolVersion:3"));
+        assert!(html.contains("strict-glyph-selection"));
+        assert!(html.contains("continuous-scroll"));
+        assert!(html.contains("syncRenderWindow"));
+        assert!(html.contains("currentPage-2"));
+        assert!(html.contains("currentPage+2"));
+        assert!(!html.contains("document.querySelector('#pages').replaceChildren"));
+        assert!(html.contains("flattenOutline"));
+        assert!(html.contains("hostReady"));
+        assert!(html.contains("fallbackToolbar"));
         assert!(html.contains("论文/特殊编号"));
         assert!(html.contains("id=\"select\""));
         assert!(html.contains("buildVisualTextMap"));
+        assert!(html.contains("visualMaps=new WeakMap"));
         assert!(html.contains("renderLinearSelection"));
         assert!(html.contains("selectionContext"));
         assert!(html.contains("text,page,context"));
         assert!(html.contains("selectionHandleStart"));
+        assert!(html.contains(".textLayer br::selection{background:transparent}"));
         assert!(html.contains("跨栏内容请分次选择"));
         assert!(html.contains("dragSelectionHighlight"));
+        assert!(html.contains("mergeColumnFlows"));
+        assert!(html.contains("wideThreshold"));
+        assert!(html.contains("const uniqueRuns=[]"));
+        assert!(html.contains("runIds.has(run.id)"));
+        assert!(html.contains("visualColumnSignature"));
+        assert!(html.contains("splitVisualRunAtGutters"));
+        assert!(html.contains("centerGap>centerGapThreshold"));
+        assert!(html.contains("char.lineId=line.id"));
+        assert!(html.contains("currentLine!==previousLine"));
+        assert!(html.contains("stabilizeVisualMap"));
+        assert!(html.contains("grabOffsetX"));
+        assert!(
+            html.contains("if(crossFlow){statusElement.textContent='跨栏内容请分次选择';return;}")
+        );
+        assert!(html.contains("if(selectionGesture.moved)updateLinearSelectionFromPointer(event)"));
+        assert!(html.contains("event.pointerType==='touch'?8:4"));
+        assert!(html.contains("selectionHitIsClose"));
+        assert!(html.contains("selectionCandidate"));
+        assert!(html.contains("function publishClearedSelection"));
+        assert!(html.contains(
+            "send({type:'selection',text:'',page:Number(page)||currentPage,context:''})"
+        ));
+        assert!(html.contains("selectionCandidate={layer,hit:null,blank:true"));
+        assert!(html.contains("if(candidate.blank){publishClearedSelection"));
+        assert!(html.contains("body.selectionMode .textLayer{touch-action:pan-x pan-y pinch-zoom;"));
+        assert!(html.contains("if(!valuePart.trim())"));
+        assert!(html.contains("if(pointerType==='touch')return hit.distance<=1"));
+        assert!(!html.contains(
+            "if(event.pointerType==='touch'&&!event.target.closest?.('.textLayer span'))return"
+        ));
+        assert!(html.contains("if(!selectionHitIsClose(hit,event.pointerType))return"));
+        assert!(html.contains("if(Math.hypot(event.clientX-selectionCandidate.startX,event.clientY-selectionCandidate.startY)>8)cancelSelectionCandidate()"));
+        assert!(html.contains("function handleScroll(){cancelSelectionCandidate();"));
+        assert!(!html.contains("selectionLongPressDelay"));
+        assert!(!html.contains("startY:event.clientY,moved:true"));
         assert!(!html.contains("buildGeometricSelection"));
         assert!(!html.contains("dragSelectionBox"));
         assert!(!html.contains("margin-top:-2px"));
