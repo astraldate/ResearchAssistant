@@ -5167,6 +5167,28 @@ textarea:focus {
   flex: 1;
 }
 
+.mobile-settings-tunnel-box {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid #2563eb;
+  border-radius: 10px;
+  background: rgba(37, 99, 235, 0.08);
+}
+
+.mobile-settings-tunnel-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #93c5fd;
+}
+
+.mobile-settings-tunnel-url {
+  flex: 1;
+  font-size: 13px;
+}
+
 .mobile-settings-device-item {
   flex-direction: column;
   padding: 12px;

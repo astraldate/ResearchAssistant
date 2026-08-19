@@ -84,6 +84,8 @@ pub struct MobileCompanionStatus {
     pub last_error: Option<String>,
     pub inbox_dir: String,
     pub review_state_dir: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tunnel_url: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -93,6 +95,8 @@ pub struct MobileHealthResponse {
     pub service_name: String,
     pub running: bool,
     pub base_urls: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tunnel_url: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -112,6 +116,8 @@ pub struct MobilePairResponse {
     pub device_token: String,
     pub paired_at: String,
     pub base_urls: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tunnel_url: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -581,11 +587,14 @@ struct MobileCompanionRuntime {
     base_urls: Vec<String>,
     running: bool,
     last_error: Option<String>,
+    tunnel_url: Option<String>,
+    tunnel_available: bool,
 }
 
 #[derive(Clone, Default)]
 pub struct MobileCompanionState {
     inner: Arc<Mutex<MobileCompanionRuntime>>,
+    tunnel_child: Arc<Mutex<Option<std::process::Child>>>,
 }
 
 #[derive(Clone)]
@@ -636,22 +645,24 @@ pub fn initialize_mobile_companion(
         write_stored_mobile_state(&app, &stored)?;
     }
 
-    {
+    let persisted_tunnel_url = {
         let mut runtime = state
             .inner
             .lock()
             .map_err(|error| format!("Failed to lock mobile companion runtime: {}", error))?;
         runtime.pair_code = stored.pair_code.clone();
         runtime.paired_devices = stored.paired_devices.clone();
+        let persisted = runtime.tunnel_url.clone();
         runtime.listener_port = 0;
         runtime.base_urls.clear();
         runtime.running = false;
         runtime.last_error = None;
-    }
+        persisted
+    };
 
     match bind_mobile_listener() {
         Ok((listener, port)) => {
-            let base_urls = detect_base_urls(port);
+            let base_urls = detect_base_urls(port, persisted_tunnel_url.clone());
             {
                 let mut runtime = state.inner.lock().map_err(|error| {
                     format!("Failed to lock mobile companion runtime: {}", error)
@@ -660,11 +671,13 @@ pub fn initialize_mobile_companion(
                 runtime.base_urls = base_urls;
                 runtime.running = true;
                 runtime.last_error = None;
+                runtime.tunnel_url = persisted_tunnel_url.clone();
             }
 
             let app_handle = app.clone();
             let state_handle = state.clone();
             configure_tailscale_tcp_serve_background(state.clone(), port);
+            configure_cloudflare_tunnel_background(state.clone(), port);
             tauri::async_runtime::spawn(async move {
                 let listener = match TcpListener::from_std(listener) {
                     Ok(value) => value,
@@ -875,7 +888,8 @@ async fn axum_mobile_health(AxumState(state): AxumState<MobileRouterState>) -> i
         api_version: MOBILE_API_VERSION.to_string(),
         service_name: MOBILE_SERVICE_NAME.to_string(),
         running: snapshot.running,
-        base_urls: detect_base_urls(snapshot.listener_port),
+        base_urls: detect_base_urls(snapshot.listener_port, snapshot.tunnel_url.clone()),
+        tunnel_url: snapshot.tunnel_url,
     })
 }
 
@@ -1770,8 +1784,13 @@ fn bind_mobile_listener() -> Result<(std::net::TcpListener, u16), String> {
     Err("No available mobile companion port was found in the configured range.".to_string())
 }
 
-fn detect_base_urls(port: u16) -> Vec<String> {
+fn detect_base_urls(port: u16, tunnel_url: Option<String>) -> Vec<String> {
     let mut urls = Vec::new();
+    if let Some(tunnel) = tunnel_url {
+        if !tunnel.is_empty() && !urls.contains(&tunnel) {
+            urls.push(tunnel);
+        }
+    }
     for ip in detect_tailscale_ips() {
         push_unique_url(&mut urls, ip, port);
     }
@@ -1886,6 +1905,152 @@ fn configure_tailscale_tcp_serve(port: u16) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+fn find_cloudflared_command() -> Option<PathBuf> {
+    let candidates: &[&str] = if cfg!(target_os = "windows") {
+        &["cloudflared.exe", "cloudfld.exe", "cloudflared", "cloudfld"]
+    } else {
+        &["cloudflared", "cloudfld"]
+    };
+    for candidate in candidates {
+        if let Some(path) = resolve_executable_in_path(candidate) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn resolve_executable_in_path(name: &str) -> Option<PathBuf> {
+    if let Ok(path) = PathBuf::from(name).canonicalize() {
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    let paths = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&paths) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn parse_cloudflare_tunnel_url(text: &str) -> Option<String> {
+    for line in text.lines() {
+        let lower = line.to_ascii_lowercase();
+        if lower.contains("trycloudflare.com") || lower.contains("cfargotunnel.com") {
+            for token in line.split_whitespace() {
+                let token = token.trim_matches(|character: char| {
+                    character == '`' || character == '"' || character == '\'' || character == ')'
+                });
+                if token.starts_with("https://")
+                    && (token.contains("cloudflare") || token.contains("cfargotunnel"))
+                {
+                    return Some(token.trim_end_matches('/').to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn configure_cloudflare_tunnel_background(state: MobileCompanionState, port: u16) {
+    std::thread::spawn(move || {
+        if let Ok(mut handle) = state.tunnel_child.lock() {
+            if let Some(mut child) = handle.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+
+        let command = match find_cloudflared_command() {
+            Some(command) => command,
+            None => {
+                if let Ok(mut runtime) = state.inner.lock() {
+                    runtime.tunnel_available = false;
+                }
+                return;
+            }
+        };
+
+        if let Ok(mut runtime) = state.inner.lock() {
+            runtime.tunnel_available = true;
+        }
+
+        let mut command_builder = Command::new(&command);
+        command_builder
+            .arg("tunnel")
+            .arg("--url")
+            .arg(format!("http://127.0.0.1:{port}"))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        suppress_command_window(&mut command_builder);
+
+        let mut child = match command_builder.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                if let Ok(mut runtime) = state.inner.lock() {
+                    runtime.last_error = Some(format!("启动 Cloudflare Tunnel 失败：{error}"));
+                }
+                return;
+            }
+        };
+
+        let mut reader = child
+            .stdout
+            .take()
+            .map(|stdout| std::io::BufReader::new(stdout));
+
+        let tunnel_url = {
+            let mut found = None;
+            if let Some(reader) = reader.as_mut() {
+                use std::io::BufRead;
+                let mut line = String::new();
+                let deadline = Instant::now() + Duration::from_secs(20);
+                while Instant::now() < deadline {
+                    line.clear();
+                    match reader.read_line(&mut line) {
+                        Ok(0) => break,
+                        Ok(_) => {
+                            if let Some(url) = parse_cloudflare_tunnel_url(&line) {
+                                found = Some(url);
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            }
+            found
+        };
+
+        if let Some(url) = tunnel_url {
+            if let Ok(mut runtime) = state.inner.lock() {
+                runtime.tunnel_url = Some(url.clone());
+                if runtime.listener_port > 0 {
+                    runtime.base_urls = detect_base_urls(runtime.listener_port, Some(url));
+                }
+                runtime.last_error = None;
+            }
+        } else {
+            let _ = child.kill();
+            let _ = child.wait();
+            if let Ok(mut runtime) = state.inner.lock() {
+                runtime.tunnel_url = None;
+                runtime.last_error = Some(
+                    "未能从 Cloudflare Tunnel 输出中解析出公网地址（可能离线或未安装 cloudflared）。"
+                        .to_string(),
+                );
+            }
+            return;
+        }
+
+        if let Ok(mut handle) = state.tunnel_child.lock() {
+            *handle = Some(child);
+        }
+    });
 }
 
 fn run_command_with_timeout(mut command: Command, timeout: Duration) -> Result<Output, String> {
@@ -2162,6 +2327,7 @@ fn build_mobile_status(
         last_error: snapshot.last_error,
         inbox_dir: inbox_dir.to_string_lossy().to_string(),
         review_state_dir: review_dir.to_string_lossy().to_string(),
+        tunnel_url: snapshot.tunnel_url,
     })
 }
 
@@ -2173,7 +2339,7 @@ fn refresh_runtime_base_urls(
         .lock()
         .map_err(|error| format!("Failed to lock mobile companion runtime: {}", error))?;
     if runtime.running && runtime.listener_port > 0 {
-        runtime.base_urls = detect_base_urls(runtime.listener_port);
+        runtime.base_urls = detect_base_urls(runtime.listener_port, runtime.tunnel_url.clone());
     }
     Ok(runtime.clone())
 }
@@ -2190,7 +2356,7 @@ fn pair_device(
     }
 
     let paired_at = cards::current_timestamp_iso_utc();
-    let (device_id, token, base_urls) = {
+    let (device_id, token, base_urls, tunnel_url) = {
         let mut runtime = state
             .inner
             .lock()
@@ -2208,7 +2374,12 @@ fn pair_device(
             paired_at: paired_at.clone(),
             last_seen_at: Some(paired_at.clone()),
         });
-        (device_id, token, runtime.base_urls.clone())
+        (
+            device_id,
+            token,
+            runtime.base_urls.clone(),
+            runtime.tunnel_url.clone(),
+        )
     };
 
     persist_runtime_state(app, state)?;
@@ -2219,6 +2390,7 @@ fn pair_device(
         device_token: token,
         paired_at,
         base_urls,
+        tunnel_url,
     })
 }
 

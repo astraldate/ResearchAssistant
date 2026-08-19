@@ -24,7 +24,7 @@ export default function PairScreen() {
   const [pairCode, setPairCode] = useState("");
   const [deviceName, setDeviceName] = useState("My Phone");
   const [statusText, setStatusText] = useState(
-    "先在桌面端设置页查看可用地址和 6 位配对码；Tailscale 用户优先填 100.x 地址。",
+    "先在桌面端设置页查看可用地址和 6 位配对码。Tailscale 用户填 100.x 地址；用 Cloudflare Tunnel 时填桌面端显示的 https 公网地址；同一局域网也可直接填电脑 IP。",
   );
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -32,7 +32,7 @@ export default function PairScreen() {
     const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
     if (!normalizedBaseUrl) {
       setStatusText(
-        "请输入桌面端设置页显示的地址。Tailscale 用户优先使用 100.x 地址。",
+        "请输入桌面端设置页显示的地址。Tailscale 用户填 100.x 地址；Cloudflare Tunnel 用户填 https 公网地址；同一局域网也可填电脑 IP。",
       );
       return;
     }
@@ -77,7 +77,7 @@ export default function PairScreen() {
   return (
     <ScreenShell
       title="配对桌面端"
-      subtitle="可使用同一局域网地址；如果手机和电脑都连着 Tailscale，也可以直接输入桌面端的 100.x 地址。"
+      subtitle="可使用同一局域网地址；连着 Tailscale 时填桌面端 100.x 地址；用 Cloudflare Tunnel 时填桌面端显示的 https 公网地址。"
     >
       <View style={styles.panel}>
         <Text style={styles.label}>桌面端地址</Text>
@@ -85,7 +85,7 @@ export default function PairScreen() {
           value={baseUrl}
           onChangeText={setBaseUrl}
           autoCapitalize="none"
-          placeholder="例如 http://100.x.y.z:38465"
+          placeholder="例如 http://100.x.y.z:38465 或 https 公网地址"
           placeholderTextColor={palette.slate}
           style={styles.input}
         />

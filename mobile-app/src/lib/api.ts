@@ -67,7 +67,7 @@ async function requestJson<T>(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
-      `无法连接桌面端地址：${url}。请确认手机与电脑的 Tailscale 均在线，且使用 http://100.x.y.z:端口。原始错误：${message}`,
+      `无法连接桌面端地址：${url}。如果使用 Tailscale，请确认手机与电脑均在线且使用 http://100.x.y.z:端口；如果使用 Cloudflare Tunnel，请确认桌面端已显示 https 公网地址。原始错误：${message}`,
     );
   }
 

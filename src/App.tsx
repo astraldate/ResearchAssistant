@@ -335,6 +335,7 @@ interface MobileCompanionStatus {
   lastError?: string | null;
   inboxDir: string;
   reviewStateDir: string;
+  tunnelUrl?: string | null;
 }
 
 interface OllamaVersionInfo {
@@ -3215,7 +3216,9 @@ function App() {
             </div>
             <p className="settings-help-text">
               在手机 App 的“配对”页输入下面的地址和 6 位配对码。若已开启
-              Tailscale，优先使用 100.x 的 Tailscale 地址。
+              Tailscale，优先使用 100.x 的 Tailscale 地址；若已建立 Cloudflare
+              Tunnel，可直接复制下方 https
+              公网地址（手机无需安装任何组网客户端）。
             </p>
           </div>
           <div
@@ -3276,11 +3279,31 @@ function App() {
               ),
             ) && (
               <p className="settings-help-text">
-                未检测到 Tailscale 100.x 地址。请确认桌面端已连接
-                Tailscale，然后点击“刷新状态”。
+                未检测到 Tailscale 100.x 地址。若未使用 Tailscale，可改用下方
+                Cloudflare Tunnel 的 https 公网地址；或确认桌面端已连接
+                Tailscale 后点击“刷新状态”。
               </p>
             )}
         </div>
+
+        {mobileStatus?.tunnelUrl ? (
+          <div className="mobile-settings-tunnel-box">
+            <div className="mobile-settings-tunnel-label">
+              Cloudflare Tunnel 公网地址（手机无需 VPN，可直接与 Clash 共存）
+            </div>
+            <div className="settings-path-box mobile-settings-tunnel-url">
+              {mobileStatus.tunnelUrl}
+            </div>
+            <button
+              className="action-button"
+              onClick={() =>
+                void handleCopyMobileAddress(mobileStatus.tunnelUrl as string)
+              }
+            >
+              复制公网地址
+            </button>
+          </div>
+        ) : null}
 
         <div className="mobile-settings-grid">
           <div className="mobile-settings-label">Inbox 目录</div>
