@@ -8,7 +8,7 @@ ResearchAssistant 是一个本地优先的科研助理工作台，当前同时�
 
 当前主线已经覆盖资料导入、知识库检索、Research Memory、PDF 阅读与术语卡片、Notes 草稿、移动端收件箱、移动端独立聊天、移动端 PDF AI、A+B 组合创新分析、桌面笔记与知识卡片同步、局域网或 Tailscale 配对、复习事件同步，以及桌面端和 Android release 构建。
 
-当前发布版本为 `1.1.14`。移动协议版本为 `2026-08-10.v2`；HTTP 路径为兼容旧客户端继续保留 `/api/mobile/v1` 前缀。
+当前发布版本为 `1.1.18`。移动协议版本为 `2026-08-10.v2`；HTTP 路径为兼容旧客户端继续保留 `/api/mobile/v1` 前缀。
 
 ## 仓库结构
 
@@ -45,6 +45,7 @@ pnpm run tauri dev
 
 - 局域网地址，例如 `http://192.168.1.20:38465`
 - Tailscale 地址，例如 `http://100.x.y.z:38465`
+- Cloudflare Tunnel 自动生成的 `https://*.trycloudflare.com` 手机配对地址
 - 6 位配对码
 - 已配对设备
 - `mobile_inbox` 和 `review_state` 数据目录
@@ -89,7 +90,7 @@ pnpm --dir mobile-app dev
 
 真机联调步骤：
 
-1. 启动桌面端，记录设置页展示的局域网地址或 Tailscale 地址，以及 6 位配对码。
+1. 启动桌面端，打开设置页 Mobile 区，直接复制“手机配对地址”和 6 位配对码；Cloudflare Tunnel 地址生成后会自动显示。
 2. 在手机端进入“配对桌面端”页，输入地址和配对码。
 3. 配对成功后，在“聊天”页新建移动会话，测试桌面模型是否能流式返回。
 4. 在“聊天”页顶部切换到“采集”，发送笔记、链接或图片。
@@ -231,9 +232,9 @@ pnpm check:release-version
 5. 创建并推送 tag，例如：
 
 ```bash
-git tag -a v1.1.14 -m "release: v1.1.14"
+git tag -a v1.1.15 -m "release: v1.1.15"
 git push origin main
-git push origin v1.1.14
+git push origin v1.1.15
 ```
 
 6. GitHub 会自动触发 `Release Desktop`，生成一个 draft release。

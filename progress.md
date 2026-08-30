@@ -526,3 +526,153 @@
 - 两份 APK 分发文件已受控覆盖为 00:30 新构建，均为 109,508,870 字节；稳定包再次核验 `versionName 1.1.14`、`versionCode 24`、APK v2 签名有效。
 - 阶段 21 空白轻点取消选区与阶段 22 全量论文同步均已完成源码、测试、双端构建和分发文件更新。
 - 最终收尾通过全仓 Prettier、Rust 格式、受控冲突标记和 `git diff --check`；工作树中的既有未提交与未跟踪内容均保留，未执行提交、标签或远端发布。
+
+### 阶段 23：Tencent 2.0 模型中心兼容性与发布
+
+- **状态：** 进行中
+- 用户已在阶段 22 后继续修改项目，要求把 Tencent 模型切换到 2.0，并在模型中心可实现时打包发布。
+- 已确认当前工作树存在 12 个用户改动文件和 2 个未跟踪构建日志，后续检查与修改必须基于当前工作树，不回退这些内容。
+- 初步检索显示当前默认翻译模型已是 `tencent/Hy-MT2-1.8B-GGUF:Q4_K_M`，需要继续核验 Tencent 2.0 的实际运行时名称、镜像下载和配置迁移。
+- 沙箱内直接查询 Hugging Face/ModelScope 被目标主机拒绝，尚未据此判断模型不存在；将按权限流程进行只读上游查询，不下载权重。
+- 受控 Hugging Face 查询确认官方命名为 HY-MT2（第二代），目前没有官方 `2.0` 仓库名；代码当前已经切到 HY-MT2 1.8B GGUF，不能直接猜改模型名。
+- 官方还提供 7B 和 30B-A3B GGUF 变体；正在核对文件树与镜像可用性，以判断用户所说的“2.0”是否需要切换参数规模。
+- 已确认当前 `tencent/Hy-MT2-1.8B-GGUF:Q4_K_M` 就是 Tencent 第二代轻量模型；没有官方独立“2.0”仓库名，因此不猜测不存在的模型标识。
+- 修复模型中心镜像下载成功后提前返回的问题；下载完成会刷新 Ollama 列表并回填当前模型。
+- 增加移动端旧 HY-MT1.5 配置迁移，读取移动设置时自动归一化到 HY-MT2。
+- 版本统一升级到 1.1.15，Android `versionCode` 升级到 25；更新中文变更记录。
+- `cargo check`、`cargo test --lib`（53/53）、桌面和移动 TypeScript、移动聊天/阅读/响应式测试（2/7/3）、Rust 格式、版本一致性、冲突标记和差异空白检查已通过。
+- 沙箱内移动 Node 测试和冲突脚本曾分别因 `spawn EPERM`、`spawnSync git EPERM` 失败，已在受控终端重跑通过；测试仅出现既有模块类型性能提示。
+- Android Release 构建成功，APK 为 `109,546,330` 字节，核验 `versionName 1.1.15`、`versionCode 25`，APK v2 签名有效且签名者数量为 1。
+- Windows NSIS 构建成功，安装器为 `54,287,168` 字节，ProductVersion 与 FileVersion 均为 1.1.15；构建仅保留既有 PDF.js eval、动态导入和大分块提示。
+- 双端构建未下载模型、未启动 Ollama 推理；模型仍由用户在模型中心首次使用时按镜像下载。
+- 用户确认国内不能使用 Hugging Face 官方直连；只保留 `hf-mirror.com`，实测带 `?download=true` 的地址返回 200 和约 1.13GB 文件长度，已移除官方直链与 ModelScope 候选。
+- 已重新构建 Windows NSIS，安装包仍为 1.1.15，已包含国内镜像修复和完整候选错误信息。
+- 动态 Hugging Face 模型发现也已统一通过 `build_hf_mirror_url` 添加 `download=true`，并再次成功构建 Windows NSIS；不再有官方直连或 Tencent ModelScope 地址。
+- 用户反馈镜像续传返回 416；已加入无 Range 完整重试并成功重新构建 Windows NSIS，用户无需手动删除临时模型缓存。
+- 用户继续反馈下载完成后 `/api/create` 返回 400；已读取响应正文，确定 Ollama 0.17.7 淘汰旧 `modelfile` 字段。
+- 使用已下载的 1.13GB GGUF 通过 `ollama create -f Modelfile` 成功安装 HY-MT2，没有重新下载权重；模型列表和短翻译推理均验证成功。
+- 生产链路改为解析私有、随包或系统 Ollama CLI，创建完成后再读取 `/api/tags` 确认模型出现，只有确认成功才删除临时缓存并向前端发送成功事件。
+- Rust 编译和全库 54/54 测试通过，新增导入模型名称大小写与标签兼容测试；Web TypeScript 通过。
+- 最终 Windows 1.1.15 NSIS 构建成功，包含 416 回退、国内镜像参数、CLI GGUF 导入、模型列表复查和成功后缓存清理完整链路。
+
+### 阶段 26：模型实时热榜与部署预算筛选
+
+- **状态：** 进行中
+- 已恢复三个中文计划文件并保留当前全部未提交、未跟踪内容。
+- 已确认动态发现缺少关键词、文件大小和预算筛选，且模型元数据 API 尚未切换到国内镜像。
+- 开始扩展 Rust 查询接口与模型中心 UI；本轮不改动 OCR 安全策略，也不重建无关的 Android APK。
+- 已通过只读网络核验确认 hf-mirror 热榜的数组响应和文件树大小字段，并记录一次 PowerShell 管道语法错误及修正方式。
+- Rust 已加入关键词、分类、预算、文件大小、部署估算、单文件筛选和热度排序；Web 模型中心已加入检索框、4–32GB 预算和实时结果元数据。
+- Qwen 只读端到端探测确认热榜可返回 8 个真实仓库，`Qwen3-4B.Q4_K_M.gguf` 为 2,497,280,672 字节，8GB 预算估算为 3.6GB；已补齐点号量化命名识别。
+- 第一轮完整门禁中 Rust 58/58、Web TypeScript、Rust 格式、版本一致性和差异空白通过；全仓 Prettier 的 5 个机械差异已格式化，冲突脚本的沙箱 `spawnSync git EPERM` 已在受控终端重跑通过。
+
+### 阶段 27：短段落翻译回归修复与 Windows 打包
+
+- 用户确认继续修复并打包当前版本，要求保留工作树已有改动。
+- 初始验证：`cargo check` 通过；`cargo test --lib` 因推荐模型测试夹具漏填 `updated_at` 字段失败。
+- 已建立本阶段目标：修复测试夹具、补充短段落翻译纯逻辑回归测试、通过质量门禁并构建 Windows 1.1.15 NSIS。
+- 已修复推荐测试夹具并增加 4 个短段落翻译输出回归测试，覆盖空返回、JSON 提取、生成哨兵清洗和选区长度校验。
+- Rust 单元测试首次重跑已通过 62/62；发现一个仅由测试函数命名造成的 `non_snake_case` 警告，已准备改为全小写标识符后复核。
+- 已完成最终门禁：`cargo fmt -- --check`、`cargo test --lib`（62/62）、`pnpm typecheck`、`pnpm check:release-version`、`pnpm check:conflicts`（受控环境）和 `git diff --check` 均通过。
+- Windows NSIS 构建成功；Web 生产构建成功，仅保留既有 PDF.js `eval`、动态导入和大分块提示。
+- 安装包已核验为 `1.1.15`，ProductVersion/FileVersion 均为 `1.1.15`，大小 `54,374,776` 字节，路径为 `src-tauri/target/release/bundle/nsis/researchassistant_1.1.15_x64-setup.exe`。
+
+### 阶段 28：HY-MT2 非忠实译文反馈
+
+- 用户实测反馈 HY-MT2 输出了与原文无关的英文摘要，包含自拟的 `Method / Results / Conclusion` 和患者信息，稳定性明显低于 HY-MT1.5。
+- 已确认当前校验会放行“少量中文字符 + 大段英文”的输出；当前短段落直出 Prompt 也缺少源文本边界和禁止新增内容约束。
+- 本阶段将收紧 Prompt、增强非忠实输出拦截，并重新构建 Windows 安装包。
+- 已新增英文主导输出检测、摘要结构增量检测和 HY-MT2 源文本边界 Prompt；Rust 回归测试通过 64/64。
+- 已统一使用 MT1.5 原始翻译 Prompt：精确翻译、当前页上下文仅用于消歧、不扩写、不做百科说明、只输出译文；HY-MT2 与其他翻译模型统一走同一入口，仅保留 `/api/generate` 底层适配。
+- 已删除统一 Prompt 改造后不再使用的分段、术语提示和 `hints` 校验代码，release 编译不再出现本轮新增警告。
+- Rust 格式检查通过，Rust 单元测试通过 64/64；Web TypeScript、版本一致性、受控冲突标记和差异空白检查全部通过。
+- 最终 Windows NSIS 构建成功；安装包 ProductVersion/FileVersion 均为 1.1.15，大小为 54,424,568 字节，路径为 `src-tauri/target/release/bundle/nsis/researchassistant_1.1.15_x64-setup.exe`。
+
+### 阶段 29：Cloudflare Tunnel 自动启用与 Mobile 地址展示
+
+- 用户要求桌面端自动启用 Cloudflare，并在 Mobile 区显示手机可直接填写的地址。
+- 已确认旧实现启动了 `cloudflared`，但丢弃 `stderr`；已改为并行读取标准输出和标准错误，并加入 `--no-autoupdate`。
+- 已增加 Windows 常见安装路径探测；找到 `cloudflared` 后桌面移动服务启动时自动建立临时 Tunnel，地址解析完成后更新 `baseUrls`。
+- Mobile 区新增“手机配对地址（直接填入）”和 Cloudflare Tunnel 状态；打开设置后自动轮询最多 30 秒，公网地址生成后无需手动刷新。
+- Rust 单元测试通过 65/65，Web 类型检查、版本一致性、受控冲突标记和差异检查通过。
+- 版本升级为 1.1.16，Android versionCode 同步为 26。
+- Windows NSIS 构建成功；ProductVersion/FileVersion 均为 1.1.16，大小为 54,363,144 字节，路径为 `src-tauri/target/release/bundle/nsis/researchassistant_1.1.16_x64-setup.exe`。
+
+### 阶段 30：翻译模型选择同步与输出清洗
+
+- 用户明确要求不硬编码模型：桌面设置中当前选中的翻译模型才是桌面端和移动端共同使用的模型。
+- 已移除桌面端将已保存 HY‑MT1.5 改成 HY‑MT2、移动端将 HY‑MT2 改成 HY‑MT1.5 的强制迁移；移动端设置文件只做去空格和空值兜底。
+- 移动翻译路由继续通过 `get_mobile_translation_model` 读取共享设置，因此用户选择 HY‑MT1.5 或 HY‑MT2 后两端使用同一模型。
+- JSON `translation` 字段现在也经过统一清洗；`[]`、`[TRANSLATION]`、`[译文]` 等空标记会进入空翻译重试路径，正常科研引用 `[1]` 不会被删除。
+- Rust 单元测试通过 67/67，Web 类型检查、版本一致性、受控冲突标记和差异检查通过。
+- 版本升级为 1.1.17，Android versionCode 同步为 27；Windows NSIS 安装包 ProductVersion/FileVersion 均为 1.1.17，大小为 54,455,271 字节。
+
+### 阶段 31：翻译标记重复输出修复
+
+- 用户反馈的重复译文由两层 `[[TRANSLATION]]` 标记未被当前三层哨兵识别导致；清洗逻辑因此保留了标记前后的两份译文。
+- 现在统一识别 `[TRANSLATION]`、`[[TRANSLATION]]` 和 `[[[TRANSLATION]]]`，从最后一个标记开始保留真正输出，截断前面的回显内容。
+- 用户提供的 Conclusions 长文本已加入回归测试；版本升级为 1.1.18，Android versionCode 为 28。
+- 同时升级选区和整页翻译缓存键，安装后不会继续命中旧版本已保存的重复译文。
+
+### 阶段 32：移动端段尾选区与空译文重试修复
+
+- 用户截图显示选区请求已发出，但 HY‑MT2 返回空译文；同时段尾字形触控命中条件过严，只有 1px 内才会接受触点。
+- 触控命中现在允许字形周边 3–6px 的小范围误差，但仍要求命中文字层中的非空字形，空白滑动和空白轻点行为不变。
+- 空译文第二次请求改用无页面上下文的严格 `<SOURCE>` Prompt，避免长页面上下文导致模型再次返回空内容。
+- Rust 单元测试通过 70/70，移动端 PDF 测试通过 7/7，移动端 TypeScript、版本和差异检查通过。
+- Android Release APK 构建成功，大小 109,546,330 字节；Windows NSIS 构建成功，ProductVersion/FileVersion 均为 1.1.18，大小 54,335,649 字节。
+
+### 阶段 33：桌面端 PDF 选区视觉偏移
+
+- 用户继续反馈桌面端 PDF 内容偏移；截图表现为视觉高亮包含 ranks as，翻译弹窗原文仅为 ranks a。
+- 已定位桌面选区的两个坐标/文本一致性风险：Range.getClientRects() 对 PDF.js 绝对定位文字 span 可能返回整 span 矩形，以及 previewScale 在重绘期间引入临时 transform。
+- 当前正在实施字符级选区矩形与稳定 Range 统一，并准备保持版本 1.1.18 重新构建桌面和移动产物。
+- 已将视觉高亮改为逐字符子 Range 的客户端矩形，翻译、复制、解释和注释继续复用同一份稳定 Range 文本。
+- 已移除桌面 PDF 重绘期间的 previewScale 临时 transform，构建产物静态检查确认无相关残留。
+- 桌面 TypeScript、Rust 70/70、移动端 TypeScript、PDF 7/7、聊天 2/2、响应式 3/3、格式、版本和冲突检查通过。
+- Windows NSIS 已重新生成，ProductVersion/FileVersion 均为 1.1.18，大小 54,350,603 字节；Android Release APK 为 109,546,330 字节，versionName 1.1.18、versionCode 28。
+
+### 阶段 34：桌面端 PDF 选区回退修复
+
+- 用户反馈上一版安装后桌面端 PDF 完全无法选中。
+- 根因是字符级矩形计算使用 compareBoundaryPoints，在桌面 WebView 的 Range 生命周期中可能过滤掉全部文字节点或抛出异常；同时原生选区背景透明，导致视觉上没有任何选区。
+- 已改为 intersectsNode，并为字符级计算增加原始 Range 矩形回退；几何计算异常不会再阻断选区状态。
+- 桌面端 TypeScript、移动端 TypeScript、Rust 格式、版本一致性、差异空白和桌面选区静态门禁通过；此前 Rust 70/70 与移动端 PDF 7/7 回归仍通过。
+- Windows NSIS 已按同一版本重新生成，ProductVersion/FileVersion 均为 1.1.18；Android Release APK 也已重新生成，versionName 1.1.18、versionCode 28。
+
+### 2026-08-21：移动端段首段尾选区问题定位
+
+- 已读取既有计划、发现和进度记录，保持版本 `1.1.18` 与工作树现有改动不变。
+- 已定位移动 Viewer 的高概率根因：宽行被过度拆 flow，以及触摸跨 run 时终点被钳回锚点 run。
+- 下一步修改 `mergeColumnFlows`、跨行拖选逻辑和首尾手柄定位，并补充静态回归断言。
+- 第一轮检查中 Web 与移动 TypeScript 通过；`cargo fmt -- --check` 仅发现新增断言需要自动换行。
+- 移动 Node PDF 测试在普通沙箱再次遇到已知 `spawn EPERM`，没有产生测试用例断言失败；后续按受控终端重跑。
+- 已按项目格式化规则修正断言换行；Rust 70/70、移动 PDF 7/7、桌面与移动 TypeScript、版本一致性、冲突标记和 `git diff --check` 全部通过。
+- 生产 Web 构建成功；Windows NSIS 构建成功，文件大小 54,329,775 字节，ProductVersion/FileVersion 均为 `1.1.18`。
+- Android Release 构建成功，APK 大小 109,546,330 字节；`versionName=1.1.18`、`versionCode=28`，APK v2 签名有效且签名者数量为 1。
+- 本轮修复与双端产物已完成，未修改版本号，未删除或覆盖工作树中的无关用户改动。
+- 为避免 WebView 复用旧 Viewer 缓存，内部修订号升级为 v4；移动 PDF 7/7 和移动 TypeScript 复跑通过，Android Release 以 `--rerun-tasks` 强制重建成功。
+
+### 2026-08-21（晚）：移动端跨段选择问题修复
+
+- 用户提供截图：选区跨越多个段落时高亮与上下文存在截断、跨段文本被丢失的现象。
+- 根因：移动 Viewer 的 `updateLinearSelectionFromPointer` 在拖动落点不在锚点 flow 时直接判断 `crossFlow` 并提示"跨栏内容请分次选择"，导致同一栏内相邻段落的字符无法聚合进 `customSelectionText`。
+- 修复策略：放宽跨栏拒绝阈值，新增"同栏连续段"识别 helper（`isSameColumnFlow` / `flowConnectionDistance`），允许在同一栏且 Y 向连续的段落之间按视觉顺序拼接字符集合。
+- 新增 `selectionSequence` 状态：`collectCrossParagraphSegments` 收集跨段片段，`renderCrossParagraphSegments` 绘制多段高亮与首尾 handle。`selectionContext` 优先从 sequence 拼接上下文。`renderLinearSelection` 同时回填单段 sequence 以保持 API 一致。`clearCustomSelection` 同步清空 sequence。
+- `crossFlow` 拒绝路径与原 `if(crossFlow){statusElement.textContent='跨栏内容请分次选择';return;}` 字符串字面量保留，对原有 `rendered_pdf_viewer` 字符串断言零侵入。
+- 兼容性验证：`cargo check --lib` 通过；`cargo test --lib mobile::` 20/20（含 `移动pdf阅读页按需渲染并使用视觉阅读流选字` 与渲染字符串断言）通过。版本号未变更。
+
+### 2026-08-21：移动端段落边界与跨样式选区回归
+
+- 用户新截图确认段首段尾命中仍会失灵，小标题、粗体或斜体与后续正文之间也无法自然连续拖选。
+- 已建立阶段 36，准备核对当前跨段 sequence 实现与视觉 flow 合并逻辑，避免覆盖工作树现有修复。
+- 已移除会把跨 flow 末端索引错误套到首 flow 的 `selectionSequence` 拼接层；单栏页现在统一为一个视觉阅读流，小标题、粗体、斜体和正文按行序连续排列。
+- 触屏入口不再要求事件目标必须属于文字 span，改由字形距离门禁统一判断；空白轻点与滑动候选机制保留。
+- 多栏识别改为要求重复的中等宽度左右栏、至少四行支持以及共享行或足够垂直重叠；内部 Viewer 修订号升级为 v5，应用版本不变。
+- 第一轮门禁中 Rust 格式、桌面与移动 TypeScript 通过，Rust Viewer 定点测试 1/1 通过；移动 Node 测试在普通沙箱遇到已知 `spawn EPERM`，将按受控终端重跑。
+- 受控终端重跑移动 PDF 测试 7/7 通过；Rust 全库 70/70、桌面与移动 TypeScript、Viewer JavaScript 语法、Rust 格式、版本一致性、冲突标记和 `git diff --check` 均通过。
+- 普通沙箱执行冲突检查和桌面构建时分别遇到 Node 派生 `git`、Vite 启动 `esbuild` 的 `spawn EPERM`；两项均在受控权限下按原命令重跑成功，未修改构建参数。
+- Windows NSIS 构建成功：`researchassistant_1.1.18_x64-setup.exe`，大小 54,313,866 字节，ProductVersion/FileVersion 均为 `1.1.18`，SHA-256 为 `C063F32997BBFF3CB9F5016DBC3873DB91A5F8D7D698A3E7120D4C293C177251`。
+- Android Release 使用 `--rerun-tasks` 全量执行 542 个任务并成功；Metro 明确清空缓存后重新打包 1386 个模块，最终 APK 大小 109,546,334 字节。
+- APK 核验为 `versionName=1.1.18`、`versionCode=28`，APK Signature Scheme v2 有效且签名者数量为 1，SHA-256 为 `C1FB7E4507E7EBC596BC593A628FB3AE369EDE5E4EABD0037AB0B1DD65A4AE58`。
+- 已直接解包 APK 内 `assets/index.android.bundle` 并确认包含 `strict-glyph-selection-v5`；阶段 36 完成，应用版本号保持不变。

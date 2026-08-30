@@ -5014,6 +5014,37 @@ textarea:focus {
   gap: 14px;
 }
 
+.model-role-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+}
+
+.model-role-grid .model-selector-compact {
+  padding: 10px 12px;
+  border: 1px solid rgba(135, 158, 194, 0.16);
+  border-radius: 12px;
+  background: rgba(245, 247, 251, 0.6);
+}
+
+:root[data-theme="dark"] .model-role-grid .model-selector-compact {
+  border-color: rgba(135, 158, 194, 0.14);
+  background: rgba(22, 29, 39, 0.88);
+}
+
+.model-role-grid .model-compact-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+@media (max-width: 720px) {
+  .model-role-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .settings-model-card {
   display: flex;
   flex-direction: column;
@@ -5178,6 +5209,17 @@ textarea:focus {
   background: rgba(37, 99, 235, 0.08);
 }
 
+.mobile-settings-primary-address {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 14px 0;
+  padding: 12px;
+  border: 1px solid #16a34a;
+  border-radius: 10px;
+  background: rgba(22, 163, 74, 0.08);
+}
+
 .mobile-settings-tunnel-label {
   font-size: 13px;
   font-weight: 600;
@@ -5257,6 +5299,163 @@ textarea:focus {
 
 .spin {
   animation: spin 0.8s linear infinite;
+}
+
+.model-toolbar-button {
+  gap: 6px;
+  width: auto;
+  min-width: 36px;
+  height: auto;
+  padding: 8px 12px;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.model-toolbar-button span {
+  white-space: nowrap;
+}
+
+.model-discovered-block {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px dashed rgba(103, 117, 141, 0.22);
+}
+
+.model-discovered-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.model-discovered-time {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.model-discovery-controls {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto auto;
+  align-items: stretch;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.model-discovery-search,
+.model-budget-select {
+  min-height: 40px;
+  border: 1px solid rgba(103, 117, 141, 0.2);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.model-discovery-search {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 11px;
+  color: var(--text-secondary);
+}
+
+.model-discovery-search input {
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.model-budget-select {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 9px 0 11px;
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.model-budget-select select {
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.model-discovery-submit {
+  min-height: 40px;
+}
+
+.model-budget-note {
+  margin: 0 0 12px;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  line-height: 1.55;
+}
+
+.model-live-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 12px;
+}
+
+.model-fresh-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #0a7d3c;
+  background: rgba(16, 185, 129, 0.14);
+  border: 1px solid rgba(16, 185, 129, 0.32);
+}
+
+.model-discovered-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.model-source-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: rgba(38, 95, 155, 0.86);
+  text-decoration: none;
+}
+
+.model-primary-button-inline {
+  width: auto;
+  height: auto;
+  padding: 8px 16px;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+@media (max-width: 720px) {
+  .model-discovery-controls {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .model-discovery-search {
+    grid-column: 1 / -1;
+  }
+
+  .model-discovered-header {
+    flex-direction: column;
+  }
 }
 
 .markdown-content h1,

@@ -534,6 +534,11 @@ export default function PdfReaderScreen() {
         return;
       }
       if (message.type === "selection") {
+        if (!message.text && aiPanel.visible) {
+          // WebView 因点击操作按钮失去焦点时会收到空 selection；
+          // 在 AI 面板打开期间保留当前选区，避免选区栏/结果突然消失。
+          return;
+        }
         setSelectedText(message.text);
         setSelectedContext(message.context ?? "");
         setSelectedPage(message.page);
@@ -572,6 +577,7 @@ export default function PdfReaderScreen() {
       }
     },
     [
+      aiPanel.visible,
       enqueueAutoTranslation,
       fallBackToOffline,
       selectionTranslateMode,
@@ -788,7 +794,7 @@ export default function PdfReaderScreen() {
 
   const toggleSelectionTranslateMode = useCallback(() => {
     if (!isOnlineReader || viewerProtocolVersion < 2) {
-      setErrorText("划词翻译需要连接 1.1.14 或更新版本的桌面端。");
+      setErrorText("划词翻译需要连接 1.1.15 或更新版本的桌面端。");
       return;
     }
     const next = !selectionTranslateMode;

@@ -285,3 +285,127 @@
 - 同一白名单还限制未索引工作区 PDF 进入移动 A+B 创新检索；论文 PDF 下载本身不检查白名单，因此只修列表会留下行为不一致。
 - 最小且一致的修复是停止读取和应用演示白名单：移动论文列表返回 Research Memory 与工作区中的全部当前 PDF，创新回退也使用同一全集；保留磁盘上的旧 `demo_library.json` 但不再读取，避免破坏性删除用户数据。
 - 用户已明确确认比赛演示结束，允许移动端同步全部工作区，因此移除运行时白名单符合当前产品授权边界。
+
+## 阶段 23：Tencent 2.0 模型中心
+
+- 当前工作树含用户刚修改的模型中心、移动论文页、Markdown、桌面配置和锁文件，必须保留这些改动，不能用旧版本覆盖。
+- 当前代码已经出现 `tencent/Hy-MT2-1.8B-GGUF:Q4_K_M`，并在模型中心、桌面默认翻译模型、移动服务默认翻译模型和镜像映射中多点引用；同时仍保留 HY-MT1.5 旧配置迁移分支。
+- 能否发布取决于 Tencent 2.0 的真实模型标识和镜像资产是否可被现有 Ollama/GGUF 下载器识别，不能只把字符串从 `1.8B` 改成 `2.0`。
+- 受控只读查询 Hugging Face 后确认 Tencent 官方公开代际名称是 `Hy-MT2`，可用仓库包括 `tencent/Hy-MT2-1.8B-GGUF`、`tencent/Hy-MT2-7B-GGUF` 和 `tencent/Hy-MT2-30B-A3B-GGUF`；没有发现名为 `tencent/...2.0...` 的官方仓库。
+- 因此当前代码的 `Hy-MT2-1.8B-GGUF` 已经是 Tencent 第二代（HY-MT2）模型，不应猜测改成不存在的 `2.0` 字符串；下一步应确认用户想要的是当前 1.8B 量化版，还是官方 7B/30B-A3B 2 代权重。
+- ModelScope 查询接口返回 404，现有模型中心的 Tencent 入口依赖 Hugging Face 与 `hf-mirror.com`，需要继续核对 GGUF 文件树和镜像 URL 是否可直接下载。
+- 官方模型卡明确把 Hy-MT2 定义为包含 1.8B、7B 和 30B-A3B 三种规模的第二代多语种翻译模型，官方没有把它命名成 `2.0` 后缀；当前 1.8B GGUF 是合法的 HY-MT2 轻量版。
+- 现有模型中心已可发现 Hugging Face translation/gguf 仓库、选取 GGUF 文件、通过 `hf-mirror.com`/ModelScope 候选下载，并在下载后按 Ollama 实际名称回填；从能力上可以承载 HY-MT2。
+- 模型中心镜像分支原先在下载成功后直接 `return`，会跳过清空输入框、刷新已安装列表和回填当前模型；已改为成功后跳出候选循环，继续执行统一收尾逻辑。
+- 移动服务读取已有 `mobile_chat_settings.json` 时原先只应用 serde 默认值，不会替换旧 HY-MT1.5 字符串；已增加归一化函数并覆盖旧配置迁移测试。
+- 本次发布采用官方第二代 HY-MT2 1.8B Q4_K_M 作为默认值；7B 与 30B-A3B 虽然同属第二代，但资源需求明显更高，未擅自替换当前默认模型。
+
+## 阶段 23 下载失败回归
+
+- 用户实际拉取时收到 `modelscope.cn/models/tencent/Hy-MT2-1.8B-GGUF` 的 404，证明该候选地址不能作为 Tencent HY-MT2 来源。
+- 国内网络不能依赖 Hugging Face 官方直连；模型中心已删除无效 ModelScope 候选，只使用 `hf-mirror.com` 国内镜像，并附加 `download=true` 避免镜像重定向握手失败。
+- 下载器现在会收集全部候选地址的失败原因，不再只显示最后一个失败 URL，便于区分镜像不可达和仓库不存在。
+- 用户进一步反馈 `416 Range Not Satisfiable`；原因是临时缓存文件已完整或长度超过远端，服务端拒绝继续使用 Range。下载器现会对 416 自动发起无 Range 的完整下载并覆盖缓存。
+
+## 阶段 25：Ollama GGUF 导入闭环
+
+- Ollama 0.17.7 对旧请求 `{ name, modelfile, stream }` 返回 `neither 'from' or 'files' was specified`，证明 `/api/create` 已不再接受 Modelfile 文本字段。
+- 新 API 的 `from` 只接受已有模型名，直接传本地 GGUF 路径会返回 `invalid model name`；若自行使用 `files`，还需要执行 Ollama blob 上传协议。
+- `ollama create MODEL -f Modelfile` 可以直接导入本地 GGUF，并由 Ollama 自行完成内容寻址和 manifest 写入，兼容当前 0.17.7。
+- 实际导入后模型列表出现 `tencent/Hy-MT2-1.8B-GGUF:Q4_K_M`，格式为 GGUF、family 为 `hunyuan-dense`、参数量 1.8B、量化 Q4_K_M。
+- 本地短翻译返回“实验确认该模型已准备就绪。”，加载约 1.86 秒，证明下载、导入、列表识别和推理链路已经真实贯通。
+
+## 阶段 26：模型实时热榜与部署预算筛选
+
+- 用户的感受准确：当前 `RECOMMENDED_MODELS` 是内置静态清单，“检查更新”虽请求远端模型 API，但没有关键词、GGUF 文件大小或部署预算筛选，界面也没有清晰区分静态推荐与实时结果。
+- 当前后端元数据查询仍使用 `huggingface.co/api/models`，这与已确认的国内网络条件不符；模型文件下载虽然走 `hf-mirror.com`，模型发现本身仍可能失败。
+- 本增量采用简单可解释的保守估算：`GGUF 文件 GiB × 1.2 + 0.8 GiB`，用于快速过滤而不是承诺精确显存占用；实际占用仍受 Context、KV Cache 和 CPU/GPU 分层影响。
+- 对 `hf-mirror.com/api/models` 的只读核验表明，热榜响应顶层是模型数组而不是 `{ models: [...] }`；条目直接包含 `id`、`sha`、`downloads`、`likes`、`createdAt` 和 `siblings`。现有包装对象解析是实时推荐不出结果的确定性缺陷。
+- 列表响应的 `siblings` 通常没有文件大小，但国内文件树接口 `/api/models/{repo}/tree/{revision}?recursive=true&expand=false` 会返回每个文件的 `path`、`type` 和 `size`，无需访问 Hugging Face 官方站即可完成预算筛选。
+- 实时检索按当前任务分类单独执行，默认只抓取当前分类的候选并并发读取文件树，避免一次切换模型中心就请求三个分类的全部仓库。
+- 真实 Qwen 热榜中常见文件名为 `Qwen3-4B.Q4_K_M.gguf`，量化标识前使用点号；优先级识别必须同时支持连字符、下划线和点号，否则会错误退化为按文件大小选择 Q2。
+
+## 阶段 27：短段落翻译回归修复
+
+- 当前 `cargo check` 通过，但 `cargo test --lib` 在 `model_discovery_tests::discovered` 测试夹具处失败，原因是新增的 `DiscoveredModel.updated_at` 字段未初始化。
+- HY-MT2 生成路径已经在第一次输出失败后使用简化 Prompt 重试；需要补充不依赖 Ollama 的纯逻辑测试，覆盖空输出、外层 JSON 提取和重试结果清洗，避免只依赖一次真实推理记录。
+- 本阶段只修复确定性测试缺陷并增强回归覆盖，不改变已确认可用的 HY-MT2 模型标识、镜像下载和默认配置。
+- 已补齐 `DiscoveredModel.updated_at` 测试夹具；新增的 4 个翻译输出测试与既有测试合计 62/62 通过。
+- Windows NSIS 已在 2026-08-21 重新生成并核验版本为 1.1.15，安装包大小为 54,374,776 字节；构建未下载模型，也未改变用户现有 Ollama 数据。
+
+## 阶段 28：HY-MT2 非忠实译文反馈
+
+- 用户提供的样例不是空返回，而是模型生成了与原文无关的 `Method / Results / Conclusion` 论文摘要结构，说明当前主要风险是非忠实生成而非仅为空。
+- `is_translation_generate_model` 分支目前直接调用 `/api/generate`，短段落 Prompt 没有 `<SOURCE>` 边界，也没有明确禁止新增方法、结果、结论或患者信息。
+- `looks_like_untranslated_output` 只在译文完全没有 CJK 时拒绝；若输出包含一个中文字符，其余大段英文仍可能被放行。长度检查对约 400 字符以上的选区允许最多 12 倍长度，无法拦截该样例。
+- `PdfTranslatePopover` 只展示后端返回的 `translated_text`，没有拼接 `Method / Results / Conclusion`，因此该污染来自模型输出或模型返回内容清洗，不是前端生成。
+- 新增校验采用保守规则：长英文原文若译文中文字符极少或译文新增多个摘要结构标记，则判定为可重试失败；正常中文译文和必要英文缩写仍可通过。
+- 最终实现将 MT1.5 原始 Prompt 作为所有翻译模型的统一应用层 Prompt；HY-MT2 仅在 `run_translation_model` 中使用 `/api/generate` 适配，不再拥有独立直出 Prompt。
+- 选区翻译保留当前页上下文，但明确标记为“仅用于消歧”；输出要求只返回译文正文，禁止扩写、总结、补充患者信息或新增 `Method / Results / Conclusion` 内容。
+- 非忠实检测现在覆盖英文主导输出和相对原文新增多个摘要结构标记；检测失败会进入同一 Prompt 的重试路径，避免把 HY-MT2 幻觉结果直接展示给用户。
+- 用户反馈样例已加入回归测试；最终 Rust 单元测试 64/64 通过，Windows NSIS 1.1.15 已重新生成。
+
+## 阶段 29：Cloudflare Tunnel 自动启用与 Mobile 地址展示
+
+- 旧代码已经在移动 companion service 初始化后调用 `cloudflared tunnel --url`，但将 `stderr` 设置为 `null`；Cloudflare Quick Tunnel 的公网地址通常打印在 `stderr`，因此 `tunnelUrl` 长期为空。
+- 新实现同时消费 `ChildStdout` 和 `ChildStderr`，用带超时的通道读取 URL，避免单独读取某一管道阻塞或漏掉地址；新增 `--no-autoupdate` 防止桌面启动时被 cloudflared 自行更新打断。
+- Windows 侧除了 PATH，还探测 `C:\Cloudflared\bin\cloudflared.exe`、Program Files、LOCALAPPDATA 和用户 `.cloudflared` 目录；找不到时保留局域网/Tailscale 地址，不伪造公网地址。
+- 桌面 Mobile 区新增明确的“手机配对地址（直接填入）”，优先使用 Cloudflare Tunnel，其次使用非回环局域网/Tailscale 地址；设置页在 Tunnel 异步建立期间自动刷新最多 30 秒。
+- Mobile health/status 与共享 contracts 均补充 `tunnelAvailable`、`tunnelUrl` 字段，移动端可继续使用配对响应中的 `baseUrls` 和 `tunnelUrl`。
+
+## 阶段 30：模型选择同步与翻译输出清洗
+
+- 根因不是移动翻译路由忽略设置：路由已经读取 `get_mobile_translation_model`；真正问题是桌面端和移动端各自的配置归一化逻辑把另一个模型强制替换掉。
+- 正确策略是保留用户当前选择，只在模型名为空时使用默认模型；因此桌面端选择 HY‑MT1.5 时，`set_mobile_translation_model` 会把同一个完整模型名写入移动设置文件。
+- JSON 返回中的 `translation` 字段不能直接返回，否则 `[]` 等标记会绕过统一校验；现在提取字段后与普通文本走同一个 `sanitize_translation_output`。
+- 清洗只处理明确的空标记和翻译包装标记的首尾位置，避免误删正文中的正常引用 `[1]`。
+- 这轮不改变统一 MT1.5 Prompt 的应用层规则，也不移除 HY‑MT2 推荐项；推荐机制仍可供用户选择，但不会覆盖用户已经选定的模型。
+
+## 阶段 31：翻译标记重复输出修复
+
+- 用户样例中的标记是 `[[TRANSLATION]]`，而旧清洗逻辑只查找 `[[[TRANSLATION]]]`，所以不会进入哨兵后的正文截断分支。
+- 模型先输出一次译文、再回显 `[[TRANSLATION]]`、再输出一次译文时，必须以最后一个标记后的内容为准；这不会影响正文中的正常 `[1]` 引用。
+- 旧缓存可能绕过新清洗逻辑，因此选区和整页翻译缓存键同步升级，避免历史错误译文继续显示。
+
+## 阶段 32：移动端段尾选区与空译文重试修复
+
+- 当前移动 Viewer 的自定义选区已包含最后一个字符，但触控首次命中要求距离字形矩形不超过 1px，手指落在段尾字形边缘时容易被判定为空白。
+- 将触控容差收敛到 3–6px，并继续保留文字 `span`、非空字符和空白滚动门禁，避免恢复此前的空白吸附问题。
+- 截图中的“模型返回了空翻译”不是选区文本为空，而是模型第一次响应为空且第二次仍复用带页面上下文的 Prompt；第二次重试现改为短 Prompt 和明确 `<SOURCE>` 边界。
+
+## 阶段 33：桌面端 PDF 选区视觉偏移
+
+- 桌面端选区弹窗文本来自稳定 Range.toString()，视觉黄色高亮却来自 Range.getClientRects()；PDF.js 文字层中的绝对定位和 transform 会让部分选中的 span 返回整段矩形，因此可能出现高亮包含末尾字形而弹窗少一个字符。
+- clampSelectionRangesToBlankLine 会在拖动结束和预览过程中重写 Range 终点，进一步放大视觉区域和实际文本不一致的风险。
+- 桌面页面还有 previewScale 临时 transform；虽然 canvas 与文字层通常一起缩放，但它会让选区、注释比例和页面布局在重绘窗口期间依赖额外坐标系。
+- 本阶段应让高亮矩形按实际选中的文本字符计算，并移除不必要的临时页面缩放；翻译、复制、解释和注释均继续复用同一份稳定 Range 文本。
+
+## 阶段 34：桌面端 PDF 选区回退
+
+- 上一版字符级矩形实现的 `compareBoundaryPoints` 过滤不适合桌面 WebView 中可能正在重绘的 PDF.js Range。
+- 选区视觉层必须具备原始 `Range.getClientRects()` 回退；即使字符级几何不可用，也必须保留复制、翻译和解释所依赖的稳定 Range。
+
+## 阶段 35：移动端段首段尾选区连续性修复
+
+- 用户最新反馈为移动端 PDF 段落首末选择异常，表现为选区高亮在视觉段之间断裂，首尾手柄与文字边界不一致。
+- 当前 `mergeColumnFlows` 对宽度达到页面 72% 的每个 run 直接创建独立 flow；单栏正文的长行通常满足该条件，导致同一段落被拆散。
+- 当前 `updateLinearSelectionFromPointer` 在触摸跨 `runId` 时把终点钳回锚点 run 的首尾，导致跨行拖选不能落在真实目标字符。
+- 修复必须允许同一阅读流跨行、跨 run 连续选择，同时继续把真正不同栏的目标冻结并提示分次选择。
+
+- 已将宽行独立 flow 的条件收紧为“页面存在两组有足够行数且水平分离的窄栏”；单栏正文宽行会加入同一阅读流。
+- 已移除同一 flow 内触摸跨 run 的锚点 run 钳回；跨栏仍由 `crossFlow` 检测冻结并提示分次选择。
+- 首尾手柄现在记录自身实际锚点坐标，拖动偏移不再使用字符中心；单词扩展按视觉行和字符间距连续判断。
+- Rust 静态 Viewer 回归断言、Rust 70/70、移动 PDF 7/7、两端 TypeScript、格式、版本、冲突和差异检查均通过。
+- 因内嵌 Viewer 行为发生变化，移动端内部修订号已从 v3 升为 v4；应用版本仍保持 `1.1.18`。
+
+## 阶段 36：移动端段落边界与跨样式选区修复
+
+- 用户截图显示长选区会跳过行首的小标题、粗体和斜体片段，只高亮其后的正文；从这些样式片段起选时也无法自然向后拖动。
+- 当前触屏入口在视觉字形命中计算前仍要求事件目标属于 `.textLayer span`；段首段尾触点落在 span 边缘或文字层空隙时会被提前标记为空白，即使最近字形仍在允许容差内。
+- 同一视觉行被拆成多个 run 后，样式片段与后续正文可能进入不同 flow；选区因此只保留正文 flow，产生截图中的高亮缺口。
+- 修复需要以视觉行连续性连接单栏跨样式 run，同时继续依靠足够的重复左右栏证据隔离真正双栏。
+- 单栏页面统一为一个视觉阅读流后，小标题、粗体、斜体和正文不再因 PDF.js 的样式 run 拆分而形成高亮缺口；字符仍按 `top/left` 视觉顺序排列。
+- 双栏识别只统计页面宽度 18%–62% 的中等宽度 run，每个候选栏至少需要四行支持，左右栏还需满足水平间距及共享视觉行或垂直重叠证据。
+- 触屏入口现在先构建视觉字形图，再以 3–6px 最近字形门禁区分文字与空白；因此段首段尾的 span 边缘可以命中，同时空白轻点清除和空白滑动滚页仍保持原行为。
+- 曾尝试的跨 flow `selectionSequence` 会把末端 flow 的字符索引错误应用到首 flow，现已完整移除；单栏统一 flow 从数据结构上消除了这类端点索引错位。
+- 最终 APK 的 React Native Bundle 已直接确认包含 `strict-glyph-selection-v5`，排除了 Gradle 或 Metro 复用旧 Viewer 缓存的可能。

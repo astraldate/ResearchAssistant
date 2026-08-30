@@ -2,7 +2,7 @@ import type { PdfOutlineEntry, PdfViewMode } from "../contracts";
 
 export type { PdfOutlineEntry, PdfViewMode } from "../contracts";
 
-export const MOBILE_PDF_VIEWER_REVISION = "strict-glyph-selection-v3";
+export const MOBILE_PDF_VIEWER_REVISION = "strict-glyph-selection-v5";
 
 export interface NativePdfOutlineEntry {
   title?: string;

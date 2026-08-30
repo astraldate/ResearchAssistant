@@ -42,6 +42,26 @@ export const MIRROR_MODELS: Record<string, MirrorModelSpec> = {
     url: "https://modelscope.cn/models/AI-ModelScope/nomic-embed-text-v1.5-GGUF/resolve/master/nomic-embed-text-v1.5.Q4_K_M.gguf",
     filename: "nomic-embed-text-v1.5.Q4_K_M.gguf",
   },
+  "tencent/Hy-MT2-1.8B-GGUF:Q4_K_M": {
+    url: "https://hf-mirror.com/tencent/Hy-MT2-1.8B-GGUF/resolve/main/Hy-MT2-1.8B-Q4_K_M.gguf?download=true",
+    filename: "Hy-MT2-1.8B-Q4_K_M.gguf",
+    candidates: [
+      {
+        url: "https://hf-mirror.com/tencent/Hy-MT2-1.8B-GGUF/resolve/main/Hy-MT2-1.8B-Q4_K_M.gguf?download=true",
+        filename: "Hy-MT2-1.8B-Q4_K_M.gguf",
+      },
+    ],
+  },
+  "tencent/Hy-MT2-1.8B-GGUF": {
+    url: "https://hf-mirror.com/tencent/Hy-MT2-1.8B-GGUF/resolve/main/Hy-MT2-1.8B-Q4_K_M.gguf?download=true",
+    filename: "Hy-MT2-1.8B-Q4_K_M.gguf",
+    candidates: [
+      {
+        url: "https://hf-mirror.com/tencent/Hy-MT2-1.8B-GGUF/resolve/main/Hy-MT2-1.8B-Q4_K_M.gguf?download=true",
+        filename: "Hy-MT2-1.8B-Q4_K_M.gguf",
+      },
+    ],
+  },
 };
 
 export const resolveMirrorModel = (name: string): MirrorModelSpec | null => {

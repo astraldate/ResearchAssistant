@@ -335,6 +335,7 @@ interface MobileCompanionStatus {
   lastError?: string | null;
   inboxDir: string;
   reviewStateDir: string;
+  tunnelAvailable?: boolean;
   tunnelUrl?: string | null;
 }
 
@@ -407,7 +408,7 @@ const REQUIRED_MODELS = {
   edgeExtract: "qwen3.5:9b",
   edgeValidate: "qwen3.5:9b",
   chat: "qwen3.5:9b",
-  translation: "MedAIBase/Tencent-HY-MT1.5:1.8b-q4_K_M",
+  translation: "tencent/Hy-MT2-1.8B-GGUF:Q4_K_M",
 };
 
 const OLLAMA_MIN_RECOMMENDED_VERSION = "0.17.7";
@@ -2002,6 +2003,19 @@ function App() {
   }, [isSettingsOpen]);
 
   useEffect(() => {
+    if (!isSettingsOpen || mobileStatus?.tunnelUrl) return;
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => {
+      if (Date.now() - startedAt > 30_000) {
+        window.clearInterval(timer);
+        return;
+      }
+      void loadMobileCompanionStatus();
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [isSettingsOpen, mobileStatus?.tunnelUrl]);
+
+  useEffect(() => {
     let unlistenFn: (() => void) | null = null;
     listen<IngestProgress>("ingest-progress", (event) => {
       setIngestProgress(event.payload);
@@ -2075,6 +2089,7 @@ function App() {
       if (!status) return;
 
       const normalizedStatusText = status.trim();
+      const normalizedStatusLower = normalizedStatusText.toLowerCase();
       const sourceLabel = sourceUrl?.includes("modelscope.cn")
         ? "ModelScope 镜像"
         : sourceUrl?.includes("hf-mirror.com")
@@ -2082,13 +2097,32 @@ function App() {
           : sourceUrl?.includes("ollama.com")
             ? "Ollama 官方"
             : "";
+
       const mainStatus =
-        modelName &&
-        (/^pulling\b/i.test(normalizedStatusText) ||
-          /^downloading\b/i.test(normalizedStatusText) ||
-          /^importing\b/i.test(normalizedStatusText))
+        modelName && normalizedStatusLower !== "success"
           ? `正在拉取模型 ${modelName}`
           : normalizedStatusText;
+
+      const statusDetail =
+        normalizedStatusLower === "success"
+          ? ""
+          : /^pulling manifest/i.test(normalizedStatusText)
+            ? "获取模型清单..."
+            : /^downloading from mirror/i.test(normalizedStatusText)
+              ? `镜像下载中（${normalizedStatusText.replace(/^downloading from mirror:\s*/i, "")}）`
+              : /^downloading/i.test(normalizedStatusText)
+                ? `下载中（${normalizedStatusText.replace(/^downloading\s*/i, "")}）`
+                : /^verifying sha256 digest/i.test(normalizedStatusText)
+                  ? "校验模型完整性..."
+                  : /^writing manifest/i.test(normalizedStatusText)
+                    ? "写入模型配置..."
+                    : /^importing model into ollama/i.test(normalizedStatusText)
+                      ? "导入到 Ollama..."
+                      : /^reusing downloaded file from cache/i.test(
+                            normalizedStatusText,
+                          )
+                        ? "使用缓存文件..."
+                        : normalizedStatusText;
 
       const sizeDetail =
         typeof total === "number" && total > 0 && typeof completed === "number"
@@ -2100,6 +2134,7 @@ function App() {
         modelName ? `模型：${modelName}` : "",
         sourceLabel ? `来源：${sourceLabel}` : "",
         sourceUrl ? `下载地址：${sourceUrl}` : "",
+        statusDetail,
         sizeDetail,
       ].filter(Boolean);
 
@@ -3205,6 +3240,14 @@ function App() {
       </Suspense>
     );
 
+  const mobilePairAddress =
+    mobileStatus?.tunnelUrl ||
+    mobileStatus?.baseUrls.find(
+      (address) => !/127\.0\.0\.1|localhost|\[::1\]/i.test(address),
+    ) ||
+    mobileStatus?.baseUrls[0] ||
+    "";
+
   const mobileSettingsSection = (
     <div className="settings-section">
       <label>移动端配套</label>
@@ -3245,6 +3288,28 @@ function App() {
           </button>
         </div>
 
+        <div className="mobile-settings-primary-address">
+          <div className="mobile-settings-tunnel-label">
+            手机配对地址（直接填入）
+          </div>
+          {mobilePairAddress ? (
+            <div className="mobile-settings-address-item">
+              <div className="settings-path-box">{mobilePairAddress}</div>
+              <button
+                className="action-button"
+                onClick={() => void handleCopyMobileAddress(mobilePairAddress)}
+              >
+                复制地址
+              </button>
+            </div>
+          ) : (
+            <p className="settings-help-text">
+              Cloudflare Tunnel
+              正在启动，地址生成后会自动显示；也可以先使用下方局域网地址。
+            </p>
+          )}
+        </div>
+
         <div className="mobile-settings-grid">
           <div className="mobile-settings-label">服务名</div>
           <div>{mobileStatus?.serviceName || "未加载"}</div>
@@ -3257,6 +3322,14 @@ function App() {
             {mobileStatus
               ? `${mobileStatus.cardCount} / ${mobileStatus.reviewRecordCount} / ${mobileStatus.inboxCount}`
               : "未加载"}
+          </div>
+          <div className="mobile-settings-label">Cloudflare Tunnel</div>
+          <div>
+            {mobileStatus?.tunnelUrl
+              ? "已启用"
+              : mobileStatus?.tunnelAvailable
+                ? "连接中"
+                : "未检测到 cloudflared"}
           </div>
         </div>
 
@@ -3726,120 +3799,75 @@ function App() {
       </div>
 
       <div className="settings-section">
-        <label>聊天模型</label>
-        <p className="settings-help-text">
-          默认对话模型，当前建议使用 `qwen3.5:9b`。
-        </p>
-        <ModelSelector
-          currentModel={currentModel}
-          onModelChange={setCurrentModel}
-          onStatus={handleChildStatus}
-          label="聊天模型"
-          variant="compact"
-        />
-      </div>
-
-      <div className="settings-section">
-        <label>抽取模型</label>
-        <p className="settings-help-text">
-          候选节点、Pipeline、Edge
-          和校验现在拆成独立模型职责，默认值会直接参与论文索引。
-        </p>
-        <div className="settings-model-stack">
-          <div className="settings-model-card">
-            <div className="settings-model-card-head">
-              <strong>快速抽取模型</strong>
-              <span>候选 Task / Module / Challenge / Insight</span>
-            </div>
-            <ModelSelector
-              currentModel={extractModel}
-              onModelChange={setExtractModel}
-              onStatus={handleChildStatus}
-              label="快速抽取模型"
-              variant="compact"
-            />
-          </div>
-          <div className="settings-model-card">
-            <div className="settings-model-card-head">
-              <strong>节点回退模型</strong>
-              <span>Candidate 抽取失败时兜底</span>
-            </div>
-            <ModelSelector
-              currentModel={extractFallbackModel}
-              onModelChange={setExtractFallbackModel}
-              onStatus={handleChildStatus}
-              label="节点回退模型"
-              variant="compact"
-            />
-          </div>
-          <div className="settings-model-card">
-            <div className="settings-model-card-head">
-              <strong>Pipeline Summary 模型</strong>
-              <span>先总结方法骨架，再做命名</span>
-            </div>
-            <ModelSelector
-              currentModel={pipelineSummaryModel}
-              onModelChange={setPipelineSummaryModel}
-              onStatus={handleChildStatus}
-              label="Pipeline Summary 模型"
-              variant="compact"
-            />
-          </div>
-          <div className="settings-model-card">
-            <div className="settings-model-card-head">
-              <strong>Pipeline 命名模型</strong>
-              <span>从 summary 中提取稳定 pipeline 名称</span>
-            </div>
-            <ModelSelector
-              currentModel={pipelineNameModel}
-              onModelChange={setPipelineNameModel}
-              onStatus={handleChildStatus}
-              label="Pipeline 命名模型"
-              variant="compact"
-            />
-          </div>
-          <div className="settings-model-card">
-            <div className="settings-model-card-head">
-              <strong>Edge 抽取模型</strong>
-              <span>
-                抽取 task-pipeline、pipeline-module、challenge-insight
-              </span>
-            </div>
-            <ModelSelector
-              currentModel={edgeExtractModel}
-              onModelChange={setEdgeExtractModel}
-              onStatus={handleChildStatus}
-              label="Edge 抽取模型"
-              variant="compact"
-            />
-          </div>
-          <div className="settings-model-card">
-            <div className="settings-model-card-head">
-              <strong>Edge 校验模型</strong>
-              <span>删除证据不足或语义不稳的边</span>
-            </div>
-            <ModelSelector
-              currentModel={edgeValidateModel}
-              onModelChange={setEdgeValidateModel}
-              onStatus={handleChildStatus}
-              label="Edge 校验模型"
-              variant="compact"
-            />
-          </div>
+        <label>模型使用</label>
+        <div className="model-role-grid">
+          <ModelSelector
+            currentModel={currentModel}
+            onModelChange={setCurrentModel}
+            onStatus={handleChildStatus}
+            label="聊天"
+            variant="compact"
+          />
+          <ModelSelector
+            currentModel={extractModel}
+            onModelChange={setExtractModel}
+            onStatus={handleChildStatus}
+            label="抽取·快速"
+            variant="compact"
+          />
+          <ModelSelector
+            currentModel={extractFallbackModel}
+            onModelChange={setExtractFallbackModel}
+            onStatus={handleChildStatus}
+            label="抽取·回退"
+            variant="compact"
+          />
+          <ModelSelector
+            currentModel={pipelineSummaryModel}
+            onModelChange={setPipelineSummaryModel}
+            onStatus={handleChildStatus}
+            label="Pipeline·总结"
+            variant="compact"
+          />
+          <ModelSelector
+            currentModel={pipelineNameModel}
+            onModelChange={setPipelineNameModel}
+            onStatus={handleChildStatus}
+            label="Pipeline·命名"
+            variant="compact"
+          />
+          <ModelSelector
+            currentModel={edgeExtractModel}
+            onModelChange={setEdgeExtractModel}
+            onStatus={handleChildStatus}
+            label="Edge·抽取"
+            variant="compact"
+          />
+          <ModelSelector
+            currentModel={edgeValidateModel}
+            onModelChange={setEdgeValidateModel}
+            onStatus={handleChildStatus}
+            label="Edge·校验"
+            variant="compact"
+          />
+          <ModelSelector
+            currentModel={translationModel}
+            onModelChange={setTranslationModel}
+            onStatus={handleChildStatus}
+            label="翻译"
+            variant="compact"
+          />
         </div>
       </div>
 
       <div className="settings-section">
-        <label>翻译模型</label>
-        <p className="settings-help-text">
-          用于选区翻译和整页翻译，建议选更稳定的中英翻译模型。
-        </p>
+        <label>下载中心</label>
         <ModelSelector
           currentModel={translationModel}
           onModelChange={setTranslationModel}
           onStatus={handleChildStatus}
-          label="翻译模型"
-          variant="compact"
+          label="下载与浏览"
+          variant="full"
         />
       </div>
       {extractionProviderSettingsSection}

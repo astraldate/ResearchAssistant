@@ -17,7 +17,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::net::{IpAddr, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::net::TcpListener;
@@ -40,7 +40,7 @@ const MOBILE_INBOX_ASSET_DIR_NAME: &str = "assets";
 const MOBILE_CHAT_DIR_NAME: &str = "mobile_chat_threads";
 const MOBILE_CHAT_SETTINGS_FILE_NAME: &str = "mobile_chat_settings.json";
 const MOBILE_CHAT_DEFAULT_MODEL: &str = "qwen3.5:9b";
-const MOBILE_TRANSLATION_DEFAULT_MODEL: &str = "MedAIBase/Tencent-HY-MT1.5:1.8b-q4_K_M";
+const MOBILE_TRANSLATION_DEFAULT_MODEL: &str = "tencent/Hy-MT2-1.8B-GGUF:Q4_K_M";
 const MOBILE_CHAT_HISTORY_LIMIT: usize = 12;
 const MOBILE_CHAT_RETRIEVAL_LIMIT: usize = 5;
 const MOBILE_CHAT_QUEUE_TIMEOUT_SECS: u64 = 45;
@@ -84,6 +84,7 @@ pub struct MobileCompanionStatus {
     pub last_error: Option<String>,
     pub inbox_dir: String,
     pub review_state_dir: String,
+    pub tunnel_available: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tunnel_url: Option<String>,
 }
@@ -95,6 +96,7 @@ pub struct MobileHealthResponse {
     pub service_name: String,
     pub running: bool,
     pub base_urls: Vec<String>,
+    pub tunnel_available: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tunnel_url: Option<String>,
 }
@@ -244,6 +246,7 @@ pub enum MobileCaptureKind {
     Image,
     Url,
     Note,
+    Pdf,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -553,6 +556,15 @@ fn default_mobile_chat_model() -> String {
 
 fn default_mobile_translation_model() -> String {
     MOBILE_TRANSLATION_DEFAULT_MODEL.to_string()
+}
+
+fn normalize_mobile_translation_model(model: &str) -> String {
+    let normalized = model.trim();
+    if normalized.is_empty() {
+        MOBILE_TRANSLATION_DEFAULT_MODEL.to_string()
+    } else {
+        normalized.to_string()
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -889,6 +901,7 @@ async fn axum_mobile_health(AxumState(state): AxumState<MobileRouterState>) -> i
         service_name: MOBILE_SERVICE_NAME.to_string(),
         running: snapshot.running,
         base_urls: detect_base_urls(snapshot.listener_port, snapshot.tunnel_url.clone()),
+        tunnel_available: snapshot.tunnel_available,
         tunnel_url: snapshot.tunnel_url,
     })
 }
@@ -1918,7 +1931,28 @@ fn find_cloudflared_command() -> Option<PathBuf> {
             return Some(path);
         }
     }
-    None
+
+    let mut known_paths = Vec::new();
+    if cfg!(target_os = "windows") {
+        known_paths.extend([
+            PathBuf::from(r"C:\Cloudflared\bin\cloudflared.exe"),
+            PathBuf::from(r"C:\Program Files\cloudflared\cloudflared.exe"),
+            PathBuf::from(r"C:\Program Files (x86)\cloudflared\cloudflared.exe"),
+        ]);
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+            known_paths.push(PathBuf::from(local_app_data).join("cloudflared/cloudflared.exe"));
+        }
+        if let Some(user_profile) = std::env::var_os("USERPROFILE") {
+            known_paths.push(PathBuf::from(user_profile).join(".cloudflared/cloudflared.exe"));
+        }
+    } else {
+        known_paths.extend([
+            PathBuf::from("/usr/local/bin/cloudflared"),
+            PathBuf::from("/usr/bin/cloudflared"),
+            PathBuf::from("/opt/homebrew/bin/cloudflared"),
+        ]);
+    }
+    known_paths.into_iter().find(|path| path.is_file())
 }
 
 fn resolve_executable_in_path(name: &str) -> Option<PathBuf> {
@@ -1943,7 +1977,12 @@ fn parse_cloudflare_tunnel_url(text: &str) -> Option<String> {
         if lower.contains("trycloudflare.com") || lower.contains("cfargotunnel.com") {
             for token in line.split_whitespace() {
                 let token = token.trim_matches(|character: char| {
-                    character == '`' || character == '"' || character == '\'' || character == ')'
+                    character == '`'
+                        || character == '"'
+                        || character == '\''
+                        || character == ')'
+                        || character == '|'
+                        || character == ','
                 });
                 if token.starts_with("https://")
                     && (token.contains("cloudflare") || token.contains("cfargotunnel"))
@@ -1954,6 +1993,20 @@ fn parse_cloudflare_tunnel_url(text: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn spawn_cloudflared_output_reader<R>(pipe: R, sender: std_mpsc::Sender<String>)
+where
+    R: Read + Send + 'static,
+{
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        for line in std::io::BufReader::new(pipe).lines().flatten() {
+            if sender.send(line).is_err() {
+                break;
+            }
+        }
+    });
 }
 
 fn configure_cloudflare_tunnel_background(state: MobileCompanionState, port: u16) {
@@ -1970,6 +2023,10 @@ fn configure_cloudflare_tunnel_background(state: MobileCompanionState, port: u16
             None => {
                 if let Ok(mut runtime) = state.inner.lock() {
                     runtime.tunnel_available = false;
+                    runtime.tunnel_url = None;
+                    if runtime.listener_port > 0 {
+                        runtime.base_urls = detect_base_urls(runtime.listener_port, None);
+                    }
                 }
                 return;
             }
@@ -1977,50 +2034,56 @@ fn configure_cloudflare_tunnel_background(state: MobileCompanionState, port: u16
 
         if let Ok(mut runtime) = state.inner.lock() {
             runtime.tunnel_available = true;
+            runtime.tunnel_url = None;
+            if runtime.listener_port > 0 {
+                runtime.base_urls = detect_base_urls(runtime.listener_port, None);
+            }
         }
 
         let mut command_builder = Command::new(&command);
         command_builder
             .arg("tunnel")
+            .arg("--no-autoupdate")
             .arg("--url")
             .arg(format!("http://127.0.0.1:{port}"))
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stderr(Stdio::piped());
         suppress_command_window(&mut command_builder);
 
         let mut child = match command_builder.spawn() {
             Ok(child) => child,
             Err(error) => {
                 if let Ok(mut runtime) = state.inner.lock() {
+                    runtime.tunnel_available = false;
                     runtime.last_error = Some(format!("启动 Cloudflare Tunnel 失败：{error}"));
                 }
                 return;
             }
         };
 
-        let mut reader = child
-            .stdout
-            .take()
-            .map(|stdout| std::io::BufReader::new(stdout));
+        let (line_sender, line_receiver) = std_mpsc::channel::<String>();
+        if let Some(stdout) = child.stdout.take() {
+            spawn_cloudflared_output_reader(stdout, line_sender.clone());
+        }
+        if let Some(stderr) = child.stderr.take() {
+            spawn_cloudflared_output_reader(stderr, line_sender.clone());
+        }
+        drop(line_sender);
 
         let tunnel_url = {
+            let deadline = Instant::now() + Duration::from_secs(20);
             let mut found = None;
-            if let Some(reader) = reader.as_mut() {
-                use std::io::BufRead;
-                let mut line = String::new();
-                let deadline = Instant::now() + Duration::from_secs(20);
-                while Instant::now() < deadline {
-                    line.clear();
-                    match reader.read_line(&mut line) {
-                        Ok(0) => break,
-                        Ok(_) => {
-                            if let Some(url) = parse_cloudflare_tunnel_url(&line) {
-                                found = Some(url);
-                                break;
-                            }
+            while Instant::now() < deadline {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                match line_receiver.recv_timeout(remaining.min(Duration::from_millis(250))) {
+                    Ok(line) => {
+                        if let Some(url) = parse_cloudflare_tunnel_url(&line) {
+                            found = Some(url);
+                            break;
                         }
-                        Err(_) => break,
                     }
+                    Err(std_mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
                 }
             }
             found
@@ -2038,6 +2101,7 @@ fn configure_cloudflare_tunnel_background(state: MobileCompanionState, port: u16
             let _ = child.kill();
             let _ = child.wait();
             if let Ok(mut runtime) = state.inner.lock() {
+                runtime.tunnel_available = false;
                 runtime.tunnel_url = None;
                 runtime.last_error = Some(
                     "未能从 Cloudflare Tunnel 输出中解析出公网地址（可能离线或未安装 cloudflared）。"
@@ -2327,6 +2391,7 @@ fn build_mobile_status(
         last_error: snapshot.last_error,
         inbox_dir: inbox_dir.to_string_lossy().to_string(),
         review_state_dir: review_dir.to_string_lossy().to_string(),
+        tunnel_available: snapshot.tunnel_available,
         tunnel_url: snapshot.tunnel_url,
     })
 }
@@ -3045,19 +3110,21 @@ function visualFlowBounds(flow){const runs=flow?.runs||[];if(!runs.length)return
 function visualColumnSignature(flow){const runs=flow?.runs||[];if(!runs.length)return{left:0,right:0,width:0,centerX:0};const left=median(runs.map(run=>run.left));const right=median(runs.map(run=>run.right));return{left,right,width:Math.max(1,right-left),centerX:(left+right)/2};}
 function visualRunSegment(source,chars,index){const left=Math.min(...chars.map(char=>char.left));const right=Math.max(...chars.map(char=>char.right));const top=Math.min(...chars.map(char=>char.top));const bottom=Math.max(...chars.map(char=>char.bottom));const id=`${source.id}:${index}`;for(const char of chars)char.runId=id;return{...source,id,chars,left,right,top,bottom,height:Math.max(1,bottom-top)};}
 function splitVisualRunAtGutters(run,layerWidth,typicalWidth){const chars=[...(run.chars||[])].sort((a,b)=>a.left-b.left);if(chars.length<2)return[run];const edgeGapThreshold=Math.max(10,Math.min(30,typicalWidth*1.75),layerWidth*.012);const centerGapThreshold=Math.max(typicalWidth*3.1,layerWidth*.035);const groups=[];let group=[];let previous=null;for(const char of chars){const edgeGap=previous?char.left-previous.right:0;const centerGap=previous?char.centerX-previous.centerX:0;if(previous&&(edgeGap>edgeGapThreshold||centerGap>centerGapThreshold)){groups.push(group);group=[];}group.push(char);previous=char;}if(group.length)groups.push(group);return groups.map((items,index)=>visualRunSegment(run,items,index));}
-function mergeColumnFlows(flows,layerWidth,typicalWidth){const uniqueRuns=[];const runIds=new Set();for(const source of flows){for(const run of source.runs||[]){if(runIds.has(run.id))continue;runIds.add(run.id);uniqueRuns.push(...splitVisualRunAtGutters(run,layerWidth,typicalWidth));}}uniqueRuns.sort((a,b)=>a.top-b.top||a.left-b.left);const columns=[];const wideThreshold=Math.max(1,layerWidth*.72);for(const run of uniqueRuns){const runWidth=Math.max(1,run.right-run.left);if(runWidth>=wideThreshold){columns.push({id:columns.length,runs:[run],chars:[],wide:true});continue;}let target=null;let bestScore=-Infinity;const runCenter=(run.left+run.right)/2;for(const candidate of columns){if(candidate.wide)continue;const signature=visualColumnSignature(candidate);const overlap=Math.max(0,Math.min(run.right,signature.right)-Math.max(run.left,signature.left));const overlapRatio=overlap/Math.max(1,Math.min(runWidth,signature.width));const centerDistance=Math.abs(runCenter-signature.centerX);const leftDistance=Math.abs(run.left-signature.left);const rightDistance=Math.abs(run.right-signature.right);const edgeAligned=Math.min(leftDistance,rightDistance)<=layerWidth*.065;const sameColumn=(centerDistance<=layerWidth*.18&&(overlapRatio>=.22||edgeAligned))||overlapRatio>=.58;if(!sameColumn)continue;const score=overlapRatio*120-centerDistance/Math.max(1,layerWidth)*35-Math.min(leftDistance,rightDistance)/Math.max(1,layerWidth)*15;if(score>bestScore){target=candidate;bestScore=score;}}if(target)target.runs.push(run);else columns.push({id:columns.length,runs:[run],chars:[],wide:false});}columns.sort((a,b)=>{const boundsA=visualFlowBounds(a);const boundsB=visualFlowBounds(b);return boundsA.left-boundsB.left||boundsA.top-boundsB.top;});for(let flowIndex=0;flowIndex<columns.length;flowIndex++){const flow=columns[flowIndex];flow.id=flowIndex;flow.runs.sort((a,b)=>a.top-b.top||a.left-b.left);flow.chars=[];for(const run of flow.runs){run.chars.sort((a,b)=>a.left-b.left);run.flowId=flowIndex;for(const char of run.chars){char.flowId=flowIndex;char.flowIndex=flow.chars.length;flow.chars.push(char);}}}return columns;}
+function detectMultiColumnLayout(runs,layerWidth){const candidates=runs.filter(run=>{const width=run.right-run.left;return width>=layerWidth*.18&&width<=layerWidth*.62;});const clusters=[];const tolerance=Math.max(28,layerWidth*.1);for(const run of candidates){let cluster=clusters.find(item=>Math.abs(run.left-item.left)<=tolerance);if(!cluster){cluster={left:run.left,count:0,lines:new Set(),top:run.top,bottom:run.bottom};clusters.push(cluster);}cluster.left=(cluster.left*cluster.count+run.left)/(cluster.count+1);cluster.count+=1;cluster.lines.add(run.lineId);cluster.top=Math.min(cluster.top,run.top);cluster.bottom=Math.max(cluster.bottom,run.bottom);}const supported=clusters.filter(item=>item.count>=4&&item.lines.size>=4).sort((a,b)=>a.left-b.left);for(let leftIndex=0;leftIndex<supported.length;leftIndex++){for(let rightIndex=leftIndex+1;rightIndex<supported.length;rightIndex++){const left=supported[leftIndex];const right=supported[rightIndex];if(right.left-left.left<layerWidth*.28)continue;let sharedLines=0;for(const lineId of left.lines)if(right.lines.has(lineId))sharedLines+=1;const verticalOverlap=Math.max(0,Math.min(left.bottom,right.bottom)-Math.max(left.top,right.top));const shorterSpan=Math.max(1,Math.min(left.bottom-left.top,right.bottom-right.top));if(sharedLines>=3||verticalOverlap/shorterSpan>=.55)return true;}}return false;}
+function mergeColumnFlows(flows,layerWidth,typicalWidth){const uniqueRuns=[];const runIds=new Set();for(const source of flows){for(const run of source.runs||[]){if(runIds.has(run.id))continue;runIds.add(run.id);uniqueRuns.push(...splitVisualRunAtGutters(run,layerWidth,typicalWidth));}}uniqueRuns.sort((a,b)=>a.top-b.top||a.left-b.left);const columns=[];const wideThreshold=Math.max(1,layerWidth*.72);const multiColumnLayout=detectMultiColumnLayout(uniqueRuns,layerWidth);if(!multiColumnLayout&&uniqueRuns.length){columns.push({id:0,runs:[...uniqueRuns],chars:[],wide:false});}else{for(const run of uniqueRuns){const runWidth=Math.max(1,run.right-run.left);if(runWidth>=wideThreshold){columns.push({id:columns.length,runs:[run],chars:[],wide:true});continue;}let target=null;let bestScore=-Infinity;const runCenter=(run.left+run.right)/2;for(const candidate of columns){if(candidate.wide)continue;const signature=visualColumnSignature(candidate);const overlap=Math.max(0,Math.min(run.right,signature.right)-Math.max(run.left,signature.left));const overlapRatio=overlap/Math.max(1,Math.min(runWidth,signature.width));const centerDistance=Math.abs(runCenter-signature.centerX);const leftDistance=Math.abs(run.left-signature.left);const rightDistance=Math.abs(run.right-signature.right);const edgeAligned=Math.min(leftDistance,rightDistance)<=layerWidth*.065;const sameVisualLine=candidate.runs.some(item=>item.lineId===run.lineId);const combinedWidth=Math.max(run.right,signature.right)-Math.min(run.left,signature.left);const horizontalGap=Math.max(0,Math.max(run.left,signature.left)-Math.min(run.right,signature.right));const inlineSameColumn=sameVisualLine&&combinedWidth<=layerWidth*.58&&horizontalGap<=layerWidth*.08;const sameColumn=inlineSameColumn||(centerDistance<=layerWidth*.18&&(overlapRatio>=.22||edgeAligned))||overlapRatio>=.58;if(!sameColumn)continue;const score=overlapRatio*120-centerDistance/Math.max(1,layerWidth)*35-Math.min(leftDistance,rightDistance)/Math.max(1,layerWidth)*15+(inlineSameColumn?160:0);if(score>bestScore){target=candidate;bestScore=score;}}if(target)target.runs.push(run);else columns.push({id:columns.length,runs:[run],chars:[],wide:false});}}columns.sort((a,b)=>{const boundsA=visualFlowBounds(a);const boundsB=visualFlowBounds(b);return boundsA.left-boundsB.left||boundsA.top-boundsB.top;});for(let flowIndex=0;flowIndex<columns.length;flowIndex++){const flow=columns[flowIndex];flow.id=flowIndex;flow.runs.sort((a,b)=>a.top-b.top||a.left-b.left);flow.chars=[];for(const run of flow.runs){run.chars.sort((a,b)=>a.left-b.left);run.flowId=flowIndex;for(const char of run.chars){char.flowId=flowIndex;char.flowIndex=flow.chars.length;flow.chars.push(char);}}}return columns;}
 function stabilizeVisualMap(map){if(map.stableFlows)return map;map.flows=mergeColumnFlows(map.flows,map.layer.getBoundingClientRect().width,map.typicalWidth);map.stableFlows=true;return map;}
 function distanceToRect(x,y,rect){const dx=x<rect.left?rect.left-x:x>rect.right?x-rect.right:0;const dy=y<rect.top?rect.top-y:y>rect.bottom?y-rect.bottom:0;return dx*dx+dy*dy;}
 function nearestVisualChar(clientX,clientY,flowId=null){if(!activeVisualMap)return null;const layerRect=activeVisualMap.layer.getBoundingClientRect();const x=clientX-layerRect.left;const y=clientY-layerRect.top;const pool=flowId==null?activeVisualMap.chars:(activeVisualMap.flows[flowId]?.chars||[]);let best=null;let bestDistance=Infinity;for(const char of pool){const distance=distanceToRect(x,y,char);if(distance<bestDistance){best=char;bestDistance=distance;}}return best?{char:best,distance:bestDistance}:null;}
-function selectionHitIsClose(hit,pointerType){if(!hit||!activeVisualMap||!hit.char.char.trim())return false;if(pointerType==='touch')return hit.distance<=1;const radius=Math.max(4,Math.min(8,activeVisualMap.typicalWidth*.65));return hit.distance<=radius*radius;}
-function appendSelectionHandle(kind,char){const handle=document.createElement('div');handle.className=`selectionHandle selectionHandle${kind==='start'?'Start':'End'}`;handle.dataset.selectionHandle=kind;handle.style.left=(kind==='start'?char.left:char.right)+'px';handle.style.top=char.bottom+'px';activeVisualMap.layer.appendChild(handle);selectionNodes.push(handle);}
-function selectedTextForChars(chars){let text='';let previous=null;for(const char of chars){const previousLine=previous?(previous.lineId??previous.runId):null;const currentLine=char.lineId??char.runId;if(previous&&currentLine!==previousLine)text+='\n';else if(previous&&char.left-previous.right>activeVisualMap.typicalWidth*.9&&!/\s$/.test(text)&&!/^\s/.test(char.char))text+=' ';text+=char.char;previous=char;}return text.trim();}
+function selectionHitIsClose(hit,pointerType){if(!hit||!activeVisualMap||!hit.char.char.trim())return false;if(pointerType==='touch'){const radius=Math.max(3,Math.min(6,activeVisualMap.typicalWidth*.5));return hit.distance<=radius*radius;}const radius=Math.max(4,Math.min(8,activeVisualMap.typicalWidth*.65));return hit.distance<=radius*radius;}
+function appendSelectionHandle(kind,char){const handle=document.createElement('div');handle.className=`selectionHandle selectionHandle${kind==='start'?'Start':'End'}`;handle.dataset.selectionHandle=kind;handle.style.left=(kind==='start'?char.left:char.right)+'px';handle.style.top=char.bottom+'px';handle.dataset.anchorX=String(kind==='start'?char.left:char.right);handle.dataset.anchorY=String(char.bottom);activeVisualMap.layer.appendChild(handle);selectionNodes.push(handle);}
+function selectedTextForChars(chars){let text='';let previous=null;for(const char of chars){const previousLine=previous?(previous.lineId??previous.runId):null;const currentLine=char.lineId??char.runId;if(previous&&currentLine!==previousLine)text+='\n';else if(previous&&char.left-previous.right>Math.max(1.5,activeVisualMap.typicalWidth*.35)&&!/\s$/.test(text)&&!/^\s/.test(char.char))text+=' ';text+=char.char;previous=char;}return text.trim();}
 function renderLinearSelection(flow,startIndex,endIndex){if(!flow||!flow.chars.length)return;selectionFlow=flow;selectionStartIndex=Math.max(0,Math.min(startIndex,endIndex,flow.chars.length-1));selectionEndIndex=Math.max(selectionStartIndex,Math.min(Math.max(startIndex,endIndex),flow.chars.length-1));for(const node of selectionNodes)node.remove();selectionNodes=[];const selected=flow.chars.slice(selectionStartIndex,selectionEndIndex+1);const groups=[];for(const char of selected){let group=groups[groups.length-1];if(!group||group.runId!==char.runId){group={runId:char.runId,left:char.left,right:char.right,top:char.top,bottom:char.bottom};groups.push(group);}else{group.left=Math.min(group.left,char.left);group.right=Math.max(group.right,char.right);group.top=Math.min(group.top,char.top);group.bottom=Math.max(group.bottom,char.bottom);}}for(const group of groups){const highlight=document.createElement('div');highlight.className='dragSelectionHighlight';highlight.style.left=group.left+'px';highlight.style.top=group.top+'px';highlight.style.width=Math.max(1,group.right-group.left)+'px';highlight.style.height=Math.max(1,group.bottom-group.top)+'px';activeVisualMap.layer.appendChild(highlight);selectionNodes.push(highlight);}appendSelectionHandle('start',selected[0]);appendSelectionHandle('end',selected[selected.length-1]);customSelectionText=selectedTextForChars(selected);customSelectionPage=Number(activeVisualMap.layer.closest('.page')?.dataset.page||currentPage);}
 function isWordCharacter(value){return /[A-Za-z0-9_\-\u00c0-\uffff]/.test(value);}
-function selectWordAtIndex(flow,index){let start=index;let end=index;const target=flow.chars[index]?.char||'';if(isWordCharacter(target)){while(start>0&&flow.chars[start-1].runId===flow.chars[index].runId&&isWordCharacter(flow.chars[start-1].char))start--;while(end+1<flow.chars.length&&flow.chars[end+1].runId===flow.chars[index].runId&&isWordCharacter(flow.chars[end+1].char))end++;}renderLinearSelection(flow,start,end);}
+function canJoinWordChars(left,right){return left&&right&&(left.lineId??left.runId)===(right.lineId??right.runId)&&right.left-left.right<=Math.max(6,activeVisualMap.typicalWidth*1.5);}
+function selectWordAtIndex(flow,index){let start=index;let end=index;const target=flow.chars[index]?.char||'';if(isWordCharacter(target)){while(start>0&&canJoinWordChars(flow.chars[start-1],flow.chars[start])&&isWordCharacter(flow.chars[start-1].char))start--;while(end+1<flow.chars.length&&canJoinWordChars(flow.chars[end],flow.chars[end+1])&&isWordCharacter(flow.chars[end+1].char))end++;}renderLinearSelection(flow,start,end);}
 function startSelectionGesture(layer,hit,event){clearCustomSelection();activeVisualMap=visualMaps.get(layer);getSelection()?.removeAllRanges();selectionFlow=activeVisualMap.flows[hit.char.flowId];selectionGesture={handle:null,anchorIndex:hit.char.flowIndex,startX:event.clientX,startY:event.clientY,moved:false,grabOffsetX:0,grabOffsetY:0};}
 function updateLinearSelectionFromPointer(event){if(!selectionGesture||!selectionFlow)return;const clientX=event.clientX-(selectionGesture.grabOffsetX||0);const clientY=event.clientY-(selectionGesture.grabOffsetY||0);const sameFlow=nearestVisualChar(clientX,clientY,selectionFlow.id);if(!sameFlow)return;const nearestAny=nearestVisualChar(clientX,clientY);const crossFlow=nearestAny&&nearestAny.char.flowId!==selectionFlow.id&&nearestAny.distance+Math.max(100,activeVisualMap.typicalWidth**2*4)<sameFlow.distance;if(crossFlow){statusElement.textContent='跨栏内容请分次选择';return;}statusElement.textContent='拖动端点可微调';const index=sameFlow.char.flowIndex;if(selectionGesture.handle==='start')renderLinearSelection(selectionFlow,Math.min(index,selectionEndIndex),selectionEndIndex);else if(selectionGesture.handle==='end')renderLinearSelection(selectionFlow,selectionStartIndex,Math.max(index,selectionStartIndex));else renderLinearSelection(selectionFlow,selectionGesture.anchorIndex,index);if(event.clientY<64)window.scrollBy(0,-8);else if(event.clientY>window.innerHeight-42)window.scrollBy(0,8);}
-document.addEventListener('pointerdown',(event)=>{if(!selectionMode)return;const handle=event.target.closest?.('.selectionHandle');if(handle&&selectionFlow&&activeVisualMap){const endpointIndex=handle.dataset.selectionHandle==='start'?selectionStartIndex:selectionEndIndex;const endpoint=selectionFlow.chars[endpointIndex];const layerRect=activeVisualMap.layer.getBoundingClientRect();selectionGesture={handle:handle.dataset.selectionHandle,anchorIndex:null,startX:event.clientX,startY:event.clientY,moved:false,grabOffsetX:event.clientX-(layerRect.left+endpoint.centerX),grabOffsetY:event.clientY-(layerRect.top+endpoint.centerY)};event.target.setPointerCapture?.(event.pointerId);event.preventDefault();return;}const directLayer=event.target.closest?.('.textLayer');const page=event.target.closest?.('.page');const layer=directLayer||page?.querySelector?.('.textLayer');if(!layer)return;if(event.pointerType==='touch'&&!event.target.closest?.('.textLayer span')){selectionCandidate={layer,hit:null,blank:true,startX:event.clientX,startY:event.clientY};return;}activeVisualMap=stabilizeVisualMap(visualMaps.get(layer)||buildVisualTextMap(layer));visualMaps.set(layer,activeVisualMap);const hit=nearestVisualChar(event.clientX,event.clientY);if(event.pointerType==='touch'&&!selectionHitIsClose(hit,event.pointerType)){selectionCandidate={layer,hit:null,blank:true,startX:event.clientX,startY:event.clientY};return;}if(!selectionHitIsClose(hit,event.pointerType))return;if(event.pointerType==='touch'){selectionCandidate={layer,hit,blank:false,startX:event.clientX,startY:event.clientY};return;}startSelectionGesture(layer,hit,event);event.target.setPointerCapture?.(event.pointerId);event.preventDefault();},{passive:false});
+document.addEventListener('pointerdown',(event)=>{if(!selectionMode)return;const handle=event.target.closest?.('.selectionHandle');if(handle&&selectionFlow&&activeVisualMap){const endpointIndex=handle.dataset.selectionHandle==='start'?selectionStartIndex:selectionEndIndex;const endpoint=selectionFlow.chars[endpointIndex];const layerRect=activeVisualMap.layer.getBoundingClientRect();const anchorX=handle.dataset.anchorX?Number(handle.dataset.anchorX):(handle.dataset.selectionHandle==='start'?endpoint.left:endpoint.right);const anchorY=handle.dataset.anchorY?Number(handle.dataset.anchorY):endpoint.bottom;selectionGesture={handle:handle.dataset.selectionHandle,anchorIndex:null,startX:event.clientX,startY:event.clientY,moved:false,grabOffsetX:event.clientX-(layerRect.left+anchorX),grabOffsetY:event.clientY-(layerRect.top+anchorY)};event.target.setPointerCapture?.(event.pointerId);event.preventDefault();return;}const directLayer=event.target.closest?.('.textLayer');const page=event.target.closest?.('.page');const layer=directLayer||page?.querySelector?.('.textLayer');if(!layer)return;activeVisualMap=stabilizeVisualMap(visualMaps.get(layer)||buildVisualTextMap(layer));visualMaps.set(layer,activeVisualMap);const hit=nearestVisualChar(event.clientX,event.clientY);if(event.pointerType==='touch'&&!selectionHitIsClose(hit,event.pointerType)){selectionCandidate={layer,hit:null,blank:true,startX:event.clientX,startY:event.clientY};return;}if(!selectionHitIsClose(hit,event.pointerType))return;if(event.pointerType==='touch'){selectionCandidate={layer,hit,blank:false,startX:event.clientX,startY:event.clientY};return;}startSelectionGesture(layer,hit,event);event.target.setPointerCapture?.(event.pointerId);event.preventDefault();},{passive:false});
 document.addEventListener('pointermove',(event)=>{if(!selectionMode)return;if(selectionCandidate){if(Math.hypot(event.clientX-selectionCandidate.startX,event.clientY-selectionCandidate.startY)>8)cancelSelectionCandidate();return;}if(!selectionGesture)return;const threshold=event.pointerType==='touch'?8:4;if(!selectionGesture.moved&&Math.hypot(event.clientX-selectionGesture.startX,event.clientY-selectionGesture.startY)>threshold)selectionGesture.moved=true;if(selectionGesture.moved)updateLinearSelectionFromPointer(event);event.preventDefault();},{passive:false});
 document.addEventListener('pointerup',(event)=>{if(selectionMode&&selectionCandidate){const candidate=selectionCandidate;cancelSelectionCandidate();if(Math.hypot(event.clientX-candidate.startX,event.clientY-candidate.startY)<=8&&candidate.layer.isConnected){if(candidate.blank){publishClearedSelection(candidate.layer.closest('.page')?.dataset.page);event.preventDefault();return;}activeVisualMap=visualMaps.get(candidate.layer);startSelectionGesture(candidate.layer,candidate.hit,event);selectWordAtIndex(selectionFlow,selectionGesture.anchorIndex);selectionGesture=null;publishSelection();event.preventDefault();}return;}if(selectionMode&&selectionGesture&&selectionFlow){if(selectionGesture.moved)updateLinearSelectionFromPointer(event);else if(!selectionGesture.handle)selectWordAtIndex(selectionFlow,selectionGesture.anchorIndex);selectionGesture=null;publishSelection();event.preventDefault();return;}scheduleSelection(220);},{passive:false});
 document.addEventListener('pointercancel',()=>{selectionGesture=null;cancelSelectionCandidate();});document.addEventListener('selectionchange',()=>{if(!selectionMode)scheduleSelection();});document.addEventListener('touchend',()=>{if(!selectionMode)scheduleSelection(220);},{passive:true});document.addEventListener('click',()=>send({type:'interaction',kind:'tap'}));window.addEventListener('scroll',handleScroll,{passive:true});window.addEventListener('resize',()=>{clearTimeout(resizeTimer);resizeTimer=setTimeout(resetFit,180);});window.addEventListener('error',(event)=>reportError(event.error||event.message));window.addEventListener('unhandledrejection',(event)=>reportError(event.reason));void load();
@@ -3333,11 +3400,34 @@ fn store_inbox_item(
             .filter(|value| !value.trim().is_empty())
             .map(sanitize_file_name)
             .unwrap_or_else(|| default_asset_file_name(&item_id, input.mime_type.as_deref()));
-        let asset_path = asset_dir.join(file_name);
+        let asset_path = asset_dir.join(&file_name);
         let bytes = STANDARD
             .decode(raw_base64.trim())
-            .map_err(|error| format!("Failed to decode image payload: {}", error))?;
-        fs::write(&asset_path, bytes).map_err(|error| error.to_string())?;
+            .map_err(|error| format!("Failed to decode asset payload: {}", error))?;
+        fs::write(&asset_path, &bytes).map_err(|error| error.to_string())?;
+        if input.capture_kind == MobileCaptureKind::Pdf {
+            if let Some(workspace_path) = persist_pdf_to_workspace(app, &file_name, &bytes)? {
+                return Ok(MobileInboxItem {
+                    id: item_id,
+                    capture_kind: input.capture_kind,
+                    status: MobileInboxStatus::Received,
+                    title: input.title.clone().filter(|value| !value.trim().is_empty()),
+                    note: input.note.clone().filter(|value| !value.trim().is_empty()),
+                    url: input.url.clone().filter(|value| !value.trim().is_empty()),
+                    file_name: input
+                        .file_name
+                        .clone()
+                        .filter(|value| !value.trim().is_empty()),
+                    mime_type: input
+                        .mime_type
+                        .clone()
+                        .filter(|value| !value.trim().is_empty()),
+                    stored_asset_path: Some(workspace_path.clone()),
+                    device_id: device_id.to_string(),
+                    created_at: created_at.clone(),
+                });
+            }
+        }
         Some(asset_path.to_string_lossy().to_string())
     } else {
         None
@@ -3369,6 +3459,47 @@ fn store_inbox_item(
     Ok(item)
 }
 
+fn persist_pdf_to_workspace(
+    app: &AppHandle,
+    file_name: &str,
+    bytes: &[u8],
+) -> Result<Option<String>, String> {
+    let workspace_root = mobile_workspace_root_dir(app)?;
+    let target_root = workspace_root.join("selected_imports");
+    fs::create_dir_all(&target_root).map_err(|error| error.to_string())?;
+    let preferred = target_root.join(file_name);
+    let final_path = if preferred.exists() {
+        let stem = preferred
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("paper")
+            .to_string();
+        let ext = preferred
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| format!(".{}", value))
+            .unwrap_or_default();
+        let mut candidate =
+            target_root.join(format!("{}_{}{}", stem, Uuid::new_v4().simple(), ext));
+        let mut index = 1;
+        while candidate.exists() {
+            index += 1;
+            candidate = target_root.join(format!(
+                "{}_{}_{}{}",
+                stem,
+                index,
+                Uuid::new_v4().simple(),
+                ext
+            ));
+        }
+        candidate
+    } else {
+        preferred
+    };
+    fs::write(&final_path, bytes).map_err(|error| error.to_string())?;
+    Ok(Some(final_path.to_string_lossy().to_string()))
+}
+
 fn map_desktop_mobile_inbox_item(
     item: MobileInboxItem,
     record_path: PathBuf,
@@ -3398,11 +3529,7 @@ pub fn set_mobile_chat_model(app: &AppHandle, model: &str) -> Result<(), String>
         } else {
             normalized.to_string()
         },
-        translation_model: if previous.translation_model.trim().is_empty() {
-            MOBILE_TRANSLATION_DEFAULT_MODEL.to_string()
-        } else {
-            previous.translation_model
-        },
+        translation_model: normalize_mobile_translation_model(&previous.translation_model),
     };
     let content = serde_json::to_string_pretty(&settings).map_err(|error| error.to_string())?;
     fs::write(mobile_chat_settings_file(app)?, content).map_err(|error| error.to_string())
@@ -3417,11 +3544,7 @@ pub fn set_mobile_translation_model(app: &AppHandle, model: &str) -> Result<(), 
         } else {
             previous.model
         },
-        translation_model: if normalized.is_empty() {
-            MOBILE_TRANSLATION_DEFAULT_MODEL.to_string()
-        } else {
-            normalized.to_string()
-        },
+        translation_model: normalize_mobile_translation_model(normalized),
     };
     let content = serde_json::to_string_pretty(&settings).map_err(|error| error.to_string())?;
     fs::write(mobile_chat_settings_file(app)?, content).map_err(|error| error.to_string())
@@ -3440,10 +3563,7 @@ fn get_mobile_chat_model(app: &AppHandle) -> String {
 fn get_mobile_translation_model(app: &AppHandle) -> String {
     read_mobile_chat_settings(app)
         .ok()
-        .and_then(|settings| {
-            let model = settings.translation_model.trim();
-            (!model.is_empty()).then(|| model.to_string())
-        })
+        .map(|settings| normalize_mobile_translation_model(&settings.translation_model))
         .unwrap_or_else(|| MOBILE_TRANSLATION_DEFAULT_MODEL.to_string())
 }
 
@@ -5090,7 +5210,10 @@ fn read_mobile_chat_settings(app: &AppHandle) -> Result<MobileChatSettings, Stri
         });
     }
     let content = fs::read_to_string(path).map_err(|error| error.to_string())?;
-    serde_json::from_str(&content).map_err(|error| error.to_string())
+    let mut settings: MobileChatSettings =
+        serde_json::from_str(&content).map_err(|error| error.to_string())?;
+    settings.translation_model = normalize_mobile_translation_model(&settings.translation_model);
+    Ok(settings)
 }
 
 fn mobile_inbox_status_rank(status: MobileInboxStatus) -> u8 {
@@ -5367,6 +5490,28 @@ fn civil_from_days(days: i64) -> (i32, u32, u32) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn 移动端翻译模型跟随桌面端当前选择() {
+        assert_eq!(
+            normalize_mobile_translation_model(MOBILE_TRANSLATION_DEFAULT_MODEL),
+            MOBILE_TRANSLATION_DEFAULT_MODEL
+        );
+        assert_eq!(
+            normalize_mobile_translation_model(" tencent/Hy-MT2-1.8B-GGUF:Q4_K_M "),
+            "tencent/Hy-MT2-1.8B-GGUF:Q4_K_M"
+        );
+        assert_eq!(normalize_mobile_translation_model("qwen3:8b"), "qwen3:8b");
+    }
+
+    #[test]
+    fn cloudflare临时隧道地址可从标准错误输出解析() {
+        let line = "INF +--------------------------------------------------------------------------------------------+\nINF | https://paper-example.trycloudflare.com                                                     |\nINF +--------------------------------------------------------------------------------------------+";
+        assert_eq!(
+            parse_cloudflare_tunnel_url(line).as_deref(),
+            Some("https://paper-example.trycloudflare.com")
+        );
+    }
+
     fn search_hit(paper_id: &str, title: &str) -> research_memory::ResearchSearchHit {
         research_memory::ResearchSearchHit {
             id: format!("命中-{paper_id}"),
@@ -5595,6 +5740,11 @@ mod tests {
         assert!(html.contains("dragSelectionHighlight"));
         assert!(html.contains("mergeColumnFlows"));
         assert!(html.contains("wideThreshold"));
+        assert!(html.contains("function detectMultiColumnLayout"));
+        assert!(html.contains("const multiColumnLayout=detectMultiColumnLayout"));
+        assert!(html.contains("cluster.lines.add(run.lineId)"));
+        assert!(html.contains("if(!multiColumnLayout&&uniqueRuns.length)"));
+        assert!(html.contains("inlineSameColumn"));
         assert!(html.contains("const uniqueRuns=[]"));
         assert!(html.contains("runIds.has(run.id)"));
         assert!(html.contains("visualColumnSignature"));
@@ -5604,6 +5754,13 @@ mod tests {
         assert!(html.contains("currentLine!==previousLine"));
         assert!(html.contains("stabilizeVisualMap"));
         assert!(html.contains("grabOffsetX"));
+        assert!(html.contains("handle.dataset.anchorX"));
+        assert!(html.contains("function canJoinWordChars"));
+        assert!(html
+            .contains("renderLinearSelection(selectionFlow,selectionGesture.anchorIndex,index)"));
+        assert!(!html.contains("anchorRunId"));
+        assert!(!html.contains("selectionSequence"));
+        assert!(!html.contains("collectCrossParagraphSegments"));
         assert!(
             html.contains("if(crossFlow){statusElement.textContent='跨栏内容请分次选择';return;}")
         );
@@ -5619,9 +5776,9 @@ mod tests {
         assert!(html.contains("if(candidate.blank){publishClearedSelection"));
         assert!(html.contains("body.selectionMode .textLayer{touch-action:pan-x pan-y pinch-zoom;"));
         assert!(html.contains("if(!valuePart.trim())"));
-        assert!(html.contains("if(pointerType==='touch')return hit.distance<=1"));
+        assert!(html.contains("if(pointerType==='touch'){const radius=Math.max(3,Math.min(6,activeVisualMap.typicalWidth*.5));return hit.distance<=radius*radius;}"));
         assert!(!html.contains(
-            "if(event.pointerType==='touch'&&!event.target.closest?.('.textLayer span'))return"
+            "if(event.pointerType==='touch'&&!event.target.closest?.('.textLayer span')){"
         ));
         assert!(html.contains("if(!selectionHitIsClose(hit,event.pointerType))return"));
         assert!(html.contains("if(Math.hypot(event.clientX-selectionCandidate.startX,event.clientY-selectionCandidate.startY)>8)cancelSelectionCandidate()"));

@@ -7,7 +7,7 @@ export const MOBILE_SESSION_KEY = "researchassistant.mobile.session.v1";
 export const MOBILE_DB_NAME = "researchassistant-mobile.db";
 
 export type ReviewRating = "again" | "hard" | "good" | "easy";
-export type MobileCaptureKind = "image" | "url" | "note";
+export type MobileCaptureKind = "image" | "url" | "note" | "pdf";
 export type MobileInboxStatus = "received" | "processed";
 
 export interface PairedDeviceSummary {
@@ -31,6 +31,8 @@ export interface MobileCompanionStatus {
   lastError?: string | null;
   inboxDir: string;
   reviewStateDir: string;
+  tunnelAvailable?: boolean;
+  tunnelUrl?: string | null;
 }
 
 export interface MobileHealthResponse {
@@ -38,6 +40,8 @@ export interface MobileHealthResponse {
   serviceName: string;
   running: boolean;
   baseUrls?: string[];
+  tunnelAvailable?: boolean;
+  tunnelUrl?: string | null;
 }
 
 export interface MobilePairRequest {
@@ -53,6 +57,7 @@ export interface MobilePairResponse {
   deviceToken: string;
   pairedAt: string;
   baseUrls: string[];
+  tunnelUrl?: string | null;
 }
 
 export interface MobileSession {

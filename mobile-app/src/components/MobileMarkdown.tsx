@@ -1,7 +1,8 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import {
   Alert,
   Linking,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -23,14 +24,83 @@ type MarkdownBlock =
   | { type: "code"; text: string }
   | { type: "rule" };
 
-export function MobileMarkdown({
+type Segment =
+  | { type: "text"; content: string }
+  | { type: "think"; content: string };
+
+function splitThinkSegments(content: string): Segment[] {
+  const segments: Segment[] = [];
+  let cursor = 0;
+  while (cursor < content.length) {
+    const openIndex = content.indexOf("<think>", cursor);
+    if (openIndex === -1) {
+      const tail = content.slice(cursor).trim();
+      if (tail) segments.push({ type: "text", content: tail });
+      break;
+    }
+    const before = content.slice(cursor, openIndex).trim();
+    if (before) segments.push({ type: "text", content: before });
+    const thinkStart = openIndex + "<think>".length;
+    const closeIndex = content.indexOf("</think>", thinkStart);
+    if (closeIndex === -1) {
+      const tail = content.slice(thinkStart).trim();
+      if (tail) segments.push({ type: "think", content: tail });
+      break;
+    }
+    const thinkText = content.slice(thinkStart, closeIndex).trim();
+    if (thinkText) segments.push({ type: "think", content: thinkText });
+    cursor = closeIndex + "</think>".length;
+  }
+  return segments.length ? segments : [{ type: "text", content }];
+}
+
+function ThinkBlock({
   content,
-  compact = false,
-  selectable = true,
-}: MobileMarkdownProps) {
+  compact,
+  selectable,
+}: {
+  content: string;
+  compact?: boolean;
+  selectable?: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <View style={styles.thinkBlock}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={expanded ? "隐藏思路" : "显示思路"}
+        style={styles.thinkToggle}
+        onPress={() => setExpanded((current) => !current)}
+      >
+        <Text style={styles.thinkToggleText}>
+          {expanded ? "▼ 隐藏思路" : "▶ 显示思路"}
+        </Text>
+      </Pressable>
+      {expanded ? (
+        <View style={styles.thinkPanel}>
+          <TextBlocks
+            content={content}
+            compact={compact}
+            selectable={selectable}
+          />
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function TextBlocks({
+  content,
+  compact,
+  selectable,
+}: {
+  content: string;
+  compact?: boolean;
+  selectable?: boolean;
+}) {
   const blocks = parseBlocks(content);
   return (
-    <View style={[styles.root, compact && styles.rootCompact]}>
+    <>
       {blocks.map((block, index) => {
         const key = `${block.type}:${index}`;
         if (block.type === "heading") {
@@ -114,6 +184,35 @@ export function MobileMarkdown({
           </Text>
         );
       })}
+    </>
+  );
+}
+
+export function MobileMarkdown({
+  content,
+  compact = false,
+  selectable = true,
+}: MobileMarkdownProps) {
+  const segments = splitThinkSegments(content);
+  return (
+    <View style={[styles.root, compact && styles.rootCompact]}>
+      {segments.map((segment, index) =>
+        segment.type === "think" ? (
+          <ThinkBlock
+            key={`think:${index}`}
+            content={segment.content}
+            compact={compact}
+            selectable={selectable}
+          />
+        ) : (
+          <TextBlocks
+            key={`text:${index}`}
+            content={segment.content}
+            compact={compact}
+            selectable={selectable}
+          />
+        ),
+      )}
     </View>
   );
 }
@@ -304,5 +403,27 @@ const styles = StyleSheet.create({
     color: palette.primary,
     textDecorationLine: "underline",
     fontWeight: "700",
+  },
+  thinkBlock: {
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: palette.border,
+    backgroundColor: palette.mist,
+    overflow: "hidden",
+  },
+  thinkToggle: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  thinkToggleText: {
+    color: palette.slate,
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  thinkPanel: {
+    paddingHorizontal: spacing.md,
+    paddingBottom: spacing.md,
   },
 });

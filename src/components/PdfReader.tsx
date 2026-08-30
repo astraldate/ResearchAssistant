@@ -339,7 +339,7 @@ const getDistanceToRect = (x: number, y: number, rect: DOMRect) => {
     y < rect.top ? rect.top - y : y > rect.bottom ? y - rect.bottom : 0;
   return Math.hypot(dx, dy);
 };
-const getSelectionClientRects = (range: Range) =>
+const getRawSelectionClientRects = (range: Range) =>
   Array.from(range.getClientRects())
     .filter((rect) => rect.width >= 1 && rect.height >= 1)
     .map(
@@ -355,6 +355,68 @@ const getSelectionClientRects = (range: Range) =>
         ? leftRect.left - rightRect.left
         : leftRect.top - rightRect.top,
     );
+
+const getSelectionClientRects = (range: Range) => {
+  const fallbackRects = () => getRawSelectionClientRects(range);
+  const root =
+    range.commonAncestorContainer.nodeType === Node.TEXT_NODE
+      ? range.commonAncestorContainer.parentElement
+      : range.commonAncestorContainer;
+  if (!root) return fallbackRects();
+
+  try {
+    const textNodes: Text[] = [];
+    if (root instanceof Text) {
+      textNodes.push(root);
+    } else {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      let currentNode = walker.nextNode();
+      while (currentNode) {
+        if (currentNode instanceof Text) textNodes.push(currentNode);
+        currentNode = walker.nextNode();
+      }
+    }
+
+    const rects: SelectionClientRect[] = [];
+    textNodes.forEach((textNode) => {
+      const textLength = textNode.textContent?.length ?? 0;
+      if (textLength === 0 || !range.intersectsNode(textNode)) return;
+
+      let startOffset = 0;
+      let endOffset = textLength;
+      if (range.startContainer === textNode) {
+        startOffset = clamp(range.startOffset, 0, textLength);
+      }
+      if (range.endContainer === textNode) {
+        endOffset = clamp(range.endOffset, 0, textLength);
+      }
+      if (endOffset <= startOffset) return;
+
+      // PDF.js 文字层的 span 带有绝对定位 transform，直接读取整段 Range
+      // 可能返回整个 span 的矩形；按字符读取才能让视觉高亮和实际文本边界一致。
+      for (let offset = startOffset; offset < endOffset; offset += 1) {
+        const characterRange = document.createRange();
+        characterRange.setStart(textNode, offset);
+        characterRange.setEnd(textNode, offset + 1);
+        Array.from(characterRange.getClientRects())
+          .filter((rect) => rect.width >= 1 && rect.height >= 1)
+          .forEach((rect) => {
+            rects.push({
+              left: rect.left,
+              top: rect.top,
+              right: rect.right,
+              bottom: rect.bottom,
+            });
+          });
+      }
+    });
+
+    return rects.length > 0 ? rects : fallbackRects();
+  } catch {
+    // 选区节点在 PDF.js 重绘期间可能短暂脱离文字层；几何计算失败时必须保留选区。
+    return fallbackRects();
+  }
+};
 const isPdfAnnotationRectRatio = (
   value: unknown,
 ): value is PdfAnnotationRectRatio =>
@@ -764,47 +826,15 @@ const PdfPageCanvas: React.FC<PdfPageCanvasProps> = ({
   const renderTaskRef = useRef<RenderTask | null>(null);
   const textLayerTaskRef = useRef<TextLayerRenderTask | null>(null);
   const renderedPageRef = useRef<RenderedPageState>({ width: 0, height: 0 });
-  const previousViewportMetricsRef = useRef({
-    zoomPercent,
-    stageWidth,
-  });
   const [renderedPage, setRenderedPage] = useState<RenderedPageState>({
     width: 0,
     height: 0,
   });
-  const [previewScale, setPreviewScale] = useState(1);
 
   useEffect(() => {
     onPageRefChange(pageNumber, shellRef.current);
     return () => onPageRefChange(pageNumber, null);
   }, [onPageRefChange, pageNumber]);
-
-  useLayoutEffect(() => {
-    const previous = previousViewportMetricsRef.current;
-    if (
-      renderedPageRef.current.width <= 0 ||
-      renderedPageRef.current.height <= 0
-    ) {
-      previousViewportMetricsRef.current = { zoomPercent, stageWidth };
-      return;
-    }
-
-    const previousStageBasis = Math.max(
-      MIN_STAGE_WIDTH,
-      previous.stageWidth - 28,
-    );
-    const nextStageBasis = Math.max(MIN_STAGE_WIDTH, stageWidth - 28);
-    const previousScaleFactor =
-      previousStageBasis * Math.max(previous.zoomPercent, 1);
-    const nextScaleFactor = nextStageBasis * Math.max(zoomPercent, 1);
-    const nextPreviewScale =
-      previousScaleFactor > 0 ? nextScaleFactor / previousScaleFactor : 1;
-
-    setPreviewScale(
-      Math.abs(nextPreviewScale - 1) > 0.001 ? nextPreviewScale : 1,
-    );
-    previousViewportMetricsRef.current = { zoomPercent, stageWidth };
-  }, [stageWidth, zoomPercent]);
 
   useEffect(() => {
     if (!shouldRender) {
@@ -847,7 +877,6 @@ const PdfPageCanvas: React.FC<PdfPageCanvasProps> = ({
             height: viewport.height,
           };
           setRenderedPage({ width: viewport.width, height: viewport.height });
-          setPreviewScale(1);
         }
 
         const nextCanvas = document.createElement("canvas");
@@ -926,7 +955,6 @@ const PdfPageCanvas: React.FC<PdfPageCanvasProps> = ({
           height: viewport.height,
         };
         setRenderedPage({ width: viewport.width, height: viewport.height });
-        setPreviewScale(1);
       } catch (error) {
         if (cancelled || isCancelledRenderError(error)) return;
         onRenderError(`第 ${pageNumber} 页渲染失败：${String(error)}`);
@@ -952,12 +980,9 @@ const PdfPageCanvas: React.FC<PdfPageCanvasProps> = ({
     zoomPercent,
   ]);
 
-  const shellWidth =
-    renderedPage.width > 0 ? renderedPage.width * previewScale : pageWidth;
+  const shellWidth = renderedPage.width > 0 ? renderedPage.width : pageWidth;
   const shellHeight =
-    renderedPage.height > 0
-      ? renderedPage.height * previewScale
-      : estimatedHeight;
+    renderedPage.height > 0 ? renderedPage.height : estimatedHeight;
   const contentWidth = renderedPage.width || pageWidth;
   const contentHeight = renderedPage.height || estimatedHeight;
 
@@ -980,8 +1005,6 @@ const PdfPageCanvas: React.FC<PdfPageCanvasProps> = ({
           style={{
             width: `${contentWidth}px`,
             height: `${contentHeight}px`,
-            transform:
-              previewScale !== 1 ? `scale(${previewScale})` : undefined,
           }}
         >
           <canvas className="pdfjs-canvas" ref={canvasRef} />

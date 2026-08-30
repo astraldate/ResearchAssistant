@@ -1,0 +1,47 @@
+
+> researchassistant@1.1.14 tauri E:\Projects\4C\ResearchAssistant
+> tauri "build"
+
+        Info Looking up installed tauri packages to check mismatched versions...
+     Running beforeBuildCommand `pnpm build`
+
+> researchassistant@1.1.14 build E:\Projects\4C\ResearchAssistant
+> tsc && vite build
+
+[36mvite v7.3.1 [32mbuilding client environment for production...[36m[39m
+transforming...
+[32m✓[39m 2304 modules transformed.
+node_modules/pdfjs-dist/build/pdf.js (1982:23): Use of eval in "node_modules/pdfjs-dist/build/pdf.js" is strongly discouraged as it poses security risks and may cause issues with minification.
+rendering chunks...
+[plugin vite:reporter] 
+(!) E:/Projects/4C/ResearchAssistant/src/components/MarkdownRenderer.tsx is dynamically imported by E:/Projects/4C/ResearchAssistant/src/App.tsx but also statically imported by E:/Projects/4C/ResearchAssistant/src/components/ChatInterface.tsx, E:/Projects/4C/ResearchAssistant/src/components/PdfReader.tsx, dynamic import will not move module into another chunk.
+
+computing gzip size...
+[2mdist/[22m[32mindex.html                                    [39m[1m[2m    0.55 kB[22m[1m[22m[2m │ gzip:   0.33 kB[22m
+[2mdist/[22m[32massets/pdf.worker.min-DKQKFyKK.js             [39m[1m[2m1,087.21 kB[22m[1m[22m
+[2mdist/[22m[35massets/index-D9wXu1Qb.css                     [39m[1m[2m  137.67 kB[22m[1m[22m[2m │ gzip:  25.83 kB[22m
+[2mdist/[22m[36massets/_commonjs-dynamic-modules-TDtrdbi3.js  [39m[1m[2m    0.24 kB[22m[1m[22m[2m │ gzip:   0.19 kB[22m
+[2mdist/[22m[36massets/PdfDock-DgukPYFX.js                    [39m[1m[2m    1.96 kB[22m[1m[22m[2m │ gzip:   0.94 kB[22m
+[2mdist/[22m[36massets/MobileInboxPanel-Cn5ifUlJ.js           [39m[1m[2m    5.22 kB[22m[1m[22m[2m │ gzip:   2.10 kB[22m
+[2mdist/[22m[36massets/CardLibrary-Cmq1wa1i.js                [39m[1m[2m    6.47 kB[22m[1m[22m[2m │ gzip:   2.48 kB[22m
+[2mdist/[22m[36massets/PdfReader-DdEXOeFK.js                  [39m[1m[2m  386.70 kB[22m[1m[22m[2m │ gzip: 113.11 kB[22m
+[2mdist/[22m[36massets/index-BgB25UsU.js                      [39m[1m[33m  520.76 kB[39m[22m[2m │ gzip: 161.29 kB[22m
+[2mdist/[22m[36massets/ResearchMemoryPanel-c0B1vHmR.js        [39m[1m[33m  591.82 kB[39m[22m[2m │ gzip: 189.42 kB[22m
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[32m✓ built in 9.88s[39m
+   Compiling researchassistant v1.1.14 (E:\Projects\4C\ResearchAssistant\src-tauri)
+    Finished `release` profile [optimized] target(s) in 3m 28s
+       Built application at: E:\Projects\4C\ResearchAssistant\src-tauri\target\release\researchassistant.exe
+        Info Target: x64
+     Running candle for "E:\\Projects\\4C\\ResearchAssistant\\src-tauri\\target\\release\\wix\\x64\\main.wxs"
+     Running light to produce E:\Projects\4C\ResearchAssistant\src-tauri\target\release\bundle\msi\researchassistant_1.1.14_x64_en-US.msi
+        Info Target: x64
+     Running makensis to produce E:\Projects\4C\ResearchAssistant\src-tauri\target\release\bundle\nsis\researchassistant_1.1.14_x64-setup.exe
+    Finished 2 bundles at:
+        E:\Projects\4C\ResearchAssistant\src-tauri\target\release\bundle\msi\researchassistant_1.1.14_x64_en-US.msi
+        E:\Projects\4C\ResearchAssistant\src-tauri\target\release\bundle\nsis\researchassistant_1.1.14_x64-setup.exe
+

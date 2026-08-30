@@ -1,16 +1,22 @@
 import { useQuery } from "@tanstack/react-query";
+import * as DocumentPicker from "expo-document-picker";
+import * as FileSystem from "expo-file-system/legacy";
 import { type Href, useRouter } from "expo-router";
 import { useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Pressable,
   StyleSheet,
   Text,
   View,
 } from "react-native";
 import { ScreenShell } from "../../src/components/ScreenShell";
-import type { MobilePaperRecord } from "../../src/contracts";
-import { fetchMobilePapers } from "../../src/lib/api";
+import type {
+  MobileInboxItemInput,
+  MobilePaperRecord,
+} from "../../src/contracts";
+import { fetchMobilePapers, submitInboxItem } from "../../src/lib/api";
 import { listCachedPdfs } from "../../src/lib/pdfCache";
 import { useResponsiveLayout } from "../../src/lib/responsiveLayout";
 import { formatLocalDate } from "../../src/lib/time";
@@ -26,6 +32,7 @@ export default function PapersScreen() {
   const session = useSessionStore((state) => state.session);
   const layout = useResponsiveLayout();
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
   const [refreshMessage, setRefreshMessage] = useState<string | null>(null);
   const papersQuery = useQuery({
     queryKey: ["mobile-papers", session?.baseUrl, session?.deviceToken],
@@ -108,6 +115,53 @@ export default function PapersScreen() {
     }
   };
 
+  const handleImportPdf = async () => {
+    if (!session) {
+      Alert.alert("未连接", "请先完成桌面端配对再导入论文。");
+      return;
+    }
+    let picked;
+    try {
+      picked = await DocumentPicker.getDocumentAsync({
+        type: "application/pdf",
+        copyToCacheDirectory: true,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      Alert.alert("选择失败", message);
+      return;
+    }
+    if (picked.canceled || !picked.assets?.length) return;
+    const asset = picked.assets[0];
+    if (!asset.uri) return;
+    setIsImporting(true);
+    setRefreshMessage(null);
+    try {
+      const base64 = await FileSystem.readAsStringAsync(asset.uri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      if (!base64) throw new Error("无法读取 PDF 内容。");
+      const payload: MobileInboxItemInput = {
+        captureKind: "pdf",
+        title: asset.name?.replace(/\.pdf$/i, "") || "导入的论文",
+        fileName: asset.name || "paper.pdf",
+        mimeType: asset.mimeType || "application/pdf",
+        assetBase64: base64,
+        note: null,
+        url: null,
+      };
+      await submitInboxItem(session.baseUrl, session.deviceToken, payload);
+      setRefreshMessage("已发送 PDF，桌面端正在导入论文库，刷新后即可查看。");
+      await papersQuery.refetch();
+      await pdfCacheQuery.refetch();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setRefreshMessage(`导入失败：${message}`);
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
   const handleOpenPdf = (paper: DisplayPaperRecord) => {
     if (!paper.hasPdf) return;
     router.push({
@@ -125,18 +179,32 @@ export default function PapersScreen() {
       title="论文"
       subtitle="从桌面端 Research Memory 打开已索引或已缓存的 PDF。"
       headerRight={
-        <Pressable
-          style={[
-            styles.headerButton,
-            !session || isRefreshing ? styles.headerButtonDisabled : null,
-          ]}
-          onPress={() => void handleRefresh()}
-          disabled={!session || isRefreshing}
-        >
-          <Text style={styles.headerButtonText}>
-            {isRefreshing ? "刷新中" : "刷新"}
-          </Text>
-        </Pressable>
+        <View style={styles.headerActions}>
+          <Pressable
+            style={[
+              styles.headerButton,
+              !session || isImporting ? styles.headerButtonDisabled : null,
+            ]}
+            onPress={() => void handleImportPdf()}
+            disabled={!session || isImporting}
+          >
+            <Text style={styles.headerButtonText}>
+              {isImporting ? "导入中" : "导入 PDF"}
+            </Text>
+          </Pressable>
+          <Pressable
+            style={[
+              styles.headerButton,
+              !session || isRefreshing ? styles.headerButtonDisabled : null,
+            ]}
+            onPress={() => void handleRefresh()}
+            disabled={!session || isRefreshing}
+          >
+            <Text style={styles.headerButtonText}>
+              {isRefreshing ? "刷新中" : "刷新"}
+            </Text>
+          </Pressable>
+        </View>
       }
     >
       {refreshMessage ? (
@@ -218,6 +286,10 @@ const styles = StyleSheet.create({
     backgroundColor: palette.primary,
     paddingHorizontal: 14,
     paddingVertical: 10,
+  },
+  headerActions: {
+    flexDirection: "row",
+    gap: spacing.sm,
   },
   headerButtonDisabled: {
     opacity: 0.65,

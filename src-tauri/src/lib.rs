@@ -26,7 +26,7 @@ use research_memory::{
     ResearchGraph, ResearchGraphEdgeDetail, ResearchGraphNodeDetail, ResearchIngestOptions,
     ResearchPaperRecord, ResearchSearchHit, ReviewRecord,
 };
-use text_decode::{decode_command_output, decode_text_bytes, read_text_file_auto};
+use text_decode::{decode_command_output, read_text_file_auto};
 
 fn format_anyhow_error(error: anyhow::Error) -> String {
     let mut message = error.to_string();
@@ -164,12 +164,33 @@ pub struct ZoteroImportResult {
 
 #[derive(Deserialize)]
 struct HfApiResponse {
+    #[serde(default)]
     siblings: Vec<HfSibling>,
+    /// 模型站返回的默认 revision SHA，可避免仓库默认分支不是 `main` 时下载失败。
+    #[serde(default)]
+    sha: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone, Debug)]
 struct HfSibling {
     rfilename: String,
+    #[serde(default)]
+    size: Option<u64>,
+    #[serde(default)]
+    lfs: Option<HfLfsInfo>,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+struct HfLfsInfo {
+    #[serde(default)]
+    size: Option<u64>,
+}
+
+impl HfSibling {
+    fn file_size(&self) -> Option<u64> {
+        self.size
+            .or_else(|| self.lfs.as_ref().and_then(|lfs| lfs.size))
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -1758,12 +1779,13 @@ async fn write_text_file(path: String, content: String) -> Result<(), String> {
 
 const MAX_PDF_SELECTION_TRANSLATE_CHARS: usize = 2400;
 const MAX_PDF_EXPLANATION_TERM_CHARS: usize = 120;
-const LONG_SELECTION_THRESHOLD_CHARS: usize = 220;
 const TRANSLATION_OUTPUT_SENTINEL: &str = "[[[TRANSLATION]]]";
-const TRANSLATION_PROMPT_V3_WITH_HINTS_JSON: &str = "v3_with_hints_json";
-const TRANSLATION_PROMPT_V3_PURE_TEXT_JSON: &str = "v3_pure_text_json";
-const TRANSLATION_PROMPT_V3_GENERATE_DIRECT: &str = "v3_generate_direct";
-const TRANSLATION_HINT_CONTEXT_LIMIT: usize = 900;
+const TRANSLATION_OUTPUT_SENTINELS: [&str; 3] = [
+    TRANSLATION_OUTPUT_SENTINEL,
+    "[[TRANSLATION]]",
+    "[TRANSLATION]",
+];
+const TRANSLATION_PROMPT_V4_UNIFIED_MT15: &str = "v4_unified_mt15";
 
 fn normalize_extracted_pdf_text(text: &str) -> String {
     text.lines()
@@ -2703,6 +2725,136 @@ async fn switch_to_system_ollama(app: AppHandle) -> Result<String, String> {
     }
 }
 
+/// Extract `org/repo` from `https://hf-mirror.com/{org}/{repo}/resolve/...`.
+fn extract_repo_from_mirror_url(url: &str) -> Option<String> {
+    const PREFIX: &str = "https://hf-mirror.com/";
+    let rest = url.strip_prefix(PREFIX)?;
+    let repo = rest.split("/resolve/").next().unwrap_or("").to_string();
+    if repo.is_empty() {
+        None
+    } else {
+        Some(repo)
+    }
+}
+
+/// 构造镜像下载的候选地址列表。首个地址来自调用方，随后补充
+/// `main` 与 `master` 分支变体；对于 hf-mirror 地址，再查询仓库默认
+/// revision SHA 并补充固定 revision 的地址，以吸收常见的 404 原因：
+/// - 仓库默认分支不是 `main`
+/// - 缓存地址中的 revision 已过期或被重命名
+async fn build_mirror_candidates(url: &str, client: &reqwest::Client) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |u: String| {
+        if seen.insert(u.clone()) {
+            out.push(u);
+        }
+    };
+
+    push(url.to_string());
+
+    // 交换 revision 分支：`main` 与 `master`。
+    for (from, to) in [
+        ("/resolve/main/", "/resolve/master/"),
+        ("/resolve/master/", "/resolve/main/"),
+    ] {
+        if url.contains(from) {
+            push(url.replace(from, to));
+            break;
+        }
+    }
+
+    // 对 hf-mirror 地址解析默认 revision SHA，并使用该值重试。
+    if let Some(repo) = extract_repo_from_mirror_url(url) {
+        let api = format!("https://hf-mirror.com/api/models/{}", repo);
+        if let Ok(r) = client.get(&api).send().await {
+            if r.status().is_success() {
+                if let Ok(info) = r.json::<serde_json::Value>().await {
+                    if let Some(sha) = info.get("sha").and_then(|v| v.as_str()) {
+                        if let Some(rest) = url.split("/resolve/").nth(1) {
+                            if let Some(file) = rest.splitn(2, '/').nth(1) {
+                                push(format!(
+                                    "https://hf-mirror.com/{}/resolve/{}/{}",
+                                    repo, sha, file
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    out
+}
+
+fn bundled_ollama_executable() -> Option<PathBuf> {
+    let executable_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    #[cfg(target_os = "windows")]
+    let candidate = executable_dir.join("ollama.exe");
+    #[cfg(not(target_os = "windows"))]
+    let candidate = executable_dir.join("ollama");
+
+    candidate.is_file().then_some(candidate)
+}
+
+#[cfg(target_os = "windows")]
+fn suppress_ollama_command_window(command: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn suppress_ollama_command_window(_command: &mut std::process::Command) {}
+
+fn resolve_ollama_cli_executable(app: &AppHandle) -> Result<PathBuf, String> {
+    if let Some(executable) = private_ollama_executable_path(app)? {
+        return Ok(executable);
+    }
+    if let Some(executable) = bundled_ollama_executable() {
+        return Ok(executable);
+    }
+
+    #[cfg(target_os = "windows")]
+    if let Some(executable) = find_system_ollama_executable() {
+        return Ok(executable);
+    }
+
+    Err("未找到可用于导入 GGUF 的 Ollama 命令行程序。".to_string())
+}
+
+fn ollama_model_name_matches(installed: &str, requested: &str) -> bool {
+    if installed.eq_ignore_ascii_case(requested) {
+        return true;
+    }
+    let installed_base = installed.split(':').next().unwrap_or(installed);
+    let requested_base = requested.split(':').next().unwrap_or(requested);
+    installed_base.eq_ignore_ascii_case(requested_base)
+}
+
+#[cfg(test)]
+mod ollama_import_tests {
+    use super::ollama_model_name_matches;
+
+    #[test]
+    fn 导入后模型名称允许大小写和标签差异() {
+        assert!(ollama_model_name_matches(
+            "tencent/Hy-MT2-1.8B-GGUF:Q4_K_M",
+            "tencent/hy-mt2-1.8b-gguf:q4_k_m"
+        ));
+        assert!(ollama_model_name_matches(
+            "tencent/Hy-MT2-1.8B-GGUF:latest",
+            "tencent/Hy-MT2-1.8B-GGUF:Q4_K_M"
+        ));
+        assert!(!ollama_model_name_matches(
+            "MedAIBase/Tencent-HY-MT1.5:1.8b-q4_K_M",
+            "tencent/Hy-MT2-1.8B-GGUF:Q4_K_M"
+        ));
+    }
+}
+
 #[tauri::command]
 async fn pull_model_from_modelscope(
     name: String,
@@ -2730,25 +2882,71 @@ async fn pull_model_from_modelscope(
         std::fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
     }
 
-    let gguf_path = temp_dir.join(&filename);
+    // The remote GGUF may live in a subfolder (`gguf/foo.gguf`); the local
+    // cache file must use only the base name so we don't need to create
+    // nested directories under temp_models.
+    let local_filename = filename.rsplit('/').next().unwrap_or(&filename);
+    let gguf_path = temp_dir.join(local_filename);
     let partial_size = std::fs::metadata(&gguf_path)
         .map(|meta| meta.len())
         .unwrap_or(0);
 
-    // 1. Download GGUF
-    let client = reqwest::Client::new();
-    let mut request = client.get(&url);
-    if partial_size > 0 {
-        request = request.header(RANGE, format!("bytes={}-", partial_size));
-    }
-    let res = request
-        .send()
-        .await
-        .map_err(|e| format!("Failed to connect to mirror: {}", e))?;
+    // 1. Download GGUF. Try multiple URL variants so a 404 on one mirror
+    //    branch / stale revision does not kill the whole download.
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let candidates = build_mirror_candidates(&url, &client).await;
 
-    if !res.status().is_success() {
-        return Err(format!("Mirror download failed: {}", res.status()));
+    let mut res: Option<reqwest::Response> = None;
+    let mut effective_url = url.clone();
+    let mut attempt_errors: Vec<String> = Vec::new();
+    for candidate in candidates {
+        let mut request = client.get(&candidate);
+        if partial_size > 0 {
+            request = request.header(RANGE, format!("bytes={}-", partial_size));
+        }
+        match request.send().await {
+            Ok(r) if r.status().is_success() => {
+                effective_url = candidate;
+                res = Some(r);
+                break;
+            }
+            Ok(r)
+                if r.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE && partial_size > 0 =>
+            {
+                // 本地缓存可能已经完整或比远端文件更长；放弃 Range，重新获取完整文件。
+                match client.get(&candidate).send().await {
+                    Ok(full) if full.status().is_success() => {
+                        effective_url = candidate;
+                        res = Some(full);
+                        break;
+                    }
+                    Ok(full) => attempt_errors.push(format!(
+                        "{}（放弃断点后，{}）",
+                        r.status(),
+                        format!("{} ({})", full.status(), candidate)
+                    )),
+                    Err(error) => attempt_errors.push(format!(
+                        "{}（放弃断点后，{} ({})）",
+                        r.status(),
+                        error,
+                        candidate
+                    )),
+                }
+            }
+            Ok(r) => attempt_errors.push(format!("{} ({})", r.status(), candidate)),
+            Err(e) => attempt_errors.push(format!("{} ({})", e, candidate)),
+        }
     }
+    let res = res.ok_or_else(|| {
+        if attempt_errors.is_empty() {
+            "镜像下载失败：没有可用的候选地址".to_string()
+        } else {
+            format!("镜像下载失败：{}", attempt_errors.join("；"))
+        }
+    })?;
 
     let status = res.status();
     let total_size = if status == reqwest::StatusCode::PARTIAL_CONTENT {
@@ -2794,7 +2992,7 @@ async fn pull_model_from_modelscope(
             &PullProgress {
                 status: "Reusing downloaded file from cache...".to_string(),
                 model_name: Some(name.clone()),
-                source_url: Some(url.clone()),
+                source_url: Some(effective_url.clone()),
                 digest: None,
                 total: Some(total_size),
                 completed: Some(total_size),
@@ -2819,7 +3017,7 @@ async fn pull_model_from_modelscope(
                 &PullProgress {
                     status: status_text,
                     model_name: Some(name.clone()),
-                    source_url: Some(url.clone()),
+                    source_url: Some(effective_url.clone()),
                     digest: None,
                     total: Some(total_size),
                     completed: Some(downloaded),
@@ -2836,42 +3034,56 @@ async fn pull_model_from_modelscope(
     );
     std::fs::write(&modelfile_path, modelfile_content).map_err(|e| e.to_string())?;
 
-    // 3. Call Ollama Create API
+    // 3. 使用 Ollama CLI 导入本地 GGUF。Ollama 0.17.7 已不再接受旧版
+    // `modelfile` API 字段，CLI 会自行完成 blob 导入并保持版本兼容。
     let _ = window.emit(
         "pull-progress",
         &PullProgress {
             status: "Importing model into Ollama...".to_string(),
             model_name: Some(name.clone()),
-            source_url: Some(url.clone()),
+            source_url: Some(effective_url.clone()),
             digest: None,
             total: None,
             completed: None,
         },
     );
 
-    let client = reqwest::Client::new();
-    let res = client
-        .post("http://localhost:11434/api/create")
-        .json(&serde_json::json!({
-            "name": name,
-            "modelfile": format!("FROM \"{}\"", gguf_path.to_string_lossy().replace("\\", "/")),
-            "stream": true
-        }))
-        .send()
-        .await
-        .map_err(|e| format!("Failed to call Ollama Create API: {}", e))?;
+    let ollama_executable = resolve_ollama_cli_executable(app_handle)?;
+    let mut create_command = std::process::Command::new(&ollama_executable);
+    create_command
+        .arg("create")
+        .arg(&name)
+        .arg("-f")
+        .arg(&modelfile_path)
+        .env("OLLAMA_HOST", "127.0.0.1:11434");
+    suppress_ollama_command_window(&mut create_command);
 
-    if !res.status().is_success() {
-        return Err(format!("Ollama Create failed: {}", res.status()));
+    let output = create_command.output().map_err(|error| {
+        format!(
+            "无法启动 Ollama 导入命令 '{}': {}",
+            ollama_executable.display(),
+            error
+        )
+    })?;
+    if !output.status.success() {
+        let stdout = decode_command_output(&output.stdout);
+        let stderr = decode_command_output(&output.stderr);
+        let detail = format!("{}\n{}", stdout.trim(), stderr.trim())
+            .trim()
+            .to_string();
+        return Err(if detail.is_empty() {
+            format!("Ollama 创建模型失败：{}", output.status)
+        } else {
+            format!("Ollama 创建模型失败：{}", detail)
+        });
     }
 
-    // Monitor create progress
-    let mut stream = res.bytes_stream();
-    while let Some(item) = stream.next().await {
-        if let Ok(bytes) = item {
-            let _text = decode_text_bytes(&bytes);
-            let _ = _text;
-        }
+    let installed_models = get_ollama_models().await?;
+    if !installed_models
+        .iter()
+        .any(|model| ollama_model_name_matches(&model.name, &name))
+    {
+        return Err("Ollama 导入命令已结束，但模型列表中没有出现目标模型。".to_string());
     }
 
     // Cleanup
@@ -2883,7 +3095,7 @@ async fn pull_model_from_modelscope(
         &PullProgress {
             status: "success".to_string(),
             model_name: Some(name),
-            source_url: Some(url),
+            source_url: Some(effective_url),
             digest: None,
             total: Some(total_size),
             completed: Some(total_size),
@@ -2893,21 +3105,45 @@ async fn pull_model_from_modelscope(
     Ok(())
 }
 
+/// 构造 hf-mirror 下载 URL。逐段写入路径，确保包含空格或保留字符的
+/// 文件名可以正确解析；revision 可以是分支名或 commit SHA。
+fn build_hf_mirror_url(repo: &str, revision: &str, filename: &str) -> String {
+    let mut url = reqwest::Url::parse(&format!(
+        "https://hf-mirror.com/{}/resolve/{}",
+        repo, revision
+    ))
+    .unwrap_or_else(|_| reqwest::Url::parse("https://hf-mirror.com/").expect("static URL"));
+    {
+        let mut segs = url
+            .path_segments_mut()
+            .expect("hf-mirror base URL is absolute");
+        for part in filename.split('/') {
+            segs.push(part);
+        }
+    }
+    url.query_pairs_mut().append_pair("download", "true");
+    url.to_string()
+}
+
 #[tauri::command]
 async fn resolve_hf_gguf(repo: String) -> Result<HfResolveResult, String> {
-    let api_url = format!("https://huggingface.co/api/models/{}", repo);
-    let client = reqwest::Client::new();
+    let api_url = format!("https://hf-mirror.com/api/models/{}", repo);
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()
+        .map_err(|e| e.to_string())?;
     let res = client
         .get(api_url)
         .send()
         .await
-        .map_err(|e| format!("Failed to connect to Hugging Face API: {}", e))?;
+        .map_err(|e| format!("未能连接 hf-mirror 模型 API：{}", e))?;
 
     if !res.status().is_success() {
-        return Err(format!("Hugging Face API error: {}", res.status()));
+        return Err(format!("hf-mirror 模型 API 错误：{}", res.status()));
     }
 
     let info: HfApiResponse = res.json().await.map_err(|e| e.to_string())?;
+    let revision = info.sha.clone().unwrap_or_else(|| "main".to_string());
     let mut gguf_files: Vec<String> = info
         .siblings
         .into_iter()
@@ -2916,7 +3152,7 @@ async fn resolve_hf_gguf(repo: String) -> Result<HfResolveResult, String> {
         .collect();
 
     if gguf_files.is_empty() {
-        return Err("No GGUF files found in repo".to_string());
+        return Err("仓库中没有可用的 GGUF 文件。".to_string());
     }
 
     let preferred = [
@@ -2938,9 +3174,509 @@ async fn resolve_hf_gguf(repo: String) -> Result<HfResolveResult, String> {
     }
 
     let filename = selected.unwrap_or_else(|| gguf_files.remove(0));
-    let url = format!("https://hf-mirror.com/{}/resolve/main/{}", repo, filename);
+    let url = build_hf_mirror_url(&repo, &revision, &filename);
 
     Ok(HfResolveResult { url, filename })
+}
+
+/// 从国内模型镜像实时发现、并通过部署预算筛选后的 GGUF 模型。
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveredModel {
+    /// 模型仓库 ID，例如 `tencent/Hy-MT2-1.8B-GGUF`。
+    pub repo_id: String,
+    /// UI 中使用的任务分类。
+    pub category: String,
+    /// 当前预算内优先选择的单文件 GGUF。
+    pub gguf_filename: String,
+    /// 经 hf-mirror 下载的国内地址。
+    pub download_url: String,
+    /// 模型站报告的总下载量。
+    pub downloads: u64,
+    /// 模型站报告的点赞数。
+    pub likes: u64,
+    /// 模型站报告的创建时间。
+    pub created_at: Option<String>,
+    /// 模型站报告的最近更新时间，用于衡量"当下是否还在活跃更新"。
+    pub updated_at: Option<String>,
+    /// 所选 GGUF 文件的字节数。
+    pub file_size: u64,
+    /// 运行时内存的保守估算，实际值受 Context 和 CPU/GPU 分层影响。
+    pub estimated_vram_gb: f64,
+}
+
+#[derive(Deserialize, Debug)]
+struct HfListModel {
+    id: String,
+    #[serde(default)]
+    downloads: u64,
+    #[serde(default)]
+    likes: u64,
+    #[serde(default, rename = "createdAt", alias = "created_at")]
+    created_at: Option<String>,
+    #[serde(default, rename = "lastModified", alias = "last_modified")]
+    last_modified: Option<String>,
+    #[serde(default)]
+    sha: Option<String>,
+    #[serde(default)]
+    siblings: Vec<HfSibling>,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(untagged)]
+enum HfListResponse {
+    Items(Vec<HfListModel>),
+    Wrapped {
+        #[serde(default)]
+        models: Vec<HfListModel>,
+    },
+}
+
+impl HfListResponse {
+    fn into_models(self) -> Vec<HfListModel> {
+        match self {
+            Self::Items(models) | Self::Wrapped { models } => models,
+        }
+    }
+}
+
+#[derive(Deserialize, Clone, Debug)]
+struct HfTreeEntry {
+    #[serde(rename = "type")]
+    entry_type: String,
+    path: String,
+    #[serde(default)]
+    size: u64,
+}
+
+#[derive(Debug)]
+struct DiscoveryCandidate {
+    repo_id: String,
+    category: String,
+    downloads: u64,
+    likes: u64,
+    created_at: Option<String>,
+    updated_at: Option<String>,
+    revision: String,
+    siblings: Vec<HfSibling>,
+}
+
+const GGUF_PREFERENCE: [&str; 7] = ["q4_k_m", "q5_k_m", "q4_0", "q4_1", "q3_k_m", "q8_0", "f16"];
+
+fn is_single_file_gguf(filename: &str) -> bool {
+    let lower = filename.to_lowercase();
+    lower.ends_with(".gguf") && !lower.contains("of-") && !lower.contains("-split-")
+}
+
+fn gguf_preference_rank(filename: &str) -> usize {
+    let lower = filename.to_lowercase();
+    GGUF_PREFERENCE
+        .iter()
+        .position(|quant| {
+            lower.contains(&format!("-{quant}.gguf"))
+                || lower.contains(&format!("_{quant}.gguf"))
+                || lower.contains(&format!(".{quant}.gguf"))
+                || lower.ends_with(&format!("/{quant}.gguf"))
+                || lower == format!("{quant}.gguf")
+        })
+        .unwrap_or(GGUF_PREFERENCE.len())
+}
+
+fn estimate_deployment_memory_gb(file_size: u64) -> f64 {
+    let file_gib = file_size as f64 / 1024_f64.powi(3);
+    ((file_gib * 1.2 + 0.8) * 10.0).ceil() / 10.0
+}
+
+fn select_deployable_gguf(
+    files: impl IntoIterator<Item = (String, u64)>,
+    max_vram_gb: f64,
+) -> Option<(String, u64, f64)> {
+    let mut candidates = files
+        .into_iter()
+        .filter(|(path, size)| is_single_file_gguf(path) && *size > 0)
+        .filter_map(|(path, size)| {
+            let estimated_vram_gb = estimate_deployment_memory_gb(size);
+            (estimated_vram_gb <= max_vram_gb).then_some((path, size, estimated_vram_gb))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        gguf_preference_rank(&left.0)
+            .cmp(&gguf_preference_rank(&right.0))
+            .then_with(|| left.1.cmp(&right.1))
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    candidates.into_iter().next()
+}
+
+/// 把 `lastModified` / `createdAt`（RFC3339 形如 `2026-08-19T12:00:00Z`）解析为
+/// 距当前的天数；解析失败或缺失记 9999，当作长尾处理。
+fn days_since(date: &Option<String>) -> u64 {
+    let raw = match date {
+        Some(value) => value,
+        None => return 9999,
+    };
+    // 取前 10 个字符 `YYYY-MM-DD`，用标准库逐段解析，避免引入额外依赖。
+    let date_part = raw.get(..10).unwrap_or("");
+    let mut parts = date_part.splitn(3, '-');
+    let (year, month, day) = match (parts.next(), parts.next(), parts.next()) {
+        (Some(y), Some(m), Some(d)) => (y, m, d),
+        _ => return 9999,
+    };
+    let (year, month, day) = match (
+        year.parse::<i64>(),
+        month.parse::<u32>(),
+        day.parse::<u32>(),
+    ) {
+        (Ok(y), Ok(m), Ok(d)) => (y, m, d),
+        _ => return 9999,
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // 近似：把目标日期当作当天 0 点 UTC，按秒差换算天数（忽略闰年误差）。
+    let days_in_year: u64 = if is_leap_year(year) { 366 } else { 365 };
+    let past_secs =
+        (days_before_year(year) as u64 + day_of_year(month, day, days_in_year) as u64) * 86_400;
+    let now_days = (now / 86_400) + 19_105; // 1970-01-01 起的天数基准
+    let target_days = (past_secs / 86_400) + 19_105; // 估算，闰年有 ±1 误差，对排序无影响
+    now_days.saturating_sub(target_days) as u64
+}
+
+fn is_leap_year(year: i64) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
+
+fn days_before_year(year: i64) -> i64 {
+    // 从公元 1 年到 year-1 年的总天数（简化，用于热榜排序，误差可接受）。
+    (year - 1) * 365 + (year - 1) / 4 - (year - 1) / 100 + (year - 1) / 400
+}
+
+fn day_of_year(month: u32, day: u32, days_in_year: u64) -> u32 {
+    const CUM: [u32; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+    let mut doy = CUM[(month - 1) as usize] + day;
+    if is_leap_year_current(days_in_year) && month > 2 {
+        doy += 1;
+    }
+    doy
+}
+
+fn is_leap_year_current(days_in_year: u64) -> bool {
+    days_in_year == 366
+}
+
+/// 把"下载热度"与"近期活跃度"结合成复合热度分：近期仍在更新、且下载量高
+/// 的模型排在最前，避免纯粹的历史累计下载掩盖已经过气的模型。
+fn hotness_score(model: &DiscoveredModel) -> u64 {
+    let recency_days = days_since(&model.updated_at).min(days_since(&model.created_at));
+    // 90 天内的更新按衰减加权（越新权重越高），超过 360 天视作长尾。
+    let recency_weight: u64 = if recency_days <= 90 {
+        1_000_000 - recency_days * 10_000
+    } else if recency_days <= 360 {
+        100_000
+    } else {
+        10_000
+    };
+    model.downloads.saturating_add(recency_weight)
+}
+
+fn sort_discovered_models(models: &mut [DiscoveredModel]) {
+    models.sort_by(|left, right| {
+        hotness_score(right)
+            .cmp(&hotness_score(left))
+            .then_with(|| right.likes.cmp(&left.likes))
+            .then_with(|| left.repo_id.cmp(&right.repo_id))
+    });
+}
+
+fn build_hf_list_url(
+    category: &str,
+    pipeline_tag: Option<&str>,
+    query: Option<&str>,
+    limit: u64,
+) -> Result<(String, String), String> {
+    let mut url = reqwest::Url::parse("https://hf-mirror.com/api/models")
+        .map_err(|error| error.to_string())?;
+    {
+        let mut pairs = url.query_pairs_mut();
+        if let Some(pipeline_tag) = pipeline_tag {
+            pairs.append_pair("pipeline_tag", pipeline_tag);
+        }
+        pairs
+            .append_pair("filter", "gguf")
+            .append_pair("sort", "downloads")
+            .append_pair("direction", "-1")
+            .append_pair("limit", &limit.to_string())
+            .append_pair("full", "true");
+        if let Some(query) = query.filter(|value| !value.is_empty()) {
+            pairs.append_pair("search", query);
+        }
+    }
+    Ok((category.to_string(), url.to_string()))
+}
+
+fn build_hf_tree_url(repo: &str, revision: &str) -> Result<String, String> {
+    let mut url = reqwest::Url::parse(&format!(
+        "https://hf-mirror.com/api/models/{repo}/tree/{revision}"
+    ))
+    .map_err(|error| error.to_string())?;
+    url.query_pairs_mut()
+        .append_pair("recursive", "true")
+        .append_pair("expand", "false");
+    Ok(url.to_string())
+}
+
+async fn resolve_discovery_candidate(
+    client: reqwest::Client,
+    candidate: DiscoveryCandidate,
+    max_vram_gb: f64,
+) -> Option<DiscoveredModel> {
+    let tree_url = build_hf_tree_url(&candidate.repo_id, &candidate.revision).ok()?;
+    let tree_files = match client.get(tree_url).send().await {
+        Ok(response) if response.status().is_success() => response
+            .json::<Vec<HfTreeEntry>>()
+            .await
+            .ok()
+            .map(|entries| {
+                entries
+                    .into_iter()
+                    .filter(|entry| entry.entry_type == "file")
+                    .map(|entry| (entry.path, entry.size))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+
+    let fallback_files = || {
+        candidate
+            .siblings
+            .iter()
+            .filter_map(|file| file.file_size().map(|size| (file.rfilename.clone(), size)))
+            .collect::<Vec<_>>()
+    };
+    let (filename, file_size, estimated_vram_gb) = if tree_files.is_empty() {
+        select_deployable_gguf(fallback_files(), max_vram_gb)?
+    } else {
+        select_deployable_gguf(tree_files, max_vram_gb)?
+    };
+    let download_url = build_hf_mirror_url(&candidate.repo_id, &candidate.revision, &filename);
+
+    Some(DiscoveredModel {
+        repo_id: candidate.repo_id,
+        category: candidate.category,
+        gguf_filename: filename,
+        download_url,
+        downloads: candidate.downloads,
+        likes: candidate.likes,
+        created_at: candidate.created_at,
+        updated_at: candidate.updated_at,
+        file_size,
+        estimated_vram_gb,
+    })
+}
+
+/// 从 hf-mirror 实时检索热门 GGUF，并只返回给定部署预算内的单文件模型。
+#[tauri::command]
+async fn fetch_latest_models(
+    translation_limit: Option<u64>,
+    chat_limit: Option<u64>,
+    embedding_limit: Option<u64>,
+    query: Option<String>,
+    max_vram_gb: Option<f64>,
+) -> Result<Vec<DiscoveredModel>, String> {
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let translation_limit = translation_limit.unwrap_or(8).min(20);
+    let chat_limit = chat_limit.unwrap_or(8).min(20);
+    let embedding_limit = embedding_limit.unwrap_or(0).min(20);
+    let max_vram_gb = max_vram_gb.unwrap_or(8.0).clamp(1.0, 128.0);
+    let normalized_query = query
+        .map(|value| value.trim().chars().take(80).collect::<String>())
+        .filter(|value| !value.is_empty());
+
+    let requested_queries = [
+        ("translation", Some("translation"), translation_limit),
+        ("chat", Some("text-generation"), chat_limit),
+        ("embedding", Some("feature-extraction"), embedding_limit),
+    ];
+    // feature-extraction 标签下 GGUF 化的向量模型极少，hf-mirror 几乎查不到。
+    // 因此额外用真实存在的嵌入 GGUF 关键词检索，合并进 embedding 分类。
+    let embedding_keyword_queries = [
+        "Qwen3-Embedding GGUF",
+        "bge GGUF",
+        "e5 GGUF",
+        "gte GGUF",
+        "nomic-embed GGUF",
+    ];
+    let mut queries = Vec::new();
+    for (category, pipeline_tag, result_limit) in requested_queries {
+        if result_limit == 0 {
+            continue;
+        }
+        let upstream_limit = result_limit.saturating_mul(2).clamp(12, 32);
+        queries.push((
+            result_limit,
+            build_hf_list_url(
+                category,
+                pipeline_tag,
+                normalized_query.as_deref(),
+                upstream_limit,
+            )?,
+        ));
+        // 仅在用户未输入自定义检索词时，为 embedding 附加关键词检索。
+        if category == "embedding" && normalized_query.is_none() {
+            for keyword in embedding_keyword_queries {
+                queries.push((
+                    result_limit,
+                    build_hf_list_url(category, None, Some(keyword), upstream_limit)?,
+                ));
+            }
+        }
+    }
+    if queries.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut candidates = Vec::new();
+    let mut seen_repositories = HashSet::new();
+    let mut category_limits = HashMap::new();
+    for (result_limit, (category, list_url)) in queries {
+        category_limits.insert(category.clone(), result_limit as usize);
+        let res = client
+            .get(&list_url)
+            .send()
+            .await
+            .map_err(|e| format!("未能连接 hf-mirror 模型 API：{}", e))?;
+        if !res.status().is_success() {
+            return Err(format!("hf-mirror 模型 API 错误：{}", res.status()));
+        }
+        let list: HfListResponse = res.json().await.map_err(|e| e.to_string())?;
+        for entry in list.into_models() {
+            if !entry
+                .siblings
+                .iter()
+                .any(|file| is_single_file_gguf(&file.rfilename))
+            {
+                continue;
+            }
+            if !seen_repositories.insert(entry.id.to_lowercase()) {
+                continue;
+            }
+            candidates.push(DiscoveryCandidate {
+                repo_id: entry.id,
+                category: category.clone(),
+                downloads: entry.downloads,
+                likes: entry.likes,
+                created_at: entry.created_at.clone(),
+                updated_at: entry.last_modified.clone(),
+                revision: entry.sha.clone().unwrap_or_else(|| "main".to_string()),
+                siblings: entry.siblings,
+            });
+        }
+    }
+
+    let mut discovered = futures_util::stream::iter(candidates)
+        .map(|candidate| resolve_discovery_candidate(client.clone(), candidate, max_vram_gb))
+        .buffer_unordered(8)
+        .filter_map(|model| async move { model })
+        .collect::<Vec<_>>()
+        .await;
+    sort_discovered_models(&mut discovered);
+    let mut category_counts: HashMap<String, usize> = HashMap::new();
+    discovered.retain(|model| {
+        let count = category_counts.entry(model.category.clone()).or_default();
+        let keep = *count < *category_limits.get(&model.category).unwrap_or(&0);
+        if keep {
+            *count += 1;
+        }
+        keep
+    });
+
+    Ok(discovered)
+}
+
+#[cfg(test)]
+mod model_discovery_tests {
+    use super::*;
+
+    fn discovered(repo_id: &str, downloads: u64, likes: u64) -> DiscoveredModel {
+        DiscoveredModel {
+            repo_id: repo_id.to_string(),
+            category: "chat".to_string(),
+            gguf_filename: "model-Q4_K_M.gguf".to_string(),
+            download_url: "https://hf-mirror.com/example/model".to_string(),
+            downloads,
+            likes,
+            created_at: None,
+            updated_at: None,
+            file_size: 1,
+            estimated_vram_gb: 0.9,
+        }
+    }
+
+    #[test]
+    fn parses_hf_mirror_array_response_and_file_metadata() {
+        let raw = r#"[{"id":"org/model-GGUF","downloads":42,"likes":7,"createdAt":"2026-08-20T00:00:00Z","sha":"abc","siblings":[{"rfilename":"model-Q4_K_M.gguf","size":123},{"rfilename":"model-Q5_K_M.gguf","lfs":{"size":456}}]}]"#;
+        let response: HfListResponse = serde_json::from_str(raw).expect("应能解析数组响应");
+        let models = response.into_models();
+        assert_eq!(models.len(), 1);
+        assert_eq!(
+            models[0].created_at.as_deref(),
+            Some("2026-08-20T00:00:00Z")
+        );
+        assert_eq!(models[0].siblings[0].file_size(), Some(123));
+        assert_eq!(models[0].siblings[1].file_size(), Some(456));
+    }
+
+    #[test]
+    fn estimates_memory_and_rejects_files_over_budget() {
+        let four_gib = 4 * 1024 * 1024 * 1024_u64;
+        assert_eq!(estimate_deployment_memory_gb(four_gib), 5.6);
+        let selected = select_deployable_gguf(
+            vec![
+                ("model-Q4_K_M.gguf".to_string(), four_gib),
+                ("model-Q3_K_M.gguf".to_string(), 2 * 1024 * 1024 * 1024),
+            ],
+            4.0,
+        )
+        .expect("4GB 预算应选择更小的量化文件");
+        assert_eq!(selected.0, "model-Q3_K_M.gguf");
+        assert!(selected.2 <= 4.0);
+    }
+
+    #[test]
+    fn prefers_known_quantization_and_skips_shards() {
+        let gib = 1024 * 1024 * 1024_u64;
+        let selected = select_deployable_gguf(
+            vec![
+                ("model-Q8_0.gguf".to_string(), gib),
+                ("model-Q4_K_M-00001-of-00002.gguf".to_string(), gib),
+                ("model.Q4_K_M.gguf".to_string(), gib),
+            ],
+            8.0,
+        )
+        .expect("应找到可部署的单文件 GGUF");
+        assert_eq!(selected.0, "model.Q4_K_M.gguf");
+    }
+
+    #[test]
+    fn sorts_by_downloads_then_likes() {
+        let mut models = vec![
+            discovered("org/less-hot", 10, 100),
+            discovered("org/hot-liked", 20, 5),
+            discovered("org/hot", 20, 3),
+        ];
+        sort_discovered_models(&mut models);
+        let ids = models
+            .iter()
+            .map(|model| model.repo_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["org/hot-liked", "org/hot", "org/less-hot"]);
+    }
 }
 
 #[tauri::command]
@@ -3461,321 +4197,6 @@ fn truncate_chars(text: &str, limit: usize) -> String {
     text.chars().take(limit).collect::<String>()
 }
 
-fn split_page_text_into_segments(page_text: &str) -> Vec<String> {
-    let normalized = page_text.replace("\r\n", "\n");
-    let primary_segments = normalized
-        .split("\n\n")
-        .flat_map(|block| {
-            let trimmed = block.trim();
-            if trimmed.is_empty() {
-                return Vec::<String>::new();
-            }
-            if trimmed.chars().count() <= 900 {
-                return vec![trimmed.to_string()];
-            }
-
-            let mut parts = Vec::new();
-            let mut current = String::new();
-            for line in trimmed.lines() {
-                let line = line.trim();
-                if line.is_empty() {
-                    continue;
-                }
-                let candidate_len = current.chars().count() + line.chars().count() + 1;
-                if candidate_len > 900 && !current.is_empty() {
-                    parts.push(current.trim().to_string());
-                    current.clear();
-                }
-                if !current.is_empty() {
-                    current.push('\n');
-                }
-                current.push_str(line);
-            }
-            if !current.trim().is_empty() {
-                parts.push(current.trim().to_string());
-            }
-            parts
-        })
-        .collect::<Vec<_>>();
-
-    if !primary_segments.is_empty() {
-        return primary_segments;
-    }
-
-    let single = normalized.trim();
-    if single.is_empty() {
-        Vec::new()
-    } else {
-        vec![single.to_string()]
-    }
-}
-
-fn locate_selection_segment_index(segments: &[String], selected_text: &str) -> Option<usize> {
-    let normalized_selected = selected_text.trim();
-    if normalized_selected.is_empty() {
-        return None;
-    }
-
-    segments
-        .iter()
-        .position(|segment| segment.contains(normalized_selected))
-        .or_else(|| {
-            let selected_lower = normalized_selected.to_lowercase();
-            segments
-                .iter()
-                .position(|segment| segment.to_lowercase().contains(&selected_lower))
-        })
-}
-
-fn build_selection_context_window(
-    page_text: &str,
-    selected_text: &str,
-    context_limit: usize,
-) -> String {
-    let segments = split_page_text_into_segments(page_text);
-    if segments.is_empty() {
-        return truncate_chars(page_text, context_limit);
-    }
-
-    let Some(index) = locate_selection_segment_index(&segments, selected_text) else {
-        return truncate_chars(page_text, context_limit);
-    };
-
-    let start = index.saturating_sub(1);
-    let end = (index + 2).min(segments.len());
-    let joined = segments[start..end].join("\n\n");
-    truncate_chars(&joined, context_limit)
-}
-
-#[derive(Clone, Debug, Default)]
-struct TranslationHints {
-    subject: Option<String>,
-    acronyms: Vec<String>,
-    key_terms: Vec<String>,
-}
-
-fn is_word_char(ch: char) -> bool {
-    ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '/'
-}
-
-fn split_words(input: &str) -> Vec<String> {
-    let mut words = Vec::new();
-    let mut current = String::new();
-    for ch in input.chars() {
-        if is_word_char(ch) {
-            current.push(ch);
-        } else if !current.is_empty() {
-            words.push(current.clone());
-            current.clear();
-        }
-    }
-    if !current.is_empty() {
-        words.push(current);
-    }
-    words
-}
-
-fn is_acronym_token(token: &str) -> bool {
-    let trimmed = token.trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != '-');
-    let mut has_alpha = false;
-    let mut has_upper = false;
-    for ch in trimmed.chars() {
-        if ch.is_ascii_alphabetic() {
-            has_alpha = true;
-            if ch.is_ascii_uppercase() {
-                has_upper = true;
-            } else {
-                return false;
-            }
-        } else if !ch.is_ascii_digit() && ch != '-' {
-            return false;
-        }
-    }
-    has_alpha && has_upper && trimmed.chars().count() >= 2 && trimmed.chars().count() <= 16
-}
-
-fn is_title_case_token(token: &str) -> bool {
-    let mut chars = token.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    first.is_ascii_uppercase()
-        && chars.any(|ch| ch.is_ascii_lowercase())
-        && token.chars().count() >= 3
-}
-
-fn push_unique_limited(values: &mut Vec<String>, value: String, limit: usize) {
-    let normalized = value.trim().trim_matches(|ch: char| {
-        ch.is_whitespace() || matches!(ch, ',' | '.' | ';' | ':' | '(' | ')' | '[' | ']')
-    });
-    if normalized.is_empty() || normalized.chars().count() > 80 {
-        return;
-    }
-    if values
-        .iter()
-        .any(|item| item.eq_ignore_ascii_case(normalized))
-    {
-        return;
-    }
-    values.push(normalized.to_string());
-    if values.len() > limit {
-        values.truncate(limit);
-    }
-}
-
-fn extract_acronyms(text: &str, limit: usize) -> Vec<String> {
-    let mut acronyms = Vec::new();
-    for word in split_words(text) {
-        if is_acronym_token(&word) {
-            push_unique_limited(&mut acronyms, word, limit);
-        }
-    }
-    acronyms
-}
-
-fn extract_title_case_terms(text: &str, limit: usize) -> Vec<String> {
-    let words = split_words(text);
-    let mut terms = Vec::new();
-    let mut index = 0;
-    while index < words.len() {
-        if !is_title_case_token(&words[index]) {
-            index += 1;
-            continue;
-        }
-
-        let start = index;
-        index += 1;
-        while index < words.len() && is_title_case_token(&words[index]) {
-            index += 1;
-        }
-        let phrase = words[start..index].join(" ");
-        push_unique_limited(&mut terms, phrase, limit);
-    }
-    terms
-}
-
-fn extract_technical_terms(text: &str, selected_text: &str, limit: usize) -> Vec<String> {
-    let mut terms = Vec::new();
-    let selected_tokens = split_words(selected_text)
-        .into_iter()
-        .map(|word| word.to_ascii_lowercase())
-        .collect::<HashSet<_>>();
-
-    for acronym in extract_acronyms(text, limit) {
-        push_unique_limited(&mut terms, acronym, limit);
-    }
-    for term in extract_title_case_terms(text, limit) {
-        push_unique_limited(&mut terms, term, limit);
-    }
-    for word in split_words(text) {
-        let lower = word.to_ascii_lowercase();
-        let looks_technical = word.contains('-')
-            || word.contains('/')
-            || word.ends_with("Net")
-            || word.ends_with("Former")
-            || word.ends_with("BERT")
-            || word.ends_with("GPT")
-            || word.ends_with("LM");
-        if looks_technical || selected_tokens.contains(&lower) {
-            push_unique_limited(&mut terms, word, limit);
-        }
-    }
-
-    terms
-}
-
-fn extract_subject_hint(text: &str) -> Option<String> {
-    let verbs = [
-        "is",
-        "are",
-        "was",
-        "were",
-        "can",
-        "could",
-        "may",
-        "might",
-        "will",
-        "would",
-        "has",
-        "have",
-        "had",
-        "uses",
-        "use",
-        "used",
-        "proposes",
-        "propose",
-        "shows",
-        "show",
-        "demonstrates",
-        "demonstrate",
-        "learns",
-        "learn",
-        "requires",
-        "require",
-    ];
-    let words = split_words(text);
-    if words.len() < 3 {
-        return None;
-    }
-
-    let verb_index = words
-        .iter()
-        .position(|word| verbs.iter().any(|verb| word.eq_ignore_ascii_case(verb)))?;
-    if verb_index == 0 {
-        return None;
-    }
-    let start = verb_index.saturating_sub(8);
-    let subject = words[start..verb_index].join(" ");
-    let subject = subject.trim();
-    if subject.chars().count() < 3 {
-        None
-    } else {
-        Some(subject.to_string())
-    }
-}
-
-fn build_translation_hints(page_text: Option<&str>, selected_text: &str) -> TranslationHints {
-    let Some(page_text) = page_text else {
-        return TranslationHints::default();
-    };
-    let context_window =
-        build_selection_context_window(page_text, selected_text, TRANSLATION_HINT_CONTEXT_LIMIT);
-    let segments = split_page_text_into_segments(&context_window);
-    let subject = segments
-        .iter()
-        .rev()
-        .find_map(|segment| extract_subject_hint(segment));
-    let acronyms = extract_acronyms(&context_window, 8);
-    let key_terms = extract_technical_terms(&context_window, selected_text, 12);
-
-    TranslationHints {
-        subject,
-        acronyms,
-        key_terms,
-    }
-}
-
-fn render_translation_hints(hints: &TranslationHints, key_terms_only: bool) -> String {
-    let mut lines = Vec::new();
-    if !key_terms_only {
-        if let Some(subject) = hints.subject.as_deref().filter(|value| !value.is_empty()) {
-            lines.push(format!("- subject: {subject}"));
-        }
-        if !hints.acronyms.is_empty() {
-            lines.push(format!("- acronyms: {}", hints.acronyms.join(", ")));
-        }
-    }
-    if !hints.key_terms.is_empty() {
-        lines.push(format!("- key_terms: {}", hints.key_terms.join(", ")));
-    }
-
-    if lines.is_empty() {
-        "- none".to_string()
-    } else {
-        lines.join("\n")
-    }
-}
-
 fn trim_non_empty_model_output(text: String, empty_message: &str) -> Result<String, String> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -3821,6 +4242,10 @@ fn latin_letter_count(text: &str) -> usize {
     text.chars().filter(|ch| ch.is_ascii_alphabetic()).count()
 }
 
+fn cjk_char_count(text: &str) -> usize {
+    text.chars().filter(|ch| is_cjk_char(*ch)).count()
+}
+
 fn normalize_translation_compare_text(text: &str) -> String {
     text.chars()
         .filter(|ch| ch.is_ascii_alphanumeric() || is_cjk_char(*ch))
@@ -3859,7 +4284,47 @@ fn looks_like_untranslated_output(original_text: &str, translated_text: &str) ->
         return same_positions * 100 / min_len >= 85;
     }
 
-    false
+    let translated_cjk = cjk_char_count(translated_text);
+    let translated_latin = latin_letter_count(translated_text);
+    let translated_content = translated_cjk + translated_latin;
+    if translated_cjk < 6 && translated_latin >= 12 {
+        return true;
+    }
+
+    translated_content > 0
+        && translated_cjk * 100 < translated_content * 20
+        && translated_latin > translated_cjk * 3
+}
+
+fn count_abstract_section_markers(text: &str) -> usize {
+    let lower = text.to_ascii_lowercase();
+    [
+        "background:",
+        "introduction:",
+        "method:",
+        "methods:",
+        "results:",
+        "conclusion:",
+        "discussion:",
+    ]
+    .iter()
+    .filter(|marker| lower.contains(*marker))
+    .count()
+        + ["背景：", "引言：", "方法：", "结果：", "结论：", "讨论："]
+            .iter()
+            .filter(|marker| text.contains(*marker))
+            .count()
+}
+
+fn looks_like_added_abstract_structure(original_text: &str, translated_text: &str) -> bool {
+    let original_markers = count_abstract_section_markers(original_text);
+    let translated_markers = count_abstract_section_markers(translated_text);
+    translated_markers >= 2 && translated_markers > original_markers + 1
+}
+
+fn looks_like_nonfaithful_translation(original_text: &str, translated_text: &str) -> bool {
+    looks_like_untranslated_output(original_text, translated_text)
+        || looks_like_added_abstract_structure(original_text, translated_text)
 }
 
 fn validate_translation_output(
@@ -3868,38 +4333,20 @@ fn validate_translation_output(
 ) -> Result<String, String> {
     let trimmed = sanitize_translation_output(original_text, &translated_text)
         .ok_or_else(|| "模型返回了空翻译。".to_string())?;
-    if looks_like_untranslated_output(original_text, &trimmed) {
-        return Err(
-            "当前模型未生成有效中文译文，请切换到更强模型后重试，例如 qwen3.5:9b 或 qwen3:8b。"
-                .to_string(),
-        );
+    if looks_like_nonfaithful_translation(original_text, &trimmed) {
+        return Err("模型输出疑似不是原文的忠实中文翻译，请重试或切换到更强模型。".to_string());
     }
     Ok(trimmed)
 }
 
 #[derive(Clone, Debug)]
-enum SelectionTranslationFailureKind {
-    Retryable,
-    Fatal,
-}
-
-#[derive(Clone, Debug)]
 struct SelectionTranslationFailure {
-    kind: SelectionTranslationFailureKind,
     message: String,
 }
 
 impl SelectionTranslationFailure {
     fn retryable(message: impl Into<String>) -> Self {
         Self {
-            kind: SelectionTranslationFailureKind::Retryable,
-            message: message.into(),
-        }
-    }
-
-    fn fatal(message: impl Into<String>) -> Self {
-        Self {
-            kind: SelectionTranslationFailureKind::Fatal,
             message: message.into(),
         }
     }
@@ -3912,10 +4359,17 @@ impl SelectionTranslationFailure {
 fn validate_selection_translation_output(
     original_text: &str,
     translated_text: String,
-    hints: Option<&TranslationHints>,
 ) -> Result<String, SelectionTranslationFailure> {
+    let sanitized = sanitize_translation_output(original_text, &translated_text)
+        .ok_or_else(|| SelectionTranslationFailure::retryable("模型返回了空翻译。"))?;
+    if looks_like_nonfaithful_translation(original_text, &sanitized) {
+        return Err(SelectionTranslationFailure::retryable(
+            "模型输出疑似不是原文的忠实中文翻译。",
+        ));
+    }
+
     let trimmed = validate_translation_output(original_text, translated_text)
-        .map_err(SelectionTranslationFailure::fatal)?;
+        .map_err(SelectionTranslationFailure::retryable)?;
     let original_len = original_text.trim().chars().count();
     let translated_len = trimmed.chars().count();
 
@@ -3961,27 +4415,6 @@ fn validate_selection_translation_output(
         ));
     }
 
-    if let Some(hints) = hints {
-        let original_lower = original_text.to_ascii_lowercase();
-        let translated_lower = trimmed.to_ascii_lowercase();
-        let hint_leak_count = hints
-            .key_terms
-            .iter()
-            .chain(hints.acronyms.iter())
-            .filter(|term| {
-                let term = term.trim();
-                term.chars().count() >= 4
-                    && !original_lower.contains(&term.to_ascii_lowercase())
-                    && translated_lower.contains(&term.to_ascii_lowercase())
-            })
-            .count();
-        if hint_leak_count >= 2 {
-            return Err(SelectionTranslationFailure::retryable(
-                "模型输出疑似混入了非选中文本的术语提示。",
-            ));
-        }
-    }
-
     Ok(trimmed)
 }
 
@@ -4003,6 +4436,89 @@ fn extract_outer_json_object(text: &str) -> Option<&str> {
     Some(&text[start..=end])
 }
 
+fn is_translation_control_marker(token: &str) -> bool {
+    let token = token.trim();
+    if token.is_empty() {
+        return false;
+    }
+
+    let opening_count = token.chars().take_while(|ch| *ch == '[').count();
+    let closing_count = token.chars().rev().take_while(|ch| *ch == ']').count();
+    if opening_count == 0 || closing_count == 0 {
+        return false;
+    }
+
+    let core = token.trim_start_matches('[').trim_end_matches(']').trim();
+    if core.is_empty() {
+        return true;
+    }
+
+    let normalized = core.to_ascii_uppercase();
+    let known_labels = [
+        "ANSWER",
+        "CONTENT",
+        "FINAL",
+        "OUTPUT",
+        "REPLY",
+        "REPORT",
+        "RESULT",
+        "RESPONSE",
+        "SOURCE",
+        "TARGET",
+        "TEXT",
+        "TRANSLATION",
+        "译文",
+        "翻译",
+        "回答",
+        "报告",
+        "答案",
+        "输出",
+        "结果",
+    ];
+    if known_labels.iter().any(|label| *label == normalized) {
+        return true;
+    }
+
+    let is_simple_label = core
+        .chars()
+        .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || matches!(ch, '_' | '-' | ' '));
+    is_simple_label && (opening_count >= 2 || opening_count != closing_count)
+}
+
+fn strip_translation_control_markers(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut cursor = 0;
+
+    while cursor < text.len() {
+        let Some(relative_start) = text[cursor..].find('[') else {
+            output.push_str(&text[cursor..]);
+            break;
+        };
+        let start = cursor + relative_start;
+        output.push_str(&text[cursor..start]);
+
+        let rest = &text[start..];
+        let Some(first_closing_relative) = rest.find(']') else {
+            output.push_str(rest);
+            break;
+        };
+        let mut end = start + first_closing_relative + 1;
+        while text[end..].starts_with(']') {
+            end += 1;
+        }
+
+        if is_translation_control_marker(&text[start..end]) {
+            output.push(' ');
+            cursor = end;
+        } else {
+            output.push('[');
+            cursor = start + 1;
+        }
+    }
+
+    output
+}
+
 fn parse_translation_model_output(
     original_text: &str,
     raw: String,
@@ -4010,12 +4526,9 @@ fn parse_translation_model_output(
     let cleaned = raw.replace("\r\n", "\n");
     if let Some(candidate) = extract_outer_json_object(&cleaned) {
         if let Ok(parsed) = serde_json::from_str::<TranslationJsonOutput>(candidate) {
-            if let Some(translation) = parsed
-                .translation
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-            {
-                return Ok(translation);
+            if let Some(translation) = parsed.translation {
+                return sanitize_translation_output(original_text, &translation)
+                    .ok_or_else(|| SelectionTranslationFailure::retryable("模型返回了空翻译。"));
             }
         }
     }
@@ -4030,10 +4543,48 @@ fn sanitize_translation_output(original_text: &str, translated_text: &str) -> Op
         return None;
     }
 
-    if let Some(index) = cleaned.rfind(TRANSLATION_OUTPUT_SENTINEL) {
-        cleaned = cleaned[index + TRANSLATION_OUTPUT_SENTINEL.len()..]
-            .trim()
-            .to_string();
+    for sentinel in TRANSLATION_OUTPUT_SENTINELS {
+        if let Some(index) = cleaned.rfind(sentinel) {
+            cleaned = cleaned[index + sentinel.len()..].trim().to_string();
+            break;
+        }
+    }
+
+    cleaned = strip_translation_control_markers(&cleaned);
+
+    let translation_markers = [
+        "[]",
+        "[ ]",
+        "【】",
+        "[TRANSLATION]",
+        "[[TRANSLATION]]",
+        "[[[TRANSLATION]]]",
+        "[译文]",
+        "【译文】",
+    ];
+    loop {
+        let before = cleaned.clone();
+        let trimmed = cleaned.trim().to_string();
+        cleaned = trimmed;
+        for marker in translation_markers {
+            if cleaned
+                .get(..marker.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(marker))
+            {
+                cleaned = cleaned[marker.len()..].trim().to_string();
+                break;
+            }
+            if cleaned
+                .get(cleaned.len().saturating_sub(marker.len())..)
+                .is_some_and(|suffix| suffix.eq_ignore_ascii_case(marker))
+            {
+                cleaned = cleaned[..cleaned.len() - marker.len()].trim().to_string();
+                break;
+            }
+        }
+        if cleaned == before {
+            break;
+        }
     }
 
     let leak_markers = [
@@ -4139,6 +4690,138 @@ fn sanitize_translation_output(original_text: &str, translated_text: &str) -> Op
         None
     } else {
         Some(cleaned)
+    }
+}
+
+#[cfg(test)]
+mod translation_output_tests {
+    use super::{
+        build_selection_translation_retry_prompt, build_unified_selection_translation_prompt,
+        looks_like_nonfaithful_translation, parse_translation_model_output,
+        sanitize_translation_output, validate_selection_translation_output,
+    };
+
+    #[test]
+    fn 短段落空返回会被标记为可重试失败() {
+        let error = parse_translation_model_output("A short paragraph", "  \n".to_string())
+            .expect_err("空输出应进入重试路径");
+        assert_eq!(error.message, "模型返回了空翻译。");
+    }
+
+    #[test]
+    fn 带说明的_json对象可以提取短译文() {
+        let result = parse_translation_model_output(
+            "A short paragraph",
+            "前置说明\n{\"translation\":\"这是一个短段落。\",\"confidence\":0.9,\"detected_language\":\"en\"}\n后置说明"
+                .to_string(),
+        )
+        .expect("应提取 JSON 中的 translation 字段");
+        assert_eq!(result, "这是一个短段落。");
+    }
+
+    #[test]
+    fn json中的空标记会进入重试路径() {
+        let error = parse_translation_model_output(
+            "A long source paragraph",
+            r#"{"translation":"[]","confidence":0.1}"#.to_string(),
+        )
+        .expect_err("JSON 中的空标记不能作为译文返回");
+        assert_eq!(error.message, "模型返回了空翻译。");
+    }
+
+    #[test]
+    fn 多余的空标记会被清除但正常引用保留() {
+        assert_eq!(
+            sanitize_translation_output("source", "[]\n这是译文[]").as_deref(),
+            Some("这是译文")
+        );
+        assert_eq!(
+            sanitize_translation_output("source", "[[TRANSLATION]][]").as_deref(),
+            None
+        );
+        assert_eq!(
+            sanitize_translation_output("source", "参考文献见 [1]").as_deref(),
+            Some("参考文献见 [1]")
+        );
+    }
+
+    #[test]
+    fn 两层翻译标记前的重复译文会被截断() {
+        let translation = "结论：采用包含声明数据的 GNN 方法可增强 ADRD 风险预测，并揭示相互关联的医疗代码关系的影响。该方法不仅能够实现 ADRD 风险建模，还为使用声明数据的其他图像分析预测提供潜力。";
+        let raw = format!("{translation}   [[TRANSLATION]]   {translation}");
+        assert_eq!(
+            sanitize_translation_output("Conclusions: ...", &raw).as_deref(),
+            Some(translation)
+        );
+    }
+
+    #[test]
+    fn 畸形报告标记会被清理而正常方括号文本保留() {
+        let translation = "结论：该方法不仅能够进行 ADRD 风险建模，还适用于其他预测任务。";
+        let raw = format!("{translation}    [[REPORT]]]   [[REPORT]]]");
+        assert_eq!(
+            sanitize_translation_output("Conclusions: ...", &raw).as_deref(),
+            Some(translation)
+        );
+        assert_eq!(
+            sanitize_translation_output(
+                "source",
+                "参考文献见 [1]，相关缩写为 [ADRD]，图示见 [Figure 1]。"
+            )
+            .as_deref(),
+            Some("参考文献见 [1]，相关缩写为 [ADRD]，图示见 [Figure 1]。")
+        );
+    }
+
+    #[test]
+    fn 会清理生成模型的哨兵和上下文尾部() {
+        let result = sanitize_translation_output(
+            "A short paragraph",
+            "[[[TRANSLATION]]]\n这是一个短段落。\nPage context: unrelated context",
+        )
+        .expect("清洗后应保留译文");
+        assert_eq!(result, "这是一个短段落。");
+    }
+
+    #[test]
+    fn 清洗后的短译文可以通过选区长度校验() {
+        let result = validate_selection_translation_output(
+            "A short paragraph",
+            "这是一个短段落。".to_string(),
+        )
+        .expect("正常短译文不应被拒绝");
+        assert_eq!(result, "这是一个短段落。");
+    }
+
+    #[test]
+    fn 用户反馈的英文摘要幻觉会被拦截() {
+        let original = "Background: Alzheimer's disease and related dementias (ADRD) ranks as the sixth leading cause of death in the US, underlining the importance of accurate ADRD risk prediction.";
+        let hallucinated = "This study presents a novel method for estimating the risk of developing ADRD in the elderly population. Method: We obtained data from 2,000 patients in 12 hospitals. Results: The simple method was more effective. Conclusion: Early detection saves lives. **注：**";
+        assert!(looks_like_nonfaithful_translation(original, hallucinated));
+        let error = validate_selection_translation_output(original, hallucinated.to_string())
+            .expect_err("英文摘要式幻觉不应被放行");
+        assert_eq!(error.message, "模型输出疑似不是原文的忠实中文翻译。");
+    }
+
+    #[test]
+    fn 统一提示词保留_mt15的消歧和直译规则() {
+        let (system_prompt, user_prompt) = build_unified_selection_translation_prompt(
+            "Background: ADRD risk prediction.",
+            Some("ADRD risk prediction context"),
+        );
+        assert!(system_prompt.contains("精确翻译器"));
+        assert!(user_prompt.contains("当前页上下文（仅用于消歧）："));
+        assert!(user_prompt.contains("待翻译原文：\nBackground: ADRD risk prediction."));
+        assert!(user_prompt.contains("不扩写，不做百科说明"));
+    }
+
+    #[test]
+    fn 空翻译重试会使用无上下文的严格原文边界() {
+        let (system_prompt, user_prompt) =
+            build_selection_translation_retry_prompt("ranks as the sixth leading cause");
+        assert!(system_prompt.contains("不得返回空内容"));
+        assert!(user_prompt.contains("<SOURCE>"));
+        assert!(user_prompt.contains("ranks as the sixth leading cause"));
     }
 }
 
@@ -4471,9 +5154,7 @@ async fn run_translation_model(
     user_prompt: &str,
 ) -> Result<String, String> {
     if is_translation_generate_model(model) {
-        let prompt = format!(
-            "{system_prompt}\n\n{user_prompt}\n\nOnly output the final translation after the sentinel line below. Do not repeat the prompt, rules, source text, or page context.\n{TRANSLATION_OUTPUT_SENTINEL}"
-        );
+        let prompt = format!("{system_prompt}\n\n{user_prompt}\n\n{TRANSLATION_OUTPUT_SENTINEL}");
         return run_ollama_generate(model, &prompt).await;
     }
 
@@ -4492,6 +5173,32 @@ async fn run_translation_model(
         false,
     )
     .await
+}
+
+fn build_unified_selection_translation_prompt(
+    selected_text: &str,
+    page_context: Option<&str>,
+) -> (String, String) {
+    let context_block = page_context
+        .map(|text| truncate_chars(text, 1200))
+        .filter(|text| !text.trim().is_empty())
+        .unwrap_or_else(|| "当前页上下文不可用。".to_string());
+    let system_prompt =
+        "你是学术 PDF 阅读助手中的精确翻译器。你的任务是将用户选中的原文准确翻译成中文，只输出译文正文。";
+    let user_prompt = format!(
+        "请把下面来自学术 PDF 的选中文本翻译成中文。\n\n要求：\n1. 只输出中文译文，不要前言，不要解释。\n2. 优先直译，并结合当前页语境做必要消歧。\n3. 专有名词保留英文原文在括号中。\n4. 不扩写，不做百科说明。\n5. 公式、变量名、URL、DOI、代码片段尽量保持原样。\n\n当前页上下文（仅用于消歧）：\n{context_block}\n\n待翻译原文：\n{selected_text}"
+    );
+    (system_prompt.to_string(), user_prompt)
+}
+
+fn build_selection_translation_retry_prompt(selected_text: &str) -> (String, String) {
+    (
+        "你是可靠的学术翻译器。只输出原文对应的简体中文译文，不得返回空内容、标题、解释或任何方括号标记。"
+            .to_string(),
+        format!(
+            "请直接翻译以下原文，不要总结或补充信息。只输出译文正文。\n\n<SOURCE>\n{selected_text}\n</SOURCE>"
+        ),
+    )
 }
 
 async fn chat_via_ollama(
@@ -4550,103 +5257,32 @@ async fn translate_pdf_selection_text_v2(
     page_context: Option<&str>,
     model: &str,
 ) -> Result<(String, String), String> {
-    let selection_len = selected_text.trim().chars().count();
-    if is_translation_generate_model(model) {
-        let direct_prompt = format!("请将下面的英文翻译为简体中文，只输出译文，不要解释，不要改写英文原文：\n\n{selected_text}");
-        let direct_result = run_ollama_generate(model, &direct_prompt)
-            .await
-            .map_err(|error| format!("划词翻译失败：{error}"))
-            .and_then(|text| {
-                parse_translation_model_output(selected_text, text)
-                    .map_err(SelectionTranslationFailure::into_message)
-            })
-            .and_then(|text| {
-                validate_selection_translation_output(selected_text, text, None)
-                    .map_err(SelectionTranslationFailure::into_message)
-            });
-        let translated = match direct_result {
-            Ok(text) => text,
-            Err(_) => {
-                let retry_prompt =
-                    format!("翻译成中文。只输出中文译文。\n<<<\n{selected_text}\n>>>");
-                run_ollama_generate(model, &retry_prompt)
-                    .await
-                    .map_err(|error| format!("划词翻译失败：{error}"))
-                    .and_then(|text| {
-                        parse_translation_model_output(selected_text, text)
-                            .map_err(SelectionTranslationFailure::into_message)
-                    })
-                    .and_then(|text| {
-                        validate_selection_translation_output(selected_text, text, None)
-                            .map_err(SelectionTranslationFailure::into_message)
-                    })?
-            }
-        };
-        return Ok((
-            translated,
-            TRANSLATION_PROMPT_V3_GENERATE_DIRECT.to_string(),
-        ));
+    let (system_prompt, user_prompt) =
+        build_unified_selection_translation_prompt(selected_text, page_context);
+    let primary_result = run_translation_model(model, &system_prompt, &user_prompt)
+        .await
+        .map_err(|error| SelectionTranslationFailure::retryable(format!("划词翻译失败：{error}")))
+        .and_then(|text| parse_translation_model_output(selected_text, text))
+        .and_then(|text| validate_selection_translation_output(selected_text, text));
+
+    if let Ok(validated) = primary_result {
+        return Ok((validated, TRANSLATION_PROMPT_V4_UNIFIED_MT15.to_string()));
     }
 
-    let hints = build_translation_hints(page_context, selected_text);
-    let hints_block = render_translation_hints(&hints, false);
-    let source_label = if selection_len > LONG_SELECTION_THRESHOLD_CHARS {
-        "selected source passage"
-    } else {
-        "selected source text"
-    };
-    let primary_prompt = format!(
-        "Return ONLY a JSON object matching this schema example:\n{{\"translation\":\"简体中文译文\",\"confidence\":0.0,\"detected_language\":\"en\"}}\n\nTask:\nTranslate only the {source_label} inside <SOURCE id=\"selected\"> into Simplified Chinese.\n\nStrict rules:\n1. The JSON object must contain only translation, confidence, and detected_language.\n2. Do not translate, repeat, summarize, or mention Hints.\n3. Hints are fragmented reference clues for terminology only; they are not source text.\n4. Keep formulas, variable names, URLs, DOI, and code fragments unchanged.\n5. Preserve paragraph boundaries when the selected source spans multiple sentences or lines.\n6. No Markdown outside JSON. No explanation. No preface.\n\nHints:\n{hints_block}\n\n<SOURCE id=\"selected\">\n{selected_text}\n</SOURCE>"
-    );
-
-    let primary_result = run_translation_model(
-        model,
-        if selection_len > LONG_SELECTION_THRESHOLD_CHARS {
-            "You are a precise academic translator. Return only JSON. Translate the full selected source passage into Simplified Chinese. Hints are reference clues only, never source text."
-        } else {
-            "You are a precise academic translator. Return only JSON. Translate only the selected source text into Simplified Chinese. Hints are reference clues only, never source text."
-        },
-        &primary_prompt,
-    )
-    .await
-    .map_err(SelectionTranslationFailure::fatal)
-    .and_then(|text| parse_translation_model_output(selected_text, text))
-    .and_then(|text| validate_selection_translation_output(selected_text, text, Some(&hints)));
-
-    let first_error = match primary_result {
-        Ok(validated) => {
-            return Ok((validated, TRANSLATION_PROMPT_V3_WITH_HINTS_JSON.to_string()));
-        }
-        Err(error) => error,
-    };
-    if matches!(first_error.kind, SelectionTranslationFailureKind::Fatal) {
-        return Err(first_error.into_message());
-    }
-
-    let retry_prompt = format!(
-        "Return ONLY a JSON object matching this schema example:\n{{\"translation\":\"简体中文译文\",\"confidence\":0.0,\"detected_language\":\"en\"}}\n\nThe previous attempt was rejected because it may have included non-source content.\n\nTranslate only the {source_label} inside <SOURCE id=\"selected\"> into natural Simplified Chinese.\n\nStrict rules:\n1. Translate the selected source and nothing else.\n2. Do not add explanations, labels, bullet points, Markdown, or surrounding prose.\n3. Keep formulas, tensor names, URLs, DOI, and code identifiers as-is.\n4. The output must stay proportional to the selected source length.\n\n<SOURCE id=\"selected\">\n{selected_text}\n</SOURCE>"
-    );
-
-    run_translation_model(
-        model,
-        if selection_len > LONG_SELECTION_THRESHOLD_CHARS {
-            "You are an academic English-to-Chinese translator. Return only JSON. Translate only the selected source passage."
-        } else {
-            "You are an academic English-to-Chinese translator. Return only JSON. Translate only the selected source text."
-        },
-        &retry_prompt,
-    )
-    .await
-    .map_err(|error| format!("划词翻译失败：{error}"))
-    .and_then(|text| {
-        parse_translation_model_output(selected_text, text)
-            .map_err(SelectionTranslationFailure::into_message)
-    })
-    .and_then(|text| {
-        validate_selection_translation_output(selected_text, text, None)
-            .map_err(SelectionTranslationFailure::into_message)
-    })
-    .map(|validated| (validated, TRANSLATION_PROMPT_V3_PURE_TEXT_JSON.to_string()))
+    let (retry_system_prompt, retry_user_prompt) =
+        build_selection_translation_retry_prompt(selected_text);
+    run_translation_model(model, &retry_system_prompt, &retry_user_prompt)
+        .await
+        .map_err(|error| format!("划词翻译失败：{error}"))
+        .and_then(|text| {
+            parse_translation_model_output(selected_text, text)
+                .map_err(SelectionTranslationFailure::into_message)
+        })
+        .and_then(|text| {
+            validate_selection_translation_output(selected_text, text)
+                .map_err(SelectionTranslationFailure::into_message)
+        })
+        .map(|validated| (validated, TRANSLATION_PROMPT_V4_UNIFIED_MT15.to_string()))
 }
 
 async fn translate_pdf_page_markdown_v2(page_text: &str, model: &str) -> Result<String, String> {
@@ -4974,7 +5610,7 @@ pub(crate) async fn translate_pdf_selection_with_cache(
     }
 
     let cache_key = format!(
-        "selection-v2::{}::{}::{}",
+        "selection-v3::{}::{}::{}",
         request.page, request.model, original_text
     );
     if let Some(PdfAiCacheValue::SelectionTranslation(result)) =
@@ -5020,7 +5656,7 @@ pub(crate) async fn translate_pdf_page_with_cache(
     request: TranslatePdfPageRequest,
     cache: &PdfPageTextCacheState,
 ) -> Result<TranslatePdfPageResult, String> {
-    let cache_key = format!("page-v2::{}::{}", request.page, request.model);
+    let cache_key = format!("page-v3::{}::{}", request.page, request.model);
     if let Some(PdfAiCacheValue::PageTranslation(result)) =
         cache.get_ai(&request.pdf_path, &cache_key)?
     {
@@ -6241,6 +6877,7 @@ pub fn run() {
             pull_ollama_model,
             pull_model_from_modelscope,
             resolve_hf_gguf,
+            fetch_latest_models,
             get_inference_settings,
             set_inference_mode,
             get_research_extraction_provider_settings,

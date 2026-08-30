@@ -13,6 +13,7 @@ import {
   Download,
   ExternalLink,
   RefreshCw,
+  Search,
   Sparkles,
   Waypoints,
 } from "lucide-react";
@@ -31,6 +32,32 @@ interface PullProgress {
   total?: number;
   completed?: number;
 }
+
+interface DiscoveredModel {
+  repoId: string;
+  category: string;
+  ggufFilename: string;
+  downloadUrl: string;
+  downloads: number;
+  likes: number;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  fileSize: number;
+  estimatedVramGb: number;
+}
+
+const CATEGORY_TO_MODEL: Record<string, ModelCategory> = {
+  translation: "translation",
+  chat: "general",
+};
+
+const deriveOllamaName = (model: DiscoveredModel): string => {
+  const quant = model.ggufFilename
+    .replace(/\.gguf$/i, "")
+    .replace(/[._-](q[0-9].*)$/i, (_, q) => q.toUpperCase());
+  const safeQuant = /^[A-Z0-9_]+$/.test(quant) ? quant : "latest";
+  return `hf.co/${model.repoId}:${safeQuant}`;
+};
 
 interface ModelSelectorProps {
   currentModel: string;
@@ -67,8 +94,14 @@ const ZH = {
   pullFailed: "\u62c9\u53d6\u5931\u8d25\uff1a",
   pullFailedNetworkHint:
     "\u8fde\u63a5 Ollama \u5b98\u65b9\u6a21\u578b\u4ed3\u5e93\u5931\u8d25\uff0c\u53ef\u80fd\u662f\u7f51\u7edc\u88ab\u91cd\u7f6e\u6216\u62e6\u622a\u3002\u53ef\u5148\u4f7f\u7528\u5df2\u5b89\u88c5\u6a21\u578b\uff0c\u6216\u7a0d\u540e\u91cd\u8bd5\u3002",
-  recTitle:
-    "\u63a8\u8350\u6a21\u578b\uff08\u5df2\u8054\u7f51\u6574\u7406\uff0c\u53ef\u76f4\u63a5\u9009\u62e9\uff09",
+  checkUpdates: "检索热榜",
+  checkingUpdates: "正在检索…",
+  latestTitle: "实时热榜（hf-mirror）",
+  lastChecked: "\u6700\u8fd1\u68c0\u67e5\uff1a",
+  discoverFailed:
+    "\u83b7\u53d6\u6700\u65b0\u6a21\u578b\u5931\u8d25\uff0c\u53ef\u80fd\u662f\u7f51\u7edc\u95ee\u9898\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002",
+  downloads: "\u4e0b\u8f7d",
+  hfLink: "hf-mirror",
   fill: "\u586b\u5165",
   pullSelected: "\u62c9\u53d6\u6240\u9009",
   pullMirror: "\u4f18\u5148\u955c\u50cf\u62c9\u53d6",
@@ -122,10 +155,18 @@ const RECOMMENDED_MODELS: RecommendedModel[] = [
     checkedAt: "2026-03-05",
   },
   {
-    name: "MedAIBase/Tencent-HY-MT1.5:1.8b-q4_K_M",
+    name: "tencent/Hy-MT2-1.8B-GGUF:Q4_K_M",
     category: "translation",
     summary:
-      "Current default translation model for PDF selection and page translation.",
+      "PDF 划词和整页翻译的默认模型。相同 1.8B 规模下从 HY-MT1.5 升级到第二代 HY-MT2。",
+    approxSize: "~1.1GB",
+    sourceUrl: "https://hf-mirror.com/tencent/Hy-MT2-1.8B-GGUF",
+    checkedAt: "2026-08-19",
+  },
+  {
+    name: "MedAIBase/Tencent-HY-MT1.5:1.8b-q4_K_M",
+    category: "translation",
+    summary: "上一代翻译模型，可保留用于对比或回退。",
     approxSize: "~1.8GB",
     sourceUrl:
       "https://www.modelscope.cn/models/MedAIBase/Tencent-HY-MT1.5-GGUF",
@@ -134,6 +175,7 @@ const RECOMMENDED_MODELS: RecommendedModel[] = [
 ];
 
 const CATEGORY_ORDER: ModelCategory[] = ["general", "translation", "embedding"];
+const DEPLOYMENT_BUDGETS = [4, 6, 8, 12, 16, 24, 32] as const;
 
 const renderCategoryIcon = (category: ModelCategory) => {
   switch (category) {
@@ -171,6 +213,19 @@ const isInstalled = (target: string, installed: OllamaModel[]) => {
     return m.name === target || installedBase === targetBase;
   });
 };
+
+// Hugging Face 风格的 user/repo:tag 无法通过 Ollama 官方仓库解析；加上
+// `hf.co/` 后，Ollama 才能直接拉取 Hugging Face 上的 GGUF。
+const toOllamaHubName = (name: string): string => {
+  if (name.startsWith("hf.co/")) return name;
+  if (name.includes("/") && !name.includes(":")) {
+    return `hf.co/${name}:latest`;
+  }
+  if (name.includes("/") && name.includes(":")) {
+    return `hf.co/${name}`;
+  }
+  return name;
+};
 const canUseMirror = (target: string) => Boolean(resolveMirrorModel(target));
 
 export const ModelSelector: React.FC<ModelSelectorProps> = ({
@@ -195,6 +250,14 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
   );
   const [pullProgress, setPullProgress] = useState<PullProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [discoveredModels, setDiscoveredModels] = useState<DiscoveredModel[]>(
+    [],
+  );
+  const [isChecking, setIsChecking] = useState(false);
+  const [lastCheckedAt, setLastCheckedAt] = useState<string | null>(null);
+  const [discoverError, setDiscoverError] = useState<string | null>(null);
+  const [discoveryQuery, setDiscoveryQuery] = useState("");
+  const [deploymentBudgetGb, setDeploymentBudgetGb] = useState(8);
   const manualInputRef = useRef<HTMLInputElement | null>(null);
 
   const groupedRecommended = useMemo(() => {
@@ -247,6 +310,18 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
     [activeCategory, groupedRecommended],
   );
 
+  const visibleDiscovered = useMemo(() => {
+    const targetCategory = CATEGORY_TO_MODEL[activeCategory] ?? activeCategory;
+    return discoveredModels
+      .filter(
+        (m) => (CATEGORY_TO_MODEL[m.category] ?? m.category) === targetCategory,
+      )
+      .filter((m) => {
+        const ollamaName = deriveOllamaName(m);
+        return !RECOMMENDED_MODELS.some((r) => r.name === ollamaName);
+      });
+  }, [discoveredModels, activeCategory]);
+
   const pullProgressPercent =
     pullProgress?.total && pullProgress.completed
       ? Math.min(
@@ -269,6 +344,58 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
       return [];
     }
   }, [currentModel, onModelChange]);
+
+  const fetchLatestModels = useCallback(async () => {
+    setIsChecking(true);
+    setDiscoverError(null);
+    try {
+      const discovered = await invoke<DiscoveredModel[]>(
+        "fetch_latest_models",
+        {
+          translationLimit: activeCategory === "translation" ? 12 : 0,
+          chatLimit: activeCategory === "general" ? 12 : 0,
+          embeddingLimit: activeCategory === "embedding" ? 12 : 0,
+          query: discoveryQuery.trim() || null,
+          maxVramGb: deploymentBudgetGb,
+        },
+      );
+      setDiscoveredModels(discovered);
+      setLastCheckedAt(new Date().toLocaleString("zh-CN", { hour12: false }));
+    } catch (err) {
+      console.error("Failed to fetch latest models:", err);
+      setDiscoverError(`${ZH.discoverFailed} ${String(err)}`);
+    } finally {
+      setIsChecking(false);
+    }
+  }, [activeCategory, deploymentBudgetGb, discoveryQuery]);
+
+  const pullDiscoveredModel = useCallback(
+    async (model: DiscoveredModel) => {
+      const ollamaName = deriveOllamaName(model);
+      setIsPulling(true);
+      setPullProgress({ status: `${ZH.pullStarted}${ollamaName}` });
+      setError(null);
+      try {
+        await invoke("pull_model_from_modelscope", {
+          name: ollamaName,
+          url: model.downloadUrl,
+          filename: model.ggufFilename,
+        });
+        const latestList = await fetchModels();
+        onModelChange(resolvePulledModelName(ollamaName, latestList));
+      } catch (err) {
+        console.error("Pull discovered failed:", err);
+        const rawMessage = String(err);
+        const message = `${ZH.pullFailed}${rawMessage}`;
+        setError(message);
+        onStatus?.(message, "error", true);
+      } finally {
+        setIsPulling(false);
+        setPullProgress(null);
+      }
+    },
+    [fetchModels, onModelChange, onStatus],
+  );
 
   useEffect(() => {
     void fetchModels();
@@ -324,9 +451,12 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
     try {
       const mirror = resolveMirrorModel(requestedName);
       if (mirror) {
+        // Hugging Face GGUF 必须通过镜像直链下载。在受限网络中回退到
+        // `ollama pull hf.co/...` 仍可能访问 huggingface.co 的 manifest，导致失败。
         const candidates = mirror.candidates?.length
           ? mirror.candidates
           : [{ url: mirror.url, filename: mirror.filename }];
+        let lastError: unknown;
         let pulledFromMirror = false;
         for (const candidate of candidates) {
           try {
@@ -339,13 +469,16 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
             break;
           } catch (error) {
             console.error("Mirror pull failed:", candidate.url, error);
+            lastError = error;
           }
         }
         if (!pulledFromMirror) {
-          await invoke("pull_ollama_model", { name: requestedName });
+          throw lastError ?? new Error("所有镜像源下载均失败");
         }
       } else {
-        await invoke("pull_ollama_model", { name: requestedName });
+        await invoke("pull_ollama_model", {
+          name: toOllamaHubName(requestedName),
+        });
       }
       setNewModelName("");
 
@@ -471,6 +604,23 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
     const sizes = ["B", "KB", "MB", "GB", "TB"];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
+  };
+
+  const formatUpdatedAt = (value?: string | null): string => {
+    if (!value) return "";
+    const datePart = value.slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(datePart)) return "";
+    const then = new Date(`${datePart}T00:00:00Z`).getTime();
+    if (Number.isNaN(then)) return "";
+    const days = Math.max(
+      0,
+      Math.floor((Date.now() - then) / (24 * 60 * 60 * 1000)),
+    );
+    if (days <= 0) return "今天";
+    if (days === 1) return "昨天";
+    if (days < 30) return `${days}天前`;
+    if (days < 365) return `${Math.floor(days / 30)}个月前`;
+    return `${Math.floor(days / 365)}年前`;
   };
 
   if (variant === "compact") {
@@ -650,9 +800,9 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
         <section className="model-section">
           <div className="model-section-heading-row">
             <div>
-              <div className="model-section-title">推荐模型</div>
+              <div className="model-section-title">内置推荐</div>
               <div className="model-section-subtitle">
-                先选适合的任务类型，再决定直接使用还是拉取安装
+                稳定清单用于快速选择；下方实时热榜来自国内模型镜像
               </div>
             </div>
           </div>
@@ -711,6 +861,159 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
             })}
           </div>
 
+          <div className="model-discovered-block">
+            <div className="model-discovered-header">
+              <div>
+                <div className="model-section-title">{ZH.latestTitle}</div>
+                <div className="model-section-subtitle">
+                  实时检索 hf-mirror 热门单文件
+                  GGUF（按下载热度＋近月活跃度排序），并过滤到当前部署预算内
+                </div>
+              </div>
+              {lastCheckedAt && (
+                <span className="model-discovered-time">
+                  {ZH.lastChecked}
+                  {lastCheckedAt}
+                </span>
+              )}
+            </div>
+
+            <div className="model-discovery-controls">
+              <label className="model-discovery-search">
+                <Search size={16} />
+                <input
+                  value={discoveryQuery}
+                  onChange={(event) => setDiscoveryQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !isChecking) {
+                      void fetchLatestModels();
+                    }
+                  }}
+                  placeholder="关键词，例如 Qwen、Llama、Tencent、BGE"
+                  maxLength={80}
+                  disabled={isChecking}
+                />
+              </label>
+              <label className="model-budget-select">
+                <span>部署预算</span>
+                <select
+                  value={deploymentBudgetGb}
+                  onChange={(event) =>
+                    setDeploymentBudgetGb(Number(event.target.value))
+                  }
+                  disabled={isChecking}
+                >
+                  {DEPLOYMENT_BUDGETS.map((budget) => (
+                    <option key={budget} value={budget}>
+                      {budget}GB
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                className="model-toolbar-button model-discovery-submit"
+                onClick={() => void fetchLatestModels()}
+                disabled={isChecking}
+                title={ZH.checkUpdates}
+              >
+                {isChecking ? (
+                  <RefreshCw size={16} className="spin" />
+                ) : (
+                  <Search size={16} />
+                )}
+                <span>{isChecking ? ZH.checkingUpdates : ZH.checkUpdates}</span>
+              </button>
+            </div>
+            <p className="model-budget-note">
+              估算公式为 GGUF 大小 × 1.2 + 0.8GB；实际占用会随 Context、KV Cache
+              和 CPU/GPU 分层变化。
+            </p>
+
+            {discoverError && (
+              <div className="model-empty-state">{discoverError}</div>
+            )}
+            {!discoverError &&
+              visibleDiscovered.length === 0 &&
+              !isChecking && (
+                <div className="model-empty-state">
+                  输入关键词后检索，留空则显示当前分类在 {deploymentBudgetGb}
+                  GB 预算内的下载热榜。
+                </div>
+              )}
+            <div className="model-recommend-grid">
+              {visibleDiscovered.map((item) => {
+                const ollamaName = deriveOllamaName(item);
+                const installed = isInstalled(ollamaName, models);
+                return (
+                  <article
+                    key={`${item.repoId}:${item.ggufFilename}`}
+                    className="model-recommend-card"
+                  >
+                    <div className="model-recommend-topline">
+                      <span
+                        className={`model-category-chip ${CATEGORY_TO_MODEL[item.category] ?? item.category}`}
+                      >
+                        {renderCategoryIcon(
+                          CATEGORY_TO_MODEL[item.category] ?? item.category,
+                        )}
+                        <span>
+                          {
+                            CATEGORY_LABELS[
+                              CATEGORY_TO_MODEL[item.category] ?? item.category
+                            ]
+                          }
+                        </span>
+                      </span>
+                      <span
+                        className={`model-state-badge ${installed ? "installed" : "mirror"}`}
+                      >
+                        {installed ? "已安装" : `适合 ≤${deploymentBudgetGb}GB`}
+                      </span>
+                    </div>
+                    <div className="model-recommend-name">{item.repoId}</div>
+                    <div className="model-recommend-quant">
+                      {item.ggufFilename}
+                    </div>
+                    <div className="model-recommend-meta model-live-meta">
+                      <span>文件 {formatBytes(item.fileSize)}</span>
+                      <span>估算内存 {item.estimatedVramGb.toFixed(1)}GB</span>
+                      <span>
+                        {ZH.downloads} {item.downloads.toLocaleString("zh-CN")}
+                      </span>
+                      <span>♥ {item.likes.toLocaleString("zh-CN")}</span>
+                      {formatUpdatedAt(item.updatedAt ?? item.createdAt) && (
+                        <span className="model-fresh-badge">
+                          更新{" "}
+                          {formatUpdatedAt(item.updatedAt ?? item.createdAt)}
+                        </span>
+                      )}
+                    </div>
+                    <div className="model-discovered-actions">
+                      <a
+                        className="model-source-link"
+                        href={`https://hf-mirror.com/${item.repoId}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        <span>{ZH.hfLink}</span>
+                        <ExternalLink size={12} />
+                      </a>
+                      <button
+                        type="button"
+                        className="model-primary-button model-primary-button-inline"
+                        disabled={isPulling}
+                        onClick={() => void pullDiscoveredModel(item)}
+                      >
+                        {installed ? "直接使用" : "镜像拉取"}
+                      </button>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          </div>
+
           {selectedRecommendedMeta && (
             <div className="model-selected-panel">
               <div className="model-selected-panel-main">
@@ -730,7 +1033,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
                     target="_blank"
                     rel="noreferrer"
                   >
-                    <span>Ollama Library</span>
+                    <span>模型来源</span>
                     <ExternalLink size={12} />
                   </a>
                 </div>

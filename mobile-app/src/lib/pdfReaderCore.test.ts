@@ -95,7 +95,7 @@ test("只有声明严格字形能力的 v3 阅读器才启用受控选区", () =
 });
 
 test("Viewer 修订号会替换旧参数并强制新会话地址", () => {
-  assert.equal(MOBILE_PDF_VIEWER_REVISION, "strict-glyph-selection-v3");
+  assert.equal(MOBILE_PDF_VIEWER_REVISION, "strict-glyph-selection-v5");
   assert.equal(
     addMobilePdfViewerRevision(
       "http://192.168.1.8/api/mobile/v1/pdf-viewer?page=2&viewerRevision=old",

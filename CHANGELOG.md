@@ -1,5 +1,37 @@
 # 版本变更记录
 
+## 1.1.18
+
+### 翻译标记重复输出修复
+
+- 兼容模型返回的 `[[TRANSLATION]]` 和 `[TRANSLATION]` 变体，截断标记前被回显的重复译文。
+- 增加用户反馈的 Conclusions 长文本回归测试，避免重复译文继续进入缓存和界面。
+
+## 1.1.17
+
+### 翻译模型选择同步与输出稳定性
+
+- 桌面端设置的翻译模型会原样同步到移动端；选择 HY‑MT1.5 或 HY‑MT2 后，两端使用同一个当前模型，不再互相强制迁移。
+- JSON 译文字段和普通模型输出统一经过清洗；空的 `[]`、翻译标记和包装字符会触发重试，正常引用如 `[1]` 保留。
+- 增加长文本与 JSON 空译文回归测试，避免把非空标记误当成有效译文。
+
+## 1.1.16
+
+### Cloudflare Tunnel 与移动端配对地址
+
+- 桌面端启动移动 companion service 时自动启动本机 `cloudflared tunnel --url` 临时隧道。
+- 同时读取 `cloudflared` 的标准输出和标准错误，自动解析 `trycloudflare.com` 公网地址。
+- Mobile 区新增“手机配对地址（直接填入）”，并在 Tunnel 异步建立后自动刷新显示。
+- 增加 Windows 常见 `cloudflared` 安装路径探测；未安装时仍保留局域网和 Tailscale 地址。
+
+## 1.1.15
+
+### Tencent 第二代翻译模型
+
+- 默认翻译模型切换为官方 `tencent/Hy-MT2-1.8B-GGUF:Q4_K_M`，即 Tencent HY-MT2 第二代 1.8B 量化模型；官方没有独立的“2.0”仓库名。
+- 模型中心支持 Hugging Face、`hf-mirror.com` 和 ModelScope 候选，下载完成后自动导入 Ollama 并刷新当前模型。
+- 旧版 `MedAIBase/Tencent-HY-MT1.5:1.8b-q4_K_M` 配置会自动迁移到 HY-MT2，不影响其他已安装模型。
+
 ## 1.1.14
 
 ### 移动 PDF 沉浸式阅读
